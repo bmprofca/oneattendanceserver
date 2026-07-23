@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-07-21T12:50:35.246Z",
+  "generated_at": "2026-07-23T13:40:05.097Z",
   "database": "u278432002_oneattendance",
   "table_count": 32,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 259,
+      "estimated_rows": 263,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 981,
+      "estimated_rows": 988,
       "comment": null,
       "columns": [
         {
@@ -711,7 +711,7 @@
     "companies": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 34,
+      "estimated_rows": 35,
       "comment": null,
       "columns": [
         {
@@ -1032,7 +1032,7 @@
     "company_invites": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -1212,29 +1212,29 @@
           "comment": null
         },
         {
-          "name": "base_amount",
+          "name": "enable_overtime",
           "position": 17,
-          "data_type": "decimal",
-          "column_type": "decimal(12,2)",
-          "nullable": true,
-          "default": "NULL",
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "0",
           "key": null,
           "extra": null,
           "comment": null
         },
         {
-          "name": "effective_from",
+          "name": "enable_deduction",
           "position": 18,
-          "data_type": "date",
-          "column_type": "date",
-          "nullable": true,
-          "default": "NULL",
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "1",
           "key": null,
           "extra": null,
           "comment": null
         },
         {
-          "name": "effective_to",
+          "name": "joining_date",
           "position": 19,
           "data_type": "date",
           "column_type": "date",
@@ -1245,8 +1245,41 @@
           "comment": null
         },
         {
-          "name": "status",
+          "name": "base_amount",
           "position": 20,
+          "data_type": "decimal",
+          "column_type": "decimal(12,2)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "effective_from",
+          "position": 21,
+          "data_type": "date",
+          "column_type": "date",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "effective_to",
+          "position": 22,
+          "data_type": "date",
+          "column_type": "date",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "status",
+          "position": 23,
           "data_type": "varchar",
           "column_type": "varchar(20)",
           "nullable": false,
@@ -1257,7 +1290,7 @@
         },
         {
           "name": "is_active",
-          "position": 21,
+          "position": 24,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1268,7 +1301,7 @@
         },
         {
           "name": "expires_at",
-          "position": 22,
+          "position": 25,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -1279,7 +1312,7 @@
         },
         {
           "name": "created_at",
-          "position": 23,
+          "position": 26,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1290,7 +1323,7 @@
         },
         {
           "name": "created_by",
-          "position": 24,
+          "position": 27,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1301,7 +1334,7 @@
         },
         {
           "name": "updated_at",
-          "position": 25,
+          "position": 28,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1312,7 +1345,7 @@
         },
         {
           "name": "updated_by",
-          "position": 26,
+          "position": 29,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1323,7 +1356,7 @@
         },
         {
           "name": "is_deleted",
-          "position": 27,
+          "position": 30,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1334,7 +1367,7 @@
         },
         {
           "name": "deleted_at",
-          "position": 28,
+          "position": 31,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -1345,7 +1378,7 @@
         },
         {
           "name": "deleted_by",
-          "position": 29,
+          "position": 32,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1696,7 +1729,7 @@
     "employees": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 28,
+      "estimated_rows": 30,
       "comment": null,
       "columns": [
         {
@@ -1995,6 +2028,28 @@
           "key": null,
           "extra": null,
           "comment": null
+        },
+        {
+          "name": "enable_overtime",
+          "position": 28,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "enable_deduction",
+          "position": 29,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "1",
+          "key": null,
+          "extra": null,
+          "comment": null
         }
       ],
       "primary_key": [
@@ -2042,7 +2097,7 @@
     "employee_attendance_methods": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 30,
+      "estimated_rows": 31,
       "comment": null,
       "columns": [
         {
@@ -2937,7 +2992,7 @@
     "employee_salary_component": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 69,
+      "estimated_rows": 77,
       "comment": null,
       "columns": [
         {
@@ -3352,7 +3407,7 @@
     "invite_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 72,
+      "estimated_rows": 76,
       "comment": null,
       "columns": [
         {
@@ -3629,6 +3684,28 @@
           "key": null,
           "extra": null,
           "comment": null
+        },
+        {
+          "name": "enable_overtime",
+          "position": 26,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": true,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "enable_deduction",
+          "position": 27,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": true,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
         }
       ],
       "primary_key": [
@@ -3656,7 +3733,7 @@
     "invite_salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 31,
+      "estimated_rows": 35,
       "comment": null,
       "columns": [
         {
@@ -3807,7 +3884,7 @@
     "leave_configs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 77,
+      "estimated_rows": 82,
       "comment": null,
       "columns": [
         {
@@ -4038,7 +4115,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -4409,7 +4486,7 @@
     "payroll_entries": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 16,
+      "estimated_rows": 18,
       "comment": null,
       "columns": [
         {
@@ -4779,7 +4856,7 @@
     "payroll_entry_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 45,
+      "estimated_rows": 53,
       "comment": null,
       "columns": [
         {
@@ -5007,7 +5084,7 @@
     "permission_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 111,
+      "estimated_rows": 116,
       "comment": null,
       "columns": [
         {
@@ -5185,7 +5262,7 @@
     "permission_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 5043,
+      "estimated_rows": 5271,
       "comment": null,
       "columns": [
         {
@@ -5349,7 +5426,7 @@
     "salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 99,
+      "estimated_rows": 107,
       "comment": null,
       "columns": [
         {
@@ -5566,7 +5643,7 @@
     "salary_component_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 30,
+      "estimated_rows": 34,
       "comment": null,
       "columns": [
         {
@@ -5738,7 +5815,7 @@
     "salary_component_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 114,
+      "estimated_rows": 126,
       "comment": null,
       "columns": [
         {
@@ -5894,7 +5971,7 @@
     "salary_structures": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 25,
+      "estimated_rows": 27,
       "comment": null,
       "columns": [
         {
@@ -6090,7 +6167,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 67,
+      "estimated_rows": 6,
       "comment": null,
       "columns": [
         {
@@ -6339,7 +6416,7 @@
     "shifts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 97,
+      "estimated_rows": 98,
       "comment": null,
       "columns": [
         {
@@ -6890,7 +6967,7 @@
     "transactions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 42,
+      "estimated_rows": 44,
       "comment": null,
       "columns": [
         {
@@ -7120,7 +7197,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 33,
+      "estimated_rows": 35,
       "comment": null,
       "columns": [
         {

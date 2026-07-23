@@ -1649,7 +1649,10 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       shift_start,
       shift_end,
       break_minutes,
-      grace_minutes
+      grace_minutes,
+      joining_date,
+      enable_overtime,
+      enable_deduction
     } = req.body;
 
     const companyId =
@@ -1897,7 +1900,10 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       shift_start,
       shift_end,
       break_minutes,
-      grace_minutes
+      grace_minutes,
+      joining_date,
+      enable_overtime,
+      enable_deduction
 
     ].some(
       (value) =>
@@ -2056,6 +2062,18 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
           "Invalid grace_minutes"
         );
       }
+    }
+
+    if (
+      joining_date !== undefined &&
+      joining_date !== null &&
+      !isValidDate(joining_date)
+    ) {
+      return sendError(
+        res,
+        422,
+        "Invalid joining_date"
+      );
     }
 
     let calculatedMinutes =
@@ -2342,6 +2360,43 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
 
       updateValues.push(
         normalizedGraceMinutes
+      );
+    }
+
+    if (
+      joining_date !== undefined
+    ) {
+      updateFields.push(
+        "joining_date=?"
+      );
+      updateValues.push(
+        joining_date
+      );
+    }
+
+    if (
+      enable_overtime !== undefined
+    ) {
+      updateFields.push(
+        "enable_overtime=?"
+      );
+      updateValues.push(
+        toBoolean(enable_overtime)
+          ? 1
+          : 0
+      );
+    }
+
+    if (
+      enable_deduction !== undefined
+    ) {
+      updateFields.push(
+        "enable_deduction=?"
+      );
+      updateValues.push(
+        toBoolean(enable_deduction)
+          ? 1
+          : 0
       );
     }
 

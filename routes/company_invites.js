@@ -51,6 +51,8 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
 
       auto_approve,
       is_active,
+      enable_overtime,
+      enable_deduction,
 
       remarks,
       component_package
@@ -64,6 +66,8 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
     employment_type = employment_type?.trim()?.toLowerCase() || null;
     remarks = remarks?.trim() || null;
     auto_approve = auto_approve ? 1 : 0;
+    enable_overtime = toBool(enable_overtime) ? 1 : 0;
+    enable_deduction = enable_deduction === undefined ? 1 : (toBool(enable_deduction) ? 1 : 0);
 
     is_active = is_active === undefined ? 1 : (is_active ? 1 : 0);
 
@@ -77,7 +81,7 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
 
     const validations = [];
 
-    if (designation) { validations.push({ field: "designation", value: designation, validator: designationVali }); }
+    if (designation) { validations.push({ field: "designation", value: designation, validator: designationValidation }); }
 
     if (salary_type) { validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation }); }
 
@@ -343,6 +347,8 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
         attendance_methods,
 
         auto_approve,
+        enable_overtime,
+        enable_deduction,
         is_active,
 
         created_by,
@@ -354,8 +360,10 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
         ?, ?,
         ?, ?,
         ?, ?,
-        ?,
         ?, ?,
+        ?, ?,
+        ?, ?,
+        ?, ?, ?,
         ?, ?,
         ?, ?
       )
@@ -383,6 +391,8 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
         attendance_methods,
 
         auto_approve,
+        enable_overtime,
+        enable_deduction,
         is_active,
 
         user_id || null,
@@ -464,6 +474,8 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
 
       auto_approve,
       is_active,
+      enable_overtime,
+      enable_deduction,
 
       remarks,
 
@@ -538,6 +550,14 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
 
     if (auto_approve !== undefined) {
       auto_approve = auto_approve ? 1 : 0;
+    }
+
+    if (enable_overtime !== undefined) {
+      enable_overtime = toBool(enable_overtime) ? 1 : 0;
+    }
+
+    if (enable_deduction !== undefined) {
+      enable_deduction = toBool(enable_deduction) ? 1 : 0;
     }
 
     if (is_active !== undefined) {
@@ -970,6 +990,20 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
       );
     }
 
+    if (enable_overtime !== undefined) {
+      pushField(
+        "enable_overtime",
+        enable_overtime
+      );
+    }
+
+    if (enable_deduction !== undefined) {
+      pushField(
+        "enable_deduction",
+        enable_deduction
+      );
+    }
+
     if (is_active !== undefined) {
       pushField(
         "is_active",
@@ -1222,6 +1256,8 @@ router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
       permission_package_name: pkg.permission_package_name,
 
       auto_approve: toBoolean(pkg.auto_approve),
+      enable_overtime: toBoolean(pkg.enable_overtime),
+      enable_deduction: toBoolean(pkg.enable_deduction),
       is_active: toBoolean(pkg.is_active),
 
 
@@ -1372,6 +1408,7 @@ router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
   }
 });
 
+
 router.post("/send", auth(INV.MNG), async (req, res) => {
   let conn;
 
@@ -1409,6 +1446,9 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       designation,
       attendance_methods,
       auto_approve,
+      enable_overtime,
+      enable_deduction,
+      joining_date,
       shift_start,
       shift_end,
       break_minutes,
@@ -1780,6 +1820,18 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       )
     );
 
+    const inviteEnableOvertime = toBool(enable_overtime) ? 1 : 0;
+    const inviteEnableDeduction =
+      enable_deduction === undefined
+        ? 1
+        : toBool(enable_deduction)
+          ? 1
+          : 0;
+    const inviteJoiningDate =
+      joining_date && !Number.isNaN(Date.parse(joining_date))
+        ? joining_date
+        : null;
+
     const [inviteResult] = await conn.query(
       `
       INSERT INTO company_invites
@@ -1802,6 +1854,9 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
         weekends,
         attendance_methods,
         auto_approve,
+        enable_overtime,
+        enable_deduction,
+        joining_date,
         base_amount,
         effective_from,
         effective_to,
@@ -1817,7 +1872,7 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
         ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, 'pending', 1,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1,
         ?, ?, ?
       )
       `,
@@ -1841,6 +1896,9 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
         JSON.stringify(normalizeWeekends(weekends || [])),
         JSON.stringify(cleanedAttendance),
         isAuto,
+        inviteEnableOvertime,
+        inviteEnableDeduction,
+        inviteJoiningDate,
         base_amount,
         effective_from,
         effective_to,
@@ -2277,13 +2335,13 @@ router.post("/accept", auth(), async (req, res) => {
 
     await conn.beginTransaction();
 
-
     const [[invite]] = await conn.query(
       `
       SELECT id, company_id, permission_package_id,
              designation, salary_type, employment_type,
              shift_start, shift_end, break_minutes, grace_minutes, weekends,
-             attendance_methods, auto_approve, base_amount, effective_from, effective_to
+             attendance_methods, auto_approve, enable_overtime, enable_deduction, joining_date,
+             base_amount, effective_from, effective_to
       FROM company_invites
       WHERE invite_token = ?
         AND user_id = ?
@@ -2313,29 +2371,31 @@ router.post("/accept", auth(), async (req, res) => {
       employment_type: employmentType,
       shift_start,
       shift_end,
-      break_minutes: break_minutes,
-      grace_minutes: grace_minutes,
-      weekends
+      break_minutes,
+      grace_minutes,
+      weekends,
+      enable_overtime,
+      enable_deduction,
+      joining_date
     } = invite;
 
-
+    // Fixed night‑shift calculation
     let expectedWorkMinutes = 0;
-
-    let breakMinutes = break_minutes;
-    let graceMinutes = grace_minutes;
-
     if (shift_start && shift_end) {
       const start = new Date(`1970-01-01T${shift_start}`);
       const end = new Date(`1970-01-01T${shift_end}`);
-
-      if (end > start) {
-        expectedWorkMinutes = Math.floor((end - start) / 60000);
+      if (end <= start) {
+        end.setDate(end.getDate() + 1); // crosses midnight
       }
+      expectedWorkMinutes = Math.floor((end - start) / 60000);
     }
 
+    const breakMinutes = break_minutes;
+    const graceMinutes = grace_minutes;
 
-    const inviteAttendance = invite.attendance_methods ? JSON.parse(invite.attendance_methods) : [];
-
+    const inviteAttendance = invite.attendance_methods
+      ? JSON.parse(invite.attendance_methods)
+      : [];
 
     const [[existingEmployee]] = await conn.query(
       `SELECT id, employee_code
@@ -2348,6 +2408,12 @@ router.post("/accept", auth(), async (req, res) => {
     let employeeId;
     let employeeCode;
 
+    const inviteEnableOvertimeValue = toBool(enable_overtime) ? 1 : 0;
+    const inviteEnableDeductionValue = toBool(enable_deduction) ? 1 : 0;
+    const inviteJoiningDateValue =
+      joining_date && !Number.isNaN(Date.parse(joining_date))
+        ? joining_date
+        : null;
 
     if (existingEmployee) {
       employeeId = existingEmployee.id;
@@ -2366,6 +2432,9 @@ router.post("/accept", auth(), async (req, res) => {
           break_minutes=?,
           grace_minutes=?,
           expected_work_minutes=?,
+          enable_overtime=?,
+          enable_deduction=?,
+          joining_date=?,
           status='active',
           is_active=1,
           is_deleted=0,
@@ -2384,6 +2453,9 @@ router.post("/accept", auth(), async (req, res) => {
           breakMinutes || null,
           graceMinutes || null,
           expectedWorkMinutes,
+          inviteEnableOvertimeValue,
+          inviteEnableDeductionValue,
+          inviteJoiningDateValue,
           userId,
           employeeId
         ]
@@ -2409,12 +2481,14 @@ router.post("/accept", auth(), async (req, res) => {
           expected_work_minutes,
           break_minutes,
           grace_minutes,
+          enable_overtime,
+          enable_deduction,
           status,
           joining_date,
           created_by,
           updated_by
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?,?, ?, ?, ?, ?, 'active', CURDATE(), ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
         `,
         [
           companyId,
@@ -2430,6 +2504,9 @@ router.post("/accept", auth(), async (req, res) => {
           expectedWorkMinutes,
           breakMinutes || null,
           graceMinutes || null,
+          inviteEnableOvertimeValue,
+          inviteEnableDeductionValue,
+          inviteJoiningDateValue || new Date().toISOString().split("T")[0],
           userId,
           userId
         ]
@@ -2437,7 +2514,6 @@ router.post("/accept", auth(), async (req, res) => {
 
       employeeId = result.insertId;
     }
-
 
     if (!employeeId) {
       throw new Error("Employee insert failed");
@@ -2520,14 +2596,12 @@ router.post("/accept", auth(), async (req, res) => {
       }
     }
 
-
     await conn.query(
       `UPDATE employee_attendance_methods
        SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL
        WHERE employee_id = ? AND is_deleted = 1`,
       [employeeId]
     );
-
 
     if (inviteAttendance.length) {
       const values = inviteAttendance.map(m => {
@@ -2554,7 +2628,6 @@ router.post("/accept", auth(), async (req, res) => {
       );
     }
 
-
     await conn.query(
       `UPDATE company_invites
        SET status='accepted', is_active=0, updated_by=?, updated_at=NOW()
@@ -2571,14 +2644,11 @@ router.post("/accept", auth(), async (req, res) => {
 
   } catch (error) {
     if (conn) await conn.rollback();
-
     console.error("Accept invite error:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to accept invite"
     });
-
   } finally {
     if (conn) conn.release();
   }
@@ -2623,6 +2693,9 @@ router.post("/accept-invite", async (req, res) => {
         ci.expires_at,
         ci.attendance_methods,
         ci.auto_approve,
+        ci.enable_overtime,
+        ci.enable_deduction,
+        ci.joining_date,
         ci.base_amount,
         ci.effective_from,
         ci.effective_to,
@@ -2649,10 +2722,8 @@ router.post("/accept-invite", async (req, res) => {
       [token]
     );
 
-
     if (!invite) {
       await conn.rollback();
-
       return res.status(400).json({
         success: false,
         message: "Invalid or expired invite"
@@ -2671,26 +2742,27 @@ router.post("/accept-invite", async (req, res) => {
       shift_end,
       break_minutes,
       grace_minutes,
-      weekends
+      weekends,
+      enable_overtime,
+      enable_deduction,
+      joining_date
     } = invite;
 
     let expectedWorkMinutes = 0;
 
-    const breakMinutes = Number(break_minutes || 0);
-    const graceMinutes = Number(grace_minutes || 0);
+    // Preserve nulls – do not coerce to 0
+    const breakMinutes = break_minutes;
+    const graceMinutes = grace_minutes;
 
     if (shift_start && shift_end) {
       const start = new Date(`1970-01-01T${shift_start}`);
       const end = new Date(`1970-01-01T${shift_end}`);
 
-
       if (end <= start) {
         end.setDate(end.getDate() + 1);
       }
 
-      expectedWorkMinutes = Math.floor(
-        (end - start) / 60000
-      );
+      expectedWorkMinutes = Math.floor((end - start) / 60000);
     }
 
     const inviteAttendance = invite.attendance_methods ? JSON.parse(invite.attendance_methods) : [];
@@ -2711,6 +2783,16 @@ router.post("/accept-invite", async (req, res) => {
     let employeeId;
     let employeeCode;
 
+    const inviteEnableOvertimeValue = toBool(enable_overtime) ? 1 : 0;
+    const inviteEnableDeductionValue =
+      enable_deduction === undefined
+        ? 1
+        : toBool(enable_deduction) ? 1 : 0;
+    const inviteJoiningDateValue =
+      joining_date && !Number.isNaN(Date.parse(joining_date))
+        ? joining_date
+        : null;
+
     if (existingEmployee) {
       employeeId = existingEmployee.id;
       employeeCode = existingEmployee.employee_code;
@@ -2729,9 +2811,12 @@ router.post("/accept-invite", async (req, res) => {
           expected_work_minutes = ?,
           break_minutes = ?,
           grace_minutes = ?,
+          enable_overtime = ?,
+          enable_deduction = ?,
+          joining_date = ?,
           status = 'active',
           is_active = 1,
-          is_deleted=0,
+          is_deleted = 0,
           updated_at = NOW(),
           updated_by = ?
         WHERE id = ?
@@ -2747,15 +2832,15 @@ router.post("/accept-invite", async (req, res) => {
           expectedWorkMinutes,
           breakMinutes || null,
           graceMinutes || null,
+          inviteEnableOvertimeValue,
+          inviteEnableDeductionValue,
+          inviteJoiningDateValue,
           userId,
           employeeId
         ]
       );
-    }
-
-    else {
+    } else {
       const random = generateRandomToken({ size: 1, encoding: "hex", uppercase: true });
-
       employeeCode = `EMP-${companyId}${random}`;
 
       const [employeeResult] = await conn.query(
@@ -2775,6 +2860,8 @@ router.post("/accept-invite", async (req, res) => {
           expected_work_minutes,
           break_minutes,
           grace_minutes,
+          enable_overtime,
+          enable_deduction,
           status,
           is_active,
           joining_date,
@@ -2783,10 +2870,10 @@ router.post("/accept-invite", async (req, res) => {
         )
         VALUES
         (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           'active',
           1,
-          CURDATE(),
+          ?,
           ?,
           ?
         )
@@ -2805,6 +2892,9 @@ router.post("/accept-invite", async (req, res) => {
           expectedWorkMinutes,
           breakMinutes || null,
           graceMinutes || null,
+          inviteEnableOvertimeValue,
+          inviteEnableDeductionValue,
+          inviteJoiningDateValue || new Date().toISOString().split("T")[0],
           userId,
           userId
         ]
@@ -2812,7 +2902,6 @@ router.post("/accept-invite", async (req, res) => {
 
       employeeId = employeeResult.insertId;
     }
-
 
     if (!employeeId) {
       throw new Error("Failed to create employee");
@@ -2941,9 +3030,6 @@ router.post("/accept-invite", async (req, res) => {
       );
     }
 
-
-
-
     await conn.query(
       `
       UPDATE company_invites
@@ -2965,37 +3051,25 @@ router.post("/accept-invite", async (req, res) => {
     });
 
   } catch (error) {
-    if (conn) {
-      await conn.rollback();
-    }
-
+    if (conn) await conn.rollback();
     console.error("Accept invite error:", error);
-
     return res.status(500).json({
       success: false,
-      message:
-        error.message || "Failed to accept invitation"
+      message: error.message || "Failed to accept invitation"
     });
-
   } finally {
-    if (conn) {
-      conn.release();
-    }
+    if (conn) conn.release();
   }
 });
 
 router.get("/list", auth(INV.MNG), async (req, res) => {
-
   let conn;
 
   try {
     conn = await db.getConnection();
     const companyId = Number(req.company?.id);
 
-    if (
-      !Number.isInteger(companyId) ||
-      companyId <= 0
-    ) {
+    if (!Number.isInteger(companyId) || companyId <= 0) {
       return res.status(400).json({
         success: false,
         message: "Invalid company ID"
@@ -3007,199 +3081,89 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
       limit = 10,
       search = "",
       status,
-      date,
       month,
       year,
       from_date,
       to_date
     } = req.query;
 
-    page = Math.max(
-      parseInt(page, 10) || 1,
-      1
-    );
-
-    limit = Math.min(
-      Math.max(parseInt(limit, 10) || 10, 1),
-      50
-    );
-
+    page = Math.max(parseInt(page, 10) || 1, 1);
+    limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
     const offset = (page - 1) * limit;
 
     let whereClause = `
       WHERE ci.company_id = ?
         AND ci.is_deleted = 0
     `;
-
     const params = [companyId];
 
-    if (
-      status &&
-      String(status).trim().toLowerCase() !== "all"
-    ) {
-
-      const allowedStatuses = [
-        "pending",
-        "accepted",
-        "rejected",
-        "cancelled"
-      ];
-
-      const normalizedStatus =
-        String(status)
-          .trim()
-          .toLowerCase();
-
-      if (
-        !allowedStatuses.includes(
-          normalizedStatus
-        )
-      ) {
+    if (status && String(status).trim().toLowerCase() !== "all") {
+      const allowedStatuses = ["pending", "accepted", "rejected", "cancelled"];
+      const normalizedStatus = String(status).trim().toLowerCase();
+      if (!allowedStatuses.includes(normalizedStatus)) {
         return res.status(400).json({
           success: false,
           message: "Invalid status filter"
         });
       }
-
-      whereClause += `
-        AND LOWER(ci.status) = ?
-      `;
-
+      whereClause += ` AND LOWER(ci.status) = ?`;
       params.push(normalizedStatus);
     }
 
     search = String(search || "").trim();
-
     if (search.length >= 3) {
-
       const like = `%${search}%`;
-
-      whereClause += `
-        AND (
-          u.name LIKE ?
-          OR u.email LIKE ?
-          OR ci.designation LIKE ?
-        )
-      `;
-
-      params.push(
-        like,
-        like,
-        like
-      );
-    }
-
-    if (date) {
-
-      whereClause += `
-        AND DATE(ci.created_at) = ?
-      `;
-
-      params.push(date);
+      whereClause += ` AND (u.name LIKE ? OR u.email LIKE ? OR ci.designation LIKE ?)`;
+      params.push(like, like, like);
     }
 
     if (month && year) {
-
       const monthNum = Number(month);
       const yearNum = Number(year);
-
-      if (
-        Number.isInteger(monthNum) &&
-        monthNum >= 1 &&
-        monthNum <= 12 &&
-        Number.isInteger(yearNum)
-      ) {
-
-        whereClause += `
-          AND MONTH(ci.created_at) = ?
-          AND YEAR(ci.created_at) = ?
-        `;
-
-        params.push(
-          monthNum,
-          yearNum
-        );
+      if (Number.isInteger(monthNum) && monthNum >= 1 && monthNum <= 12 && Number.isInteger(yearNum)) {
+        whereClause += ` AND MONTH(ci.created_at) = ? AND YEAR(ci.created_at) = ?`;
+        params.push(monthNum, yearNum);
       }
-
     } else if (year) {
-
       const yearNum = Number(year);
-
       if (Number.isInteger(yearNum)) {
-
-        whereClause += `
-          AND YEAR(ci.created_at) = ?
-        `;
-
+        whereClause += ` AND YEAR(ci.created_at) = ?`;
         params.push(yearNum);
       }
     }
 
     if (from_date && to_date) {
-
-      whereClause += `
-        AND DATE(ci.created_at)
-        BETWEEN ? AND ?
-      `;
-
-      params.push(
-        from_date,
-        to_date
-      );
+      whereClause += ` AND DATE(ci.created_at) BETWEEN ? AND ?`;
+      params.push(from_date, to_date);
     }
 
-    const [[countResult]] =
-      await conn.query(
-        `
-        SELECT COUNT(DISTINCT ci.id) AS total
+    const [[countResult]] = await conn.query(
+      `
+      SELECT COUNT(DISTINCT ci.id) AS total
+      FROM company_invites ci
+      LEFT JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
+      ${whereClause}
+      `,
+      params
+    );
 
-        FROM company_invites ci
+    const total = Number(countResult?.total || 0);
 
-        LEFT JOIN users u
-          ON u.id = ci.user_id
-          AND u.is_deleted = 0
+    const [inviteRows] = await conn.query(
+      `
+      SELECT DISTINCT ci.id, ci.created_at
+      FROM company_invites ci
+      LEFT JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
+      ${whereClause}
+      ORDER BY ci.created_at DESC, ci.id DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset]
+    );
 
-        ${whereClause}
-        `,
-        params
-      );
-
-    const total =
-      Number(countResult?.total || 0);
-
-    const [inviteRows] =
-      await conn.query(
-        `
-        SELECT DISTINCT
-          ci.id,
-          ci.created_at
-
-        FROM company_invites ci
-
-        LEFT JOIN users u
-          ON u.id = ci.user_id
-          AND u.is_deleted = 0
-
-        ${whereClause}
-
-        ORDER BY
-          ci.created_at DESC,
-          ci.id DESC
-
-        LIMIT ? OFFSET ?
-        `,
-        [
-          ...params,
-          limit,
-          offset
-        ]
-      );
-
-    const inviteIds =
-      inviteRows.map(row => row.id);
+    const inviteIds = inviteRows.map(row => row.id);
 
     if (!inviteIds.length) {
-
       return res.status(200).json({
         success: true,
         message: "No invites found",
@@ -3208,20 +3172,17 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
           page,
           limit,
           total,
-          total_pages:
-            Math.ceil(total / limit),
+          total_pages: Math.ceil(total / limit),
           is_last_page: true
         }
       });
     }
 
-    const placeholders =
-      inviteIds.map(() => "?").join(",");
+    const placeholders = inviteIds.map(() => "?").join(",");
 
     const [rows] = await conn.query(
       `
       SELECT
-
         ci.id,
         ci.invite_token,
         ci.company_id,
@@ -3245,6 +3206,9 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
         ci.created_at,
         ci.attendance_methods,
         ci.auto_approve,
+        ci.enable_overtime,
+        ci.enable_deduction,
+        ci.joining_date,
         ci.base_amount,
         ci.effective_from,
         ci.effective_to,
@@ -3263,33 +3227,16 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
 
       FROM company_invites ci
 
-      LEFT JOIN users u
-        ON u.id = ci.user_id
-        AND u.is_deleted = 0
-
-      LEFT JOIN users ib
-        ON ib.id = ci.invited_by
-        AND ib.is_deleted = 0
-
-      LEFT JOIN permission_packages pp
-        ON pp.id = ci.permission_package_id
-        AND pp.company_id = ci.company_id
-        AND pp.is_active = 1
-        AND pp.is_deleted = 0
-
-      LEFT JOIN permission_package_items ppi
-        ON ppi.package_id = pp.id
-        AND ppi.is_active = 1
-        AND ppi.is_deleted = 0
-
-      LEFT JOIN permissions p
-        ON p.id = ppi.permission_id
+      LEFT JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
+      LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
+      LEFT JOIN permission_packages pp ON pp.id = ci.permission_package_id
+        AND pp.company_id = ci.company_id AND pp.is_active = 1 AND pp.is_deleted = 0
+      LEFT JOIN permission_package_items ppi ON ppi.package_id = pp.id
+        AND ppi.is_active = 1 AND ppi.is_deleted = 0
+      LEFT JOIN permissions p ON p.id = ppi.permission_id
 
       WHERE ci.id IN (${placeholders})
-
-      ORDER BY
-        ci.created_at DESC,
-        ci.id DESC
+      ORDER BY ci.created_at DESC, ci.id DESC
       `,
       inviteIds
     );
@@ -3335,7 +3282,6 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
 
     for (const row of rows) {
       if (!inviteMap.has(row.id)) {
-
         let parsedMethods = [];
         if (row.attendance_methods) {
           try {
@@ -3351,88 +3297,59 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
         }
 
         inviteMap.set(row.id, {
-
           invite_id: row.id,
-
           token: row.invite_token,
-
           company_id: row.company_id,
-
           employment_type: getEnumObject(EMPLOYMENT_TYPES, row.employment_type),
-
           designation: getEnumObject(DESIGNATIONS, row.designation),
-
           salary_type: getEnumObject(SALARY_TYPES, row.salary_type),
-
           shift_start: row.shift_start,
-
           shift_end: row.shift_end,
-
           break_minutes: row.break_minutes,
-
           grace_minutes: row.grace_minutes,
-
           weekends: normalizeWeekends(row.weekends || []),
-
           permission_package: {
             id: row.permission_package_id,
             name: row.package_name
           },
-
           status: row.status,
-
           is_active: Boolean(row.is_active),
-
           auto_approve: toBoolean(row.auto_approve),
-
+          enable_overtime: Boolean(row.enable_overtime),
+          enable_deduction: Boolean(row.enable_deduction),
+          joining_date: row.joining_date
+            ? toISTString(row.joining_date).split(' ')[0]
+            : null,
           is_deleted: Boolean(row.is_deleted),
-
           deleted_at: row.deleted_at ? toISTString(row.deleted_at) : null,
-
           deleted_by: row.deleted_by,
-
           expires_at: row.expires_at ? toISTString(row.expires_at) : null,
-
           created_at: row.created_at ? toISTString(row.created_at) : null,
-
           base_amount: row.base_amount !== null ? parseFloat(row.base_amount) : null,
           effective_from: row.effective_from ? toISTString(row.effective_from).split(' ')[0] : null,
           effective_to: row.effective_to ? toISTString(row.effective_to).split(' ')[0] : null,
-
           user: row.user_id
             ? {
-              id: row.user_id,
-              name: row.user_name,
-              email: row.user_email,
-              profile_picture: buildFileUrl(row.profile_picture)
-            }
+                id: row.user_id,
+                name: row.user_name,
+                email: row.user_email,
+                profile_picture: buildFileUrl(row.profile_picture)
+              }
             : null,
-
           invited_by: {
             id: row.invited_by,
             name: row.inviter_name
           },
-
           permissions: [],
-
           attendance_methods: parsedMethods,
           salary_components: salaryComponentsMap.get(row.id) || []
         });
       }
 
       const invite = inviteMap.get(row.id);
-
       if (row.permission_id) {
-
-        const exists =
-          invite.permissions.some(
-            permission =>
-              permission.id ===
-              row.permission_id
-          );
-
+        const exists = invite.permissions.some(p => p.id === row.permission_id);
         if (!exists) {
-
           invite.permissions.push({
             id: row.permission_id,
             name: row.permission_name,
@@ -3443,70 +3360,40 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
     }
 
     const orderMap = new Map();
+    inviteIds.forEach((id, index) => orderMap.set(id, index));
 
-    inviteIds.forEach((id, index) => {
-      orderMap.set(id, index);
-    });
-
-    const data =
-      Array.from(inviteMap.values())
-        .sort(
-          (a, b) =>
-            orderMap.get(a.invite_id) -
-            orderMap.get(b.invite_id)
-        );
+    const data = Array.from(inviteMap.values())
+      .sort((a, b) => orderMap.get(a.invite_id) - orderMap.get(b.invite_id));
 
     return res.status(200).json({
-
       success: true,
-
-      message:
-        "All company invites fetched successfully",
-
+      message: "All company invites fetched successfully",
       data,
-
       meta: {
         page,
         limit,
         total,
-
-        total_pages:
-          Math.ceil(total / limit),
-
-        is_last_page:
-          offset + data.length >= total
+        total_pages: Math.ceil(total / limit),
+        is_last_page: offset + data.length >= total
       }
     });
 
   } catch (error) {
-
-    console.error(
-      "Error fetching invites:",
-      error
-    );
-
+    console.error("Error fetching invites:", error);
     return res.status(500).json({
       success: false,
-      message:
-        "Failed to fetch invites"
+      message: "Failed to fetch invites"
     });
-
   } finally {
-
-    if (conn) {
-      conn.release();
-    }
+    if (conn) conn.release();
   }
 });
 
 router.get("/my", auth(), async (req, res) => {
-
   let conn;
 
   try {
-
     conn = await db.getConnection();
-
     const userId = Number(req.user?.id);
 
     if (!Number.isInteger(userId) || userId <= 0) {
@@ -3529,12 +3416,7 @@ router.get("/my", auth(), async (req, res) => {
     } = req.query;
 
     page = Math.max(parseInt(page, 10) || 1, 1);
-
-    limit = Math.min(
-      Math.max(parseInt(limit, 10) || 10, 1),
-      50
-    );
-
+    limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
     const offset = (page - 1) * limit;
 
     let where = `
@@ -3542,131 +3424,58 @@ router.get("/my", auth(), async (req, res) => {
         AND ci.is_deleted = 0
         AND c.is_deleted = 0
     `;
-
     const params = [userId];
 
-    if (
-      status &&
-      String(status).trim().toLowerCase() !== "all"
-    ) {
-
-      const allowedStatuses = [
-        "pending",
-        "accepted",
-        "rejected",
-        "cancelled"
-      ];
-
-      const normalizedStatus =
-        String(status).trim().toLowerCase();
-
+    if (status && String(status).trim().toLowerCase() !== "all") {
+      const allowedStatuses = ["pending", "accepted", "rejected", "cancelled"];
+      const normalizedStatus = String(status).trim().toLowerCase();
       if (!allowedStatuses.includes(normalizedStatus)) {
         return res.status(400).json({
           success: false,
           message: "Invalid status filter"
         });
       }
-
-      where += `
-        AND LOWER(ci.status) = ?
-      `;
-
+      where += ` AND LOWER(ci.status) = ?`;
       params.push(normalizedStatus);
     }
 
     search = String(search || "").trim();
-
     if (search.length >= 3) {
-
       const like = `%${search}%`;
-
-      where += `
-        AND (
-          c.name LIKE ?
-          OR c.city LIKE ?
-          OR c.state LIKE ?
-          OR c.country LIKE ?
-          OR ci.designation LIKE ?
-        )
-      `;
-
-      params.push(
-        like,
-        like,
-        like,
-        like,
-        like
-      );
+      where += ` AND (c.name LIKE ? OR c.city LIKE ? OR c.state LIKE ? OR c.country LIKE ? OR ci.designation LIKE ?)`;
+      params.push(like, like, like, like, like);
     }
 
     if (date) {
-
-      where += `
-        AND DATE(ci.created_at) = ?
-      `;
-
+      where += ` AND DATE(ci.created_at) = ?`;
       params.push(date);
     }
 
     if (month && year) {
-
       const monthNum = Number(month);
       const yearNum = Number(year);
-
-      if (
-        Number.isInteger(monthNum) &&
-        monthNum >= 1 &&
-        monthNum <= 12 &&
-        Number.isInteger(yearNum)
-      ) {
-
-        where += `
-          AND MONTH(ci.created_at) = ?
-          AND YEAR(ci.created_at) = ?
-        `;
-
-        params.push(
-          monthNum,
-          yearNum
-        );
+      if (Number.isInteger(monthNum) && monthNum >= 1 && monthNum <= 12 && Number.isInteger(yearNum)) {
+        where += ` AND MONTH(ci.created_at) = ? AND YEAR(ci.created_at) = ?`;
+        params.push(monthNum, yearNum);
       }
-
     } else if (year) {
-
       const yearNum = Number(year);
-
       if (Number.isInteger(yearNum)) {
-
-        where += `
-          AND YEAR(ci.created_at) = ?
-        `;
-
+        where += ` AND YEAR(ci.created_at) = ?`;
         params.push(yearNum);
       }
     }
 
     if (from_date && to_date) {
-
-      where += `
-        AND DATE(ci.created_at)
-        BETWEEN ? AND ?
-      `;
-
-      params.push(
-        from_date,
-        to_date
-      );
+      where += ` AND DATE(ci.created_at) BETWEEN ? AND ?`;
+      params.push(from_date, to_date);
     }
 
     const [[countRow]] = await conn.query(
       `
       SELECT COUNT(DISTINCT ci.id) AS total
-
       FROM company_invites ci
-
-      INNER JOIN companies c
-        ON c.id = ci.company_id
-
+      INNER JOIN companies c ON c.id = ci.company_id
       ${where}
       `,
       params
@@ -3674,37 +3483,21 @@ router.get("/my", auth(), async (req, res) => {
 
     const total = Number(countRow?.total || 0);
 
-
     const [inviteRows] = await conn.query(
       `
-      SELECT DISTINCT
-        ci.id,
-        ci.created_at
-
+      SELECT DISTINCT ci.id, ci.created_at
       FROM company_invites ci
-
-      INNER JOIN companies c
-        ON c.id = ci.company_id
-
+      INNER JOIN companies c ON c.id = ci.company_id
       ${where}
-
-      ORDER BY
-        ci.created_at DESC,
-        ci.id DESC
-
+      ORDER BY ci.created_at DESC, ci.id DESC
       LIMIT ? OFFSET ?
       `,
-      [
-        ...params,
-        limit,
-        offset
-      ]
+      [...params, limit, offset]
     );
 
     const inviteIds = inviteRows.map(row => row.id);
 
     if (!inviteIds.length) {
-
       return res.status(200).json({
         success: true,
         message: "No invites found",
@@ -3713,8 +3506,7 @@ router.get("/my", auth(), async (req, res) => {
           page,
           limit,
           total,
-          total_pages:
-            Math.ceil(total / limit),
+          total_pages: Math.ceil(total / limit),
           is_last_page: true
         }
       });
@@ -3746,6 +3538,9 @@ router.get("/my", auth(), async (req, res) => {
         ci.created_at,
         ci.attendance_methods,
         ci.auto_approve,
+        ci.enable_overtime,
+        ci.enable_deduction,
+        ci.joining_date,
         ci.base_amount,
         ci.effective_from,
         ci.effective_to,
@@ -3772,32 +3567,16 @@ router.get("/my", auth(), async (req, res) => {
 
       FROM company_invites ci
 
-      INNER JOIN companies c
-        ON c.id = ci.company_id
-
-      LEFT JOIN users ib
-        ON ib.id = ci.invited_by
-        AND ib.is_deleted = 0
-
-      LEFT JOIN permission_packages pp
-        ON pp.id = ci.permission_package_id
-        AND pp.company_id = ci.company_id
-        AND pp.is_deleted = 0
-        AND pp.is_active = 1
-
-      LEFT JOIN permission_package_items ppi
-        ON ppi.package_id = pp.id
-        AND ppi.is_deleted = 0
-        AND ppi.is_active = 1
-
-      LEFT JOIN permissions p
-        ON p.id = ppi.permission_id
+      INNER JOIN companies c ON c.id = ci.company_id
+      LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
+      LEFT JOIN permission_packages pp ON pp.id = ci.permission_package_id
+        AND pp.company_id = ci.company_id AND pp.is_deleted = 0 AND pp.is_active = 1
+      LEFT JOIN permission_package_items ppi ON ppi.package_id = pp.id
+        AND ppi.is_deleted = 0 AND ppi.is_active = 1
+      LEFT JOIN permissions p ON p.id = ppi.permission_id
 
       WHERE ci.id IN (${placeholders})
-
-      ORDER BY
-        ci.created_at DESC,
-        ci.id DESC
+      ORDER BY ci.created_at DESC, ci.id DESC
       `,
       inviteIds
     );
@@ -3842,39 +3621,7 @@ router.get("/my", auth(), async (req, res) => {
     const inviteMap = new Map();
 
     for (const row of rows) {
-
       if (!inviteMap.has(row.id)) {
-
-        let weekends = [];
-
-        if (row.weekends) {
-
-          try {
-
-            const parsed =
-              typeof row.weekends === "string"
-                ? JSON.parse(row.weekends)
-                : row.weekends;
-
-            if (
-              parsed &&
-              typeof parsed === "object" &&
-              !Array.isArray(parsed)
-            ) {
-
-              weekends =
-                Object.entries(parsed)
-                  .map(([day, type]) => ({
-                    day,
-                    type
-                  }));
-            }
-
-          } catch (_) {
-            weekends = [];
-          }
-        }
-
         let parsedMethods = [];
         if (row.attendance_methods) {
           try {
@@ -3890,54 +3637,33 @@ router.get("/my", auth(), async (req, res) => {
         }
 
         inviteMap.set(row.id, {
-
           invite_id: row.id,
           invite_token: row.invite_token,
-
           company_id: row.company_id,
-
           employment_type: getEnumObject(EMPLOYMENT_TYPES, row.employment_type),
-
           designation: getEnumObject(DESIGNATIONS, row.designation),
-
           salary_type: getEnumObject(SALARY_TYPES, row.salary_type),
-
           shift_start: row.shift_start,
-
           shift_end: row.shift_end,
-
           break_minutes: row.break_minutes,
-
           grace_minutes: row.grace_minutes,
-
-          weekends:normalizeWeekends(row.weekends || []),
-
+          weekends: normalizeWeekends(row.weekends || []),
           status: row.status,
-
           is_active: Boolean(row.is_active),
-
           auto_approve: toBoolean(row.auto_approve),
-
+          enable_overtime: Boolean(row.enable_overtime),
+          enable_deduction: Boolean(row.enable_deduction),
+          joining_date: row.joining_date
+            ? toISTString(row.joining_date).split(' ')[0]
+            : null,
           is_deleted: Boolean(row.is_deleted),
-
-          deleted_at: row.deleted_at
-            ? toISTString(row.deleted_at)
-            : null,
-
+          deleted_at: row.deleted_at ? toISTString(row.deleted_at) : null,
           deleted_by: row.deleted_by,
-
-          expires_at: row.expires_at
-            ? toISTString(row.expires_at)
-            : null,
-
-          created_at: row.created_at
-            ? toISTString(row.created_at)
-            : null,
-
+          expires_at: row.expires_at ? toISTString(row.expires_at) : null,
+          created_at: row.created_at ? toISTString(row.created_at) : null,
           base_amount: row.base_amount !== null ? parseFloat(row.base_amount) : null,
           effective_from: row.effective_from ? toISTString(row.effective_from).split(' ')[0] : null,
           effective_to: row.effective_to ? toISTString(row.effective_to).split(' ')[0] : null,
-
           company: {
             id: row.company_id,
             name: row.company_name,
@@ -3948,42 +3674,27 @@ router.get("/my", auth(), async (req, res) => {
             address_line2: row.address_line2,
             logo_url: row.logo_url
           },
-
           invited_by: row.invited_by_id
             ? {
-              id: row.invited_by_id,
-              name: row.invited_by_name,
-              email: row.invited_by_email,
-              profile_picture: buildFileUrl(row.invited_by_profile_picture)
-            }
-            : null,
-
-          permission_package:
-            row.package_id
-              ? {
-                id: row.package_id,
-                name: row.package_name
+                id: row.invited_by_id,
+                name: row.invited_by_name,
+                email: row.invited_by_email,
+                profile_picture: buildFileUrl(row.invited_by_profile_picture)
               }
-              : null,
-
+            : null,
+          permission_package: row.package_id
+            ? { id: row.package_id, name: row.package_name }
+            : null,
           permissions: [],
-
           attendance_methods: parsedMethods,
           salary_components: salaryComponentsMap.get(row.id) || []
         });
       }
 
       const invite = inviteMap.get(row.id);
-
       if (row.permission_id) {
-
-        const exists =
-          invite.permissions.some(
-            permission => permission.id === row.permission_id
-          );
-
+        const exists = invite.permissions.some(p => p.id === row.permission_id);
         if (!exists) {
-
           invite.permissions.push({
             id: row.permission_id,
             name: row.permission_name,
@@ -3994,58 +3705,32 @@ router.get("/my", auth(), async (req, res) => {
     }
 
     const orderMap = new Map();
+    inviteIds.forEach((id, index) => orderMap.set(id, index));
 
-    inviteIds.forEach((id, index) => {
-      orderMap.set(id, index);
-    });
-
-    const data =
-      Array.from(inviteMap.values())
-        .sort(
-          (a, b) =>
-            orderMap.get(a.invite_id) -
-            orderMap.get(b.invite_id)
-        );
+    const data = Array.from(inviteMap.values())
+      .sort((a, b) => orderMap.get(a.invite_id) - orderMap.get(b.invite_id));
 
     return res.status(200).json({
-
       success: true,
-
-      message: data.length
-        ? "User invites fetched successfully"
-        : "No invites found",
-
+      message: data.length ? "User invites fetched successfully" : "No invites found",
       data,
-
       meta: {
         page,
         limit,
         total,
-
         total_pages: Math.ceil(total / limit),
-
         is_last_page: offset + data.length >= total
       }
     });
 
   } catch (error) {
-
-    console.error(
-      "Error fetching user invites:",
-      error
-    );
-
+    console.error("Error fetching user invites:", error);
     return res.status(500).json({
       success: false,
-      message:
-        "Failed to fetch user invites"
+      message: "Failed to fetch user invites"
     });
-
   } finally {
-
-    if (conn) {
-      conn.release();
-    }
+    if (conn) conn.release();
   }
 });
 
@@ -4064,6 +3749,9 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
       permission_package_id,
       attendance_methods,
       auto_approve,
+      enable_overtime,
+      enable_deduction,
+      joining_date,
       shift_start,
       shift_end,
       break_minutes,
@@ -4165,6 +3853,12 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (effective_to) {
       if (isNaN(Date.parse(effective_to))) {
         throw { status: 400, message: "Invalid effective_to date format" };
+      }
+    }
+
+    if (joining_date !== undefined && joining_date !== null && joining_date !== "") {
+      if (isNaN(Date.parse(joining_date))) {
+        throw { status: 400, message: "Invalid joining_date format" };
       }
     }
 
@@ -4283,6 +3977,9 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (weekends !== undefined) addField("weekends", JSON.stringify(normalizeWeekends(weekends || [])));
     if (attendance_methods !== undefined) addField("attendance_methods", JSON.stringify(attendance_methods));
     if (auto_approve !== undefined) addField("auto_approve", auto_approve ? 1 : 0);
+    if (enable_overtime !== undefined) addField("enable_overtime", toBool(enable_overtime) ? 1 : 0);
+    if (enable_deduction !== undefined) addField("enable_deduction", toBool(enable_deduction) ? 1 : 0);
+    if (joining_date !== undefined) addField("joining_date", joining_date);
     if (base_amount !== undefined) addField("base_amount", base_amount);
     if (effective_from !== undefined) addField("effective_from", effective_from);
     if (effective_to !== undefined) addField("effective_to", effective_to);

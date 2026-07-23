@@ -169,7 +169,9 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
         e.shift_end,
         e.expected_work_minutes,
         e.break_minutes,
-        e.grace_minutes
+        e.grace_minutes,
+        e.enable_overtime,
+        e.enable_deduction
      FROM employees e
      WHERE
         e.id = ?
@@ -247,6 +249,17 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
 
         isOvertime = Number(attendanceRow.is_overtime) || 0;
 
+        const enableOvertime = Number(employee.enable_overtime) === 1;
+        const enableDeduction = Number(employee.enable_deduction) === 1;
+
+        if (!enableOvertime) {
+            isOvertime = 0;
+        }
+
+        if (!enableDeduction) {
+            isDeductible = 0;
+        }
+
         const shiftStartDt = buildShiftAnchor(date, employee.shift_start);
 
         let shiftEndDt = buildShiftAnchor(date, employee.shift_end);
@@ -313,11 +326,17 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
 
             workedMinutes = Math.min(effectiveWorkedMinutes, requiredMinutes);
 
-            if (effectiveWorkedMinutes > overtimeThreshold) {
+            if (isOvertime && enableOvertime && effectiveWorkedMinutes > overtimeThreshold) {
                 overtimeMinutes = effectiveWorkedMinutes - requiredMinutes;
+            } else {
+                overtimeMinutes = 0;
             }
 
-            deductibleMinutes = extraBreakMinutes + lateMinutes + earlyLeaveMinutes;
+            if (isDeductible && enableDeduction) {
+                deductibleMinutes = extraBreakMinutes + lateMinutes + earlyLeaveMinutes;
+            } else {
+                deductibleMinutes = 0;
+            }
         }
 
         if (dayStatus === "leave") {
@@ -332,8 +351,10 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
             startTime = null;
             endTime = null;
 
-            if (value1 === "paid") {
+            if (value1 === "paid" && isOvertime && enableOvertime) {
                 overtimeMinutes = parseOvertimeValue(attendanceRow.value3);
+            } else {
+                overtimeMinutes = 0;
             }
         }
 

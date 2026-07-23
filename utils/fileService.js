@@ -5,7 +5,10 @@ import crypto from "crypto";
 import sharp from "sharp";
 
 
-const BASE_URL = "https://api-attendance.onesaas.in";
+const BASE_URL =
+  process.env.NODE_ENV === "production"
+    ? process.env.BASE_URL || "https://oneattendanceserver.onesaas.in"
+    :"http://localhost:7736";
 
 const BASE_UPLOAD_DIR = path.join(
   process.cwd(),
