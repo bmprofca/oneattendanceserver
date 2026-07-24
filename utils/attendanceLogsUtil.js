@@ -165,7 +165,6 @@ export async function createAttendanceLog(conn, payload = {}) {
   };
 }
 
-
 export async function bulkCreateAttendanceLogs(conn, logs = []) {
   if (!conn) {
     throw new Error("Database connection is required");

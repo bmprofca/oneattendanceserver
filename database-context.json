@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-07-23T13:40:05.097Z",
+  "generated_at": "2026-07-24T16:32:34.419Z",
   "database": "u278432002_oneattendance",
   "table_count": 32,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 263,
+      "estimated_rows": 266,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 988,
+      "estimated_rows": 1008,
       "comment": null,
       "columns": [
         {
@@ -1032,7 +1032,7 @@
     "company_invites": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -2097,7 +2097,7 @@
     "employee_attendance_methods": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 31,
+      "estimated_rows": 32,
       "comment": null,
       "columns": [
         {
@@ -3733,7 +3733,7 @@
     "invite_salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 35,
+      "estimated_rows": 36,
       "comment": null,
       "columns": [
         {
@@ -4115,7 +4115,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -6416,7 +6416,7 @@
     "shifts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 98,
+      "estimated_rows": 100,
       "comment": null,
       "columns": [
         {

@@ -2332,7 +2332,22 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
       return fail(401, "Unauthorized");
     }
 
-    let { employee_id, date, type = "attendance", status = "present", start_time = null, end_time = null, is_deductible = false, is_overtime = false, half_day_type = null, leave_type = null, leave_type_value = null, leave_day_overtime = 0, notes = null } = req.body;
+    let {
+      employee_id,
+      date,
+      type = "attendance",
+      status = "present",
+      start_time = null,
+      end_time = null,
+      is_deductible = false,
+      is_overtime = false,
+      half_day_type = null,
+      leave_type = null,
+      leave_type_value = null,
+      leave_day_overtime = 0,
+      notes = null,
+      attendance_id = null, // explicit record ID for update
+    } = req.body;
 
     employee_id = safeNumber(employee_id, 0);
     date = String(date || "").trim();
@@ -2349,55 +2364,29 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 
     const staticPaidLeaveValues = ["weekend", "holiday"];
 
-    if (!employee_id || employee_id <= 0) {
-      return fail(400, "Valid employee_id required");
-    }
-    if (!date) {
-      return fail(400, "date required");
-    }
+    // Basic validations
+    if (!employee_id || employee_id <= 0) return fail(400, "Valid employee_id required");
+    if (!date) return fail(400, "date required");
     const parsedDate = parseDate(date);
-    if (!parsedDate) {
-      return fail(400, "Invalid date");
-    }
-    if (isDateAfter(date, getCurrentDate())) {
-      return fail(400, "Future attendance not allowed");
-    }
-    if (!["attendance", "break"].includes(type)) {
-      return fail(400, "Invalid type");
-    }
-    if (type === "attendance" && !["present", "half_day", "absent", "leave"].includes(status)) {
+    if (!parsedDate) return fail(400, "Invalid date");
+    if (isDateAfter(date, getCurrentDate())) return fail(400, "Future attendance not allowed");
+    if (!["attendance", "break"].includes(type)) return fail(400, "Invalid type");
+    if (type === "attendance" && !["present", "half_day", "absent", "leave"].includes(status))
       return fail(400, "Invalid status");
-    }
-    if (start_time && !formatTime(start_time)) {
-      return fail(400, "Invalid start_time");
-    }
-    if (end_time && !formatTime(end_time)) {
-      return fail(400, "Invalid end_time");
-    }
+    if (start_time && !formatTime(start_time)) return fail(400, "Invalid start_time");
+    if (end_time && !formatTime(end_time)) return fail(400, "Invalid end_time");
 
+    // Fetch employee (with lock)
     const [[employee]] = await conn.query(
-      `SELECT
-         id,
-         company_id,
-         shift_start,
-         shift_end,
-         expected_work_minutes,
-         break_minutes,
-         grace_minutes,
-         weekends
+      `SELECT id, company_id, shift_start, shift_end, expected_work_minutes, break_minutes, grace_minutes, weekends
        FROM employees
-       WHERE id = ?
-         AND company_id = ?
-         AND is_deleted = 0
-         AND is_active = 1
-       LIMIT 1
-       FOR UPDATE`,
-      [employee_id, company_id],
+       WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+       LIMIT 1 FOR UPDATE`,
+      [employee_id, company_id]
     );
-    if (!employee) {
-      return fail(404, "Employee not found");
-    }
+    if (!employee) return fail(404, "Employee not found");
 
+    // Build the DB columns based on type/status
     let db_day_status = "present";
     let db_value1 = null;
     let db_value2 = null;
@@ -2405,60 +2394,35 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 
     if (type === "attendance") {
       if (status === "present") {
-        if (!start_time || !end_time) {
-          return fail(400, "start_time and end_time required");
-        }
-        if (diffMinutes(start_time, end_time) <= 0) {
-          return fail(400, "end_time must be greater than start_time");
-        }
+        if (!start_time || !end_time) return fail(400, "start_time and end_time required");
+        if (diffMinutes(start_time, end_time) <= 0) return fail(400, "end_time must be greater than start_time");
         db_day_status = "present";
-      }
-
-      if (status === "half_day") {
-        if (!start_time || !end_time) {
-          return fail(400, "start_time and end_time required");
-        }
-        if (diffMinutes(start_time, end_time) <= 0) {
-          return fail(400, "end_time must be greater than start_time");
-        }
-        if (!["first_half", "second_half"].includes(half_day_type)) {
-          return fail(400, "Invalid half_day_type");
-        }
+      } else if (status === "half_day") {
+        if (!start_time || !end_time) return fail(400, "start_time and end_time required");
+        if (diffMinutes(start_time, end_time) <= 0) return fail(400, "end_time must be greater than start_time");
+        if (!["first_half", "second_half"].includes(half_day_type)) return fail(400, "Invalid half_day_type");
 
         db_day_status = "half_day";
         db_value1 = half_day_type;
 
         const shiftStart = formatTime(employee.shift_start);
         const shiftEnd = formatTime(employee.shift_end);
-
         if (shiftStart && shiftEnd) {
           const totalShiftMinutes = diffMinutes(shiftStart, shiftEnd);
           const halfShiftMinutes = Math.floor(totalShiftMinutes / 2);
           const shiftMidTime = addMinutesToTime(shiftStart, halfShiftMinutes);
-
-          if (half_day_type === "first_half") {
-            if (!is_overtime && end_time > shiftMidTime) {
-              return fail(400, `For first_half, end_time must be before or equal to ${shiftMidTime} (unless overtime is set)`);
-            }
+          if (half_day_type === "first_half" && !is_overtime && end_time > shiftMidTime) {
+            return fail(400, `For first_half, end_time must be before or equal to ${shiftMidTime} (unless overtime is set)`);
           }
-
-          if (half_day_type === "second_half") {
-            if (!is_overtime && start_time < shiftMidTime) {
-              return fail(400, `For second_half, start_time must be after or equal to ${shiftMidTime} (unless overtime is set)`);
-            }
+          if (half_day_type === "second_half" && !is_overtime && start_time < shiftMidTime) {
+            return fail(400, `For second_half, start_time must be after or equal to ${shiftMidTime} (unless overtime is set)`);
           }
         }
-      }
-
-      if (status === "absent") {
+      } else if (status === "absent") {
         db_day_status = "absent";
-      }
-
-      if (status === "leave") {
+      } else if (status === "leave") {
         db_day_status = "leave";
-        if (!["paid", "unpaid"].includes(leave_type)) {
-          return fail(400, "leave_type must be paid or unpaid");
-        }
+        if (!["paid", "unpaid"].includes(leave_type)) return fail(400, "leave_type must be paid or unpaid");
         db_value1 = leave_type;
 
         if (typeof leave_day_overtime !== "undefined" && !isNaN(leave_day_overtime) && leave_day_overtime !== null) {
@@ -2469,22 +2433,14 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
         if (leave_type === "paid") {
           if (!staticPaidLeaveValues.includes(leave_type_value)) {
             const [leaveConfigs] = await conn.query(
-              `SELECT id
-               FROM leave_configs
-               WHERE company_id = ?
-                 AND code = ?
-                 AND is_paid = 1
-                 AND is_active = 1
-                 AND is_deleted = 0
+              `SELECT id FROM leave_configs
+               WHERE company_id = ? AND code = ? AND is_paid = 1 AND is_active = 1 AND is_deleted = 0
                LIMIT 1`,
-              [company_id, leave_type_value],
+              [company_id, leave_type_value]
             );
             if (!leaveConfigs.length) {
               await conn.rollback();
-              return res.status(400).json({
-                success: false,
-                message: "Invalid paid leave_type_value",
-              });
+              return res.status(400).json({ success: false, message: "Invalid paid leave_type_value" });
             }
           }
           db_value2 = leave_type_value;
@@ -2500,140 +2456,125 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
       db_value2 = null;
       db_value3 = null;
 
-      if (!start_time && !end_time) {
-        return fail(400, "start_time or end_time required");
-      }
-      if (start_time && end_time && diffMinutes(start_time, end_time) <= 0) {
+      if (!start_time && !end_time) return fail(400, "start_time or end_time required");
+      if (start_time && end_time && diffMinutes(start_time, end_time) <= 0)
         return fail(400, "end_time must be greater than start_time");
-      }
 
+      // Check for parent attendance
       const [[attendanceRow]] = await conn.query(
         `SELECT id, start_time, end_time, day_status
          FROM attendance
-         WHERE employee_id = ?
-           AND company_id = ?
-           AND attendance_date = ?
-           AND type = 'attendance'
-         ORDER BY id DESC
-         LIMIT 1
-         FOR UPDATE`,
-        [employee_id, company_id, date],
+         WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
+         ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+        [employee_id, company_id, date]
       );
-
-      if (!attendanceRow) {
-        return fail(400, "Attendance not found");
-      }
-      if (!["present", "half_day"].includes(attendanceRow.day_status)) {
+      if (!attendanceRow) return fail(400, "Attendance not found");
+      if (!["present", "half_day"].includes(attendanceRow.day_status))
         return fail(400, "Break allowed only for present/half_day");
-      }
 
       db_day_status = attendanceRow.day_status;
 
       const attendanceStart = formatTime(attendanceRow.start_time);
       const attendanceEnd = formatTime(attendanceRow.end_time);
 
-      if (start_time && attendanceStart && start_time < attendanceStart) {
+      // Existing checks
+      if (start_time && attendanceStart && start_time < attendanceStart)
         return fail(400, "Break before attendance start");
-      }
-      if (end_time && attendanceEnd && end_time > attendanceEnd) {
+      if (end_time && attendanceEnd && end_time > attendanceEnd)
         return fail(400, "Break exceeds attendance");
-      }
+
+      // ✅ NEW CHECK: Break start must not be after attendance end
+      if (start_time && attendanceEnd && start_time > attendanceEnd)
+        return fail(400, "Break starts after attendance end");
     }
 
+    // ---------------------- UPSERT LOGIC (FIXED) ----------------------
     let existing = null;
-    if (type === "attendance") {
+
+    if (attendance_id) {
       const [rows] = await conn.query(
-        `SELECT *
-         FROM attendance
-         WHERE employee_id = ?
-           AND company_id = ?
-           AND attendance_date = ?
-           AND type = 'attendance'
-         ORDER BY id DESC
-         LIMIT 1
-         FOR UPDATE`,
-        [employee_id, company_id, date],
+        `SELECT * FROM attendance WHERE id = ? AND employee_id = ? AND company_id = ? AND attendance_date = ? FOR UPDATE`,
+        [attendance_id, employee_id, company_id, date]
       );
       existing = rows?.[0] || null;
-    } else {
-      if (start_time) {
+      if (!existing) return fail(404, "Attendance/break record not found with given ID");
+      if (existing.type !== type) return fail(400, `Record type mismatch: expected ${type}, found ${existing.type}`);
+    }
+
+    if (!existing) {
+      if (type === "attendance") {
         const [rows] = await conn.query(
-          `SELECT *
-           FROM attendance
-           WHERE employee_id = ?
-             AND company_id = ?
-             AND attendance_date = ?
-             AND type = 'break'
-             AND start_time = ?
-           ORDER BY id DESC
-           LIMIT 1
-           FOR UPDATE`,
-          [employee_id, company_id, date, start_time],
+          `SELECT * FROM attendance
+           WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
+           ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+          [employee_id, company_id, date]
         );
         existing = rows?.[0] || null;
       } else {
-        const [rows] = await conn.query(
-          `SELECT *
-           FROM attendance
-           WHERE employee_id = ?
-             AND company_id = ?
-             AND attendance_date = ?
-             AND type = 'break'
-             AND end_time IS NULL
-           ORDER BY id DESC
-           LIMIT 1
-           FOR UPDATE`,
-          [employee_id, company_id, date],
-        );
-        const openBreak = rows?.[0];
-        if (!openBreak) {
-          return fail(400, "Open break not found");
+        if (start_time) {
+          const [rows] = await conn.query(
+            `SELECT * FROM attendance
+             WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND start_time = ?
+             ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+            [employee_id, company_id, date, start_time]
+          );
+          existing = rows?.[0] || null;
+        } else {
+          const [rows] = await conn.query(
+            `SELECT * FROM attendance
+             WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND end_time IS NULL
+             ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+            [employee_id, company_id, date]
+          );
+          const openBreak = rows?.[0];
+          if (!openBreak) return fail(400, "No open break found to update");
+          existing = openBreak;
+          start_time = formatTime(openBreak.start_time);
         }
-        existing = openBreak;
-        start_time = formatTime(openBreak.start_time);
       }
     }
 
     if (type === "break" && start_time) {
-      const [overlappingBreaks] = await conn.query(
-        `SELECT id
-         FROM attendance
-         WHERE employee_id = ?
-           AND company_id = ?
-           AND attendance_date = ?
-           AND type = 'break'
+      const [overlapping] = await conn.query(
+        `SELECT id FROM attendance
+         WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break'
            AND id != ?
-           AND (
-             start_time < ?
-             AND COALESCE(end_time, '23:59:59') > ?
-           )
+           AND (start_time < ? AND COALESCE(end_time, '23:59:59') > ?)
          LIMIT 1`,
-        [employee_id, company_id, date, existing?.id || 0, end_time || "23:59:59", start_time],
+        [employee_id, company_id, date, existing?.id || 0, end_time || "23:59:59", start_time]
       );
-      if (overlappingBreaks.length) {
-        return fail(400, "Break overlaps existing break");
-      }
+      if (overlapping.length) return fail(400, "Break overlaps existing break");
     }
 
-    let attendance_id;
+    // ---------------------- INSERT / UPDATE ----------------------
+    let attendance_id_final;
     if (existing) {
-      attendance_id = existing.id;
+      attendance_id_final = existing.id;
 
-      const updateFields = [`is_deductible = ?`, `is_overtime = ?`, `is_verified = 1`, `verified_by = ?`, `verify_date = UTC_TIMESTAMP()`, `day_status = ?`, `value1 = ?`, `value2 = ?`, `value3 = ?`, `remark = ?`];
+      const updateFields = [
+        "is_deductible = ?",
+        "is_overtime = ?",
+        "is_verified = 1",
+        "verified_by = ?",
+        "verify_date = UTC_TIMESTAMP()",
+        "day_status = ?",
+        "value1 = ?",
+        "value2 = ?",
+        "value3 = ?",
+        "remark = ?"
+      ];
       const updateValues = [is_deductible, is_overtime, user_id, db_day_status, db_value1, db_value2, db_value3, notes];
 
       if (type === "break" || ["present", "half_day"].includes(db_day_status)) {
-        updateFields.unshift(`start_time = ?`, `end_time = ?`);
+        updateFields.unshift("start_time = ?", "end_time = ?");
         updateValues.unshift(start_time, end_time);
       }
 
-      updateValues.push(attendance_id);
+      updateValues.push(attendance_id_final);
 
       await conn.query(
-        `UPDATE attendance
-         SET ${updateFields.join(",\n")}
-         WHERE id = ?`,
-        updateValues,
+        `UPDATE attendance SET ${updateFields.join(",\n")} WHERE id = ?`,
+        updateValues
       );
     } else {
       const [insertResult] = await conn.query(
@@ -2646,49 +2587,64 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
            day_status, value1, value2, value3,
            remark
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?)`,
-        [employee_id, company_id, date, type, start_time, end_time, is_deductible, is_overtime, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes],
+        [employee_id, company_id, date, type, start_time, end_time, is_deductible, is_overtime, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes]
       );
-      attendance_id = insertResult.insertId;
+      attendance_id_final = insertResult.insertId;
     }
 
+    // Logging
     const old_start_time = formatTime(existing?.start_time);
     const old_end_time = formatTime(existing?.end_time);
     const old_day_status = existing?.day_status;
 
     if (start_time && start_time !== old_start_time) {
-      await createAttendanceLog(conn, { attendance_id, log_type: "start", method: "manual", time: start_time, status: 1, created_by: user_id, updated_by: user_id });
+      await createAttendanceLog(conn, {
+        attendance_id: attendance_id_final,
+        log_type: "start",
+        method: "manual",
+        time: start_time,
+        status: 1,
+        created_by: user_id,
+        updated_by: user_id
+      });
     }
-
     if (end_time && end_time !== old_end_time) {
-      await createAttendanceLog(conn, { attendance_id, log_type: "end", method: "manual", time: end_time, status: 1, created_by: user_id, updated_by: user_id });
+      await createAttendanceLog(conn, {
+        attendance_id: attendance_id_final,
+        log_type: "end",
+        method: "manual",
+        time: end_time,
+        status: 1,
+        created_by: user_id,
+        updated_by: user_id
+      });
     }
 
     const extra_data = { day_status: db_day_status };
-    if (db_day_status === "half_day") {
-      extra_data.half_day_type = db_value1;
-    }
+    if (db_day_status === "half_day") extra_data.half_day_type = db_value1;
     if (db_day_status === "leave") {
       extra_data.leave_type = db_value1;
-      if (db_value2) {
-        extra_data.leave_type_value = db_value2;
-      }
+      if (db_value2) extra_data.leave_type_value = db_value2;
     }
-
     if (db_day_status && db_day_status !== old_day_status) {
-      await createAttendanceLog(conn, { attendance_id, log_type: "day_status", method: "manual", time: end_time || start_time || "00:00:00", extra_data, status: 1, created_by: user_id, updated_by: user_id });
+      await createAttendanceLog(conn, {
+        attendance_id: attendance_id_final,
+        log_type: "day_status",
+        method: "manual",
+        time: end_time || start_time || "00:00:00",
+        extra_data,
+        status: 1,
+        created_by: user_id,
+        updated_by: user_id
+      });
     }
 
-    const shift = await generateShift(conn, employee_id, company_id, date, user_id);
-
-    console.log("Generated shift:", shift);
+    // Recalculate shift & payroll
+    await generateShift(conn, employee_id, company_id, date, user_id);
 
     const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-
-    console.log("Existing payroll:", existingPayroll);
-
     if (existingPayroll) {
-      const upsert= await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
-      console.log("Payroll upserted:", upsert);
+      await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
     }
 
     await conn.commit();
@@ -2700,9 +2656,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     console.error("[ATTENDANCE_MARK_ERROR]", error);
     return sendError(res, 500, error.message || "Internal server error");
   } finally {
-    if (conn) {
-      conn.release();
-    }
+    if (conn) conn.release();
   }
 });
 
