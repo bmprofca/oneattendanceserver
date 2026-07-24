@@ -1379,6 +1379,8 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
         e.expected_work_minutes,
         e.break_minutes,
         e.grace_minutes,
+        e.enable_deduction,
+        e.enable_overtime,
         e.created_at,
         e.updated_at,
 
@@ -1528,6 +1530,8 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
         employment_type: getEnumObject(EMPLOYMENT_TYPES, emp.employment_type),
         salary_type: getEnumObject(SALARY_TYPES, emp.salary_type),
         break_minutes: emp.break_minutes || 0,
+        enable_overtime: Boolean(emp.enable_overtime),
+        enable_deduction: Boolean(emp.enable_deduction),
 
         profile_picture: buildFileUrl(emp.profile_picture),
 
@@ -2374,46 +2378,20 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       );
     }
 
-    if (
-      enable_overtime !== undefined
-    ) {
-      updateFields.push(
-        "enable_overtime=?"
-      );
-      updateValues.push(
-        toBoolean(enable_overtime)
-          ? 1
-          : 0
-      );
+    if (enable_overtime !== undefined) {
+      updateFields.push("enable_overtime=?");
+      updateValues.push(toBoolean(enable_overtime) ? 1 : 0);
     }
 
-    if (
-      enable_deduction !== undefined
-    ) {
-      updateFields.push(
-        "enable_deduction=?"
-      );
-      updateValues.push(
-        toBoolean(enable_deduction)
-          ? 1
-          : 0
-      );
+    if (enable_deduction !== undefined) {
+      updateFields.push("enable_deduction=?");
+      updateValues.push(toBoolean(enable_deduction) ? 1 : 0);
     }
 
-    if (
-      normalizedWeekends !== undefined
-    ) {
-
-      updateFields.push(
-        "weekends=?"
-      );
-
+    if (normalizedWeekends !== undefined) {
+      updateFields.push("weekends=?");
       updateValues.push(
-        normalizedWeekends.length
-          ? JSON.stringify(
-            normalizedWeekends
-          )
-          : null
+        normalizedWeekends.length ? JSON.stringify(normalizedWeekends) : null
       );
     }
 
