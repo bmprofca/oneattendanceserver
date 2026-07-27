@@ -1,5 +1,5 @@
-import "dotenv/config";
 import nodemailer from "nodemailer";
+import { SMTP_HOST, SMTP_PORT, EMAIL_USER, EMAIL_PASS } from "./config.js";
 
 let transporterInstance = null;
 
@@ -8,14 +8,14 @@ export const getTransporter = () => {
     return transporterInstance;
   }
 
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT);
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASS;
+  const host = SMTP_HOST;
+  const port = Number(SMTP_PORT);
+  const user = EMAIL_USER;
+  const pass = EMAIL_PASS;
 
   if (!host || !user || !pass) {
     throw new Error(
-      "SMTP is not configured. Set SMTP_HOST, SMTP_PORT, EMAIL_USER, and EMAIL_PASS in .env"
+      "SMTP is not configured. Set SMTP_HOST, SMTP_PORT, EMAIL_USER, and EMAIL_PASS in central config"
     );
   }
 
@@ -39,7 +39,7 @@ export const transporter = {
 
 export const getSender = (
   fromName = "OneAttendance",
-  fromEmail = process.env.EMAIL_USER
+  fromEmail = EMAIL_USER
 ) => `"${fromName}" <${fromEmail}>`;
 
 export const verifySmtpConnection = async () => {

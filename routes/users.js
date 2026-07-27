@@ -3,7 +3,8 @@ import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import { hashPassword, comparePassword, generateOTP, verifyOtpHash, } from "../utils/auth.js";
 import { queuePhoneUpdateOTPEmail, sendDeleteAccountOTPEmail, } from "../email/services/email.processor.js";
-import { sendEmailUpdateOTP } from "../utils/sendSMS.js";
+import { sendEmailUpdateOTP, sendOtpSms } from "../utils/sendSMS.js";
+import { sendOtpWhatsApp } from "../utils/whatsapp.js";
 import { saveMediaFromUrl, buildFileUrl } from "../utils/fileService.js";
 import getClientMeta from "../utils/ipHelper.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
@@ -559,6 +560,11 @@ router.post("/delete/request-otp", auth(), async (req, res) => {
       .catch((err) => {
         console.error("DELETE ACCOUNT OTP EMAIL ERROR:", err);
       });
+
+    if (user?.phone) {
+      sendOtpSms(user.phone, otp).catch(err => console.error("DELETE ACCOUNT OTP SMS ERROR:", err.message));
+      sendOtpWhatsApp(user.phone, otp).catch(err => console.error("DELETE ACCOUNT OTP WHATSAPP ERROR:", err.message));
+    }
 
     return res.json({
       success: true,
@@ -1392,6 +1398,19 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
     } catch (emailErr) {
       console.error("UPDATE PHONE OTP EMAIL QUEUE ERROR:", emailErr.message);
       return sendError(res, 500, "Failed to queue phone update OTP email");
+    }
+
+    if (normalizedPhone) {
+      try {
+        await sendOtpSms(normalizedPhone, otp);
+      } catch (smsErr) {
+        console.error("UPDATE PHONE OTP SMS ERROR:", smsErr.message);
+      }
+      try {
+        await sendOtpWhatsApp(normalizedPhone, otp);
+      } catch (waErr) {
+        console.error("UPDATE PHONE OTP WHATSAPP ERROR:", waErr.message);
+      }
     }
 
     if (NODE_ENV !== "production") {

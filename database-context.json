@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-07-24T16:32:34.419Z",
+  "generated_at": "2026-07-27T12:47:27.300Z",
   "database": "u278432002_oneattendance",
   "table_count": 32,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 266,
+      "estimated_rows": 283,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1008,
+      "estimated_rows": 1035,
       "comment": null,
       "columns": [
         {
@@ -2265,7 +2265,7 @@
     "employee_leaves": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -2758,7 +2758,7 @@
     "employee_leave_balances": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 28,
+      "estimated_rows": 31,
       "comment": null,
       "columns": [
         {
@@ -4115,7 +4115,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -6167,7 +6167,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 6,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {
@@ -7197,7 +7197,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 35,
+      "estimated_rows": 34,
       "comment": null,
       "columns": [
         {

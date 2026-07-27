@@ -1,16 +1,15 @@
-import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import routes from './routes/index.js';
 import "./cron/index.js";
 import path from "path";
+import { PORT, SMTP_HOST } from "./config/config.js";
 import { generateDatabaseContext } from "./config/generateDatabaseContext.js";
 import { verifySmtpConnection } from "./config/mail.config.js";
 import { triggerEmailQueue } from "./email/services/emailQueueWorker.js";
 
 
 const app = express();
-const PORT = process.env.PORT || 7736;
 
 app.use(cors({
   origin: true,
@@ -54,7 +53,7 @@ const startServer = async () => {
 
   try {
     await verifySmtpConnection();
-    console.log(`✅ SMTP ready (${process.env.SMTP_HOST})`);
+    console.log(`✅ SMTP ready (${SMTP_HOST})`);
   } catch (err) {
     console.error("❌ SMTP verification failed:", err.message);
   }

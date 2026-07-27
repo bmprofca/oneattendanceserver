@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import db from "./db.js";
+import { DB_NAME } from "./config.js";
 
 const OUTPUT_FILE = path.join(
   process.cwd(),
@@ -111,7 +112,7 @@ const buildTablesMap = (
 };
 
 export const generateDatabaseContext = async () => {
-  const database = process.env.DB_NAME;
+  const database = DB_NAME;
 
   if (!database) {
     throw new Error("DB_NAME is not set");

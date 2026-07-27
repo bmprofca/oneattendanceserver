@@ -14,11 +14,9 @@ import {
   queueSignupOTPEmail, queueLoginOTPEmail, queueForgotPasswordOTPEmail,
   sendQueuedWelcomeEmail, queueLoginAlertEmail
 } from "../email/services/email.processor.js";
-
-
-const router = express.Router();
-
-const {
+import { sendOtpSms } from "../utils/sms.js";
+import { sendOtpWhatsApp } from "../utils/whatsapp.js";
+import {
   WEB_GOOGLE_CLIENT_ID,
   APP_GOOGLE_CLIENT_ID,
   NODE_ENV,
@@ -26,7 +24,9 @@ const {
   FACEBOOK_APP_SECRET,
   FRONTEND_URL,
   TRUECALLER_CLIENT_ID
-} = process.env;
+} from "../config/config.js";
+
+const router = express.Router();
 
 if (!WEB_GOOGLE_CLIENT_ID) {
   throw new Error("WEB_GOOGLE_CLIENT_ID missing");
@@ -860,6 +860,17 @@ router.post("/signup/request-otp", async (req, res) => {
         console.error("SIGNUP OTP EMAIL QUEUE ERROR:", emailErr.message);
         return sendError(res, 500, "Failed to send signup OTP email");
       }
+    } else if (signupType === "phone" && normalizedPhone) {
+      try {
+        await sendOtpSms(normalizedPhone, otp);
+      } catch (smsErr) {
+        console.error("SIGNUP OTP SMS ERROR:", smsErr.message);
+      }
+      try {
+        await sendOtpWhatsApp(normalizedPhone, otp);
+      } catch (waErr) {
+        console.error("SIGNUP OTP WHATSAPP ERROR:", waErr.message);
+      }
     }
 
     const successMessage =
@@ -1328,6 +1339,20 @@ router.post("/login/request-otp", async (req, res) => {
       }
     }
 
+    const phoneTo = loginType === "phone" ? identifier : user.phone || null;
+    if (phoneTo) {
+      try {
+        await sendOtpSms(phoneTo, otp);
+      } catch (smsErr) {
+        console.error("LOGIN OTP SMS ERROR:", smsErr.message);
+      }
+      try {
+        await sendOtpWhatsApp(phoneTo, otp);
+      } catch (waErr) {
+        console.error("LOGIN OTP WHATSAPP ERROR:", waErr.message);
+      }
+    }
+
     if (process.env.NODE_ENV !== "production") {
       console.log(`🔐 LOGIN OTP for ${identifier}: ${otp}`);
     }
@@ -1680,7 +1705,7 @@ router.post("/forgot-password/request-otp", async (req, res) => {
       );
 
     if (!users.length) {
-      return sendSuccess(res, 200, `If this ${forgotType} is registered, an OTP has been sent`);
+      return sendError(res, 404, `User not found`);
     }
 
     const [[cooldown]] =
@@ -1813,6 +1838,19 @@ router.post("/forgot-password/request-otp", async (req, res) => {
       } catch (emailErr) {
         console.error("FORGOT PASSWORD OTP EMAIL QUEUE ERROR:", emailErr.message);
         return sendError(res, 500, "Failed to send forgot password OTP email");
+      }
+    } else if (forgotType === "phone" && identifier) {
+      try {
+        console.log("forget sms paass", identifier, otp)
+        await sendOtpSms(identifier, otp);
+      } catch (smsErr) {
+        console.error("FORGOT PASSWORD OTP SMS ERROR:", smsErr.message);
+      }
+      try {
+        console.log("forget wha paass", identifier, otp)
+        await sendOtpWhatsApp(identifier, otp);
+      } catch (waErr) {
+        console.error("FORGOT PASSWORD OTP WHATSAPP ERROR:", waErr.message);
       }
     }
 
