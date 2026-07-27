@@ -1,5 +1,5 @@
 import { sendOtpSms, isSmsConfigured } from './sms.js';
-import { NODE_ENV } from './config.js';
+import { NODE_ENV } from '../config/config.js';
 
 export { sendOtpSms, isSmsConfigured };
 

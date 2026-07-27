@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { ONECHATTING_SEND_URL, ONECHATTING_SEND_TOKEN } from './config.js';
+import { ONECHATTING_SEND_URL, ONECHATTING_SEND_TOKEN } from '../config/config.js';
 import { formatIndianMobileForSend } from './mobile.js';
 
 const templates = {

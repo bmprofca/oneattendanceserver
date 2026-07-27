@@ -5,7 +5,7 @@ import {
   FAST2SMS_SENDER_ID,
   FAST2SMS_URL,
   FAST2SMS_OTP_TEMPLATE,
-} from './config.js';
+} from '../config/config.js';
 import { formatIndianMobileForSend } from './mobile.js';
 
 export function isSmsConfigured() {

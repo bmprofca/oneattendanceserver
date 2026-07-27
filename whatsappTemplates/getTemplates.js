@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { ONECHATTING_TEMPLATE_TOKEN } from '../utils/config.js';
+import { ONECHATTING_TEMPLATE_TOKEN } from '../config/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
