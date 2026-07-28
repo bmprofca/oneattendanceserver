@@ -2,17 +2,39 @@ import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import {
-  toISTString, convertToISTFields, getYearFromDate, getDaysInMonth, eachDateBetween,
-  buildMonthDateRange, formatMinutes, formatToDate, normalizeWeekends, isWeekendDate, isDateAfter, isBeforeJoining,
-  isSameDate, getDayName, getCurrentDate, getISTNow, isDateBefore, formatTime12Hour,
+  getDaysInMonth,
+  eachDateBetween,
+  buildMonthDateRange,
+  normalizeWeekends,
+  isDateAfter,
+  isBeforeJoining,
+  getCurrentDate,
+  getISTNow,
+  isDateBefore,
+  parseDate,
+  weekendInfo,
+  formatIST
 } from "../utils/time.js";
-import { sendSuccess, sendError, safeNumber, toBoolean, buildMeta } from "../utils/sendResponse.js";
+import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
 import { SHIFT } from "../constants/permissions.js";
 
 const router = express.Router();
+
+// local helpers for functions removed from time.js
+const getYearFromDate = (date) => {
+  const d = parseDate(date);
+  return d ? d.year() : null;
+};
+
+const formatToDate = (date) => formatIST(date, "YYYY-MM-DD");
+
+// isWeekendDate replacement using new weekendInfo
+const isWeekendDate = ({ date, weekends = [] }) => {
+  return weekendInfo(date, weekends).is_weekend;
+};
 
 router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
   let conn;
@@ -166,7 +188,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
     holidayRows.forEach((row) => {
       holidayMap.set(formatToDate(row.date), {
         name: row.name,
-        is_optional: toBoolean(row.is_optional)
+        is_optional: row.is_optional == 1,
       });
     });
 
@@ -179,7 +201,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
           leaveMap.set(date, {
             code: row.code,
             name: row.name,
-            type: toBoolean(row.is_half_day) ? "half_day" : "full_day",
+            type: row.is_half_day == 1 ? "half_day" : "full_day",
             half_day_type: row.half_day_type || null
           });
         }
@@ -195,7 +217,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
       if (!attendanceMap.has(date)) {
         attendanceMap.set(date, {
           day_status: row.day_status,
-          is_approved: toBoolean(row.is_verified),
+          is_approved: row.is_verified == 1,
           verified_by: row.verified_by,
           activities: [],
           breaks: [],
@@ -243,7 +265,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
         day.worked_minutes += safeNumber(row.total_minutes);
       } else {
         day.breaks.push(...activity);
-        if (toBoolean(row.is_deductible)) {
+        if (row.is_deductible == 1) {
           day.break_minutes += safeNumber(row.total_minutes);
         }
       }
@@ -916,7 +938,7 @@ router.get("/employees-shifts", auth(SHIFT.MNG), async (req, res) => {
         designation: getEnumObject(DESIGNATIONS, emp.designation),
         employment_type: getEnumObject(EMPLOYMENT_TYPES, emp.employment_type),
         salary_type: getEnumObject(SALARY_TYPES, emp.salary_type),
-        status: toBoolean(emp.is_active) && String(emp.status).toLowerCase() === "active",
+        status: emp.is_active == 1 && String(emp.status).toLowerCase() === "active",
         joining_date: joiningDate,
         email: emp.email,
         phone: emp.phone,

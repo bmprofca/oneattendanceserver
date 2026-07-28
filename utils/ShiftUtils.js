@@ -1,17 +1,54 @@
 import {
-    isValidDate, normalizeHalfDayType, parseOvertimeValue, alignTimeToShift, shiftNextDayIfBefore,
+    parseDate, normalizeHalfDayType, parseOvertimeValue, alignTimeToShift, shiftNextDayIfBefore,
     diffMinutesBetween, formatDatetime, earliestDt, latestDt, buildShiftAnchor, buildMonthDateRange
 } from "./time.js";
 
 
-export const getShiftStats = async ({ conn, companyId, employeeId, fromDate, toDate }) => {
-    const [year, month] = String(fromDate).split("-").map(Number);
-    const { total_days: month_total_days } = buildMonthDateRange(year, month);
-
-    const [[stats]] = await conn.query(
-        `
+const EMPLOYEE_SHIFT_QUERY = `
     SELECT
-    COUNT(*) AS total_days,
+        e.id,
+        e.company_id,
+        e.shift_start,
+        e.shift_end,
+        e.expected_work_minutes,
+        e.break_minutes,
+        e.grace_minutes,
+        e.enable_overtime,
+        e.enable_deduction
+    FROM employees e
+    WHERE
+        e.id = ?
+        AND e.company_id = ?
+        AND e.is_active = 1
+        AND e.is_deleted = 0
+    LIMIT 1
+    FOR UPDATE
+`;
+
+const ATTENDANCE_QUERY = `
+    SELECT
+        a.id,
+        a.type,
+        a.start_time,
+        a.end_time,
+        a.is_deductible,
+        a.is_overtime,
+        a.day_status,
+        a.value1,
+        a.value2,
+        a.value3
+    FROM attendance a
+    WHERE
+        a.employee_id = ?
+        AND a.company_id = ?
+        AND a.attendance_date = ?
+    ORDER BY a.id ASC
+    FOR UPDATE
+`;
+
+const SHIFT_STATS_QUERY = `
+    SELECT
+        COUNT(*) AS total_days,
         SUM( CASE 
                 WHEN day_status = 'present' THEN 1 
                 WHEN day_status = 'half_day' THEN 1 
@@ -91,13 +128,19 @@ export const getShiftStats = async ({ conn, companyId, employeeId, fromDate, toD
         ) AS payable_work_minutes
 
     FROM shifts
-
     WHERE 
-    company_id = ? 
-    AND employee_id = ? 
-    AND shift_date BETWEEN ? AND ? 
-    AND is_deleted = 0
-    `,
+        company_id = ? 
+        AND employee_id = ? 
+        AND shift_date BETWEEN ? AND ? 
+        AND is_deleted = 0
+`;
+
+export const getShiftStats = async ({ conn, companyId, employeeId, fromDate, toDate }) => {
+    const [year, month] = String(fromDate).split("-").map(Number);
+    const { total_days: month_total_days } = buildMonthDateRange(year, month);
+
+    const [[stats]] = await conn.query(
+        SHIFT_STATS_QUERY,
         [companyId, employeeId, fromDate, toDate]
     );
 
@@ -157,66 +200,23 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
         throw new Error("Invalid modified_by");
     }
 
-    if (!isValidDate(date)) {
+    if (!parseDate(date)) {
         throw new Error("Invalid date");
     }
 
-    const [[employee]] = await conn.query(
-        `SELECT
-        e.id,
-        e.company_id,
-        e.shift_start,
-        e.shift_end,
-        e.expected_work_minutes,
-        e.break_minutes,
-        e.grace_minutes,
-        e.enable_overtime,
-        e.enable_deduction
-     FROM employees e
-     WHERE
-        e.id = ?
-        AND e.company_id = ?
-        AND e.is_active = 1
-        AND e.is_deleted = 0
-     LIMIT 1
-     FOR UPDATE`,
-        [eid, cid]
-    );
+    const [[employee]] = await conn.query(EMPLOYEE_SHIFT_QUERY, [eid, cid]);
 
     if (!employee) {
         throw new Error("Employee not found");
     }
 
-    const [attendanceRows] = await conn.query(
-        `SELECT
-        a.id,
-        a.type,
-        a.start_time,
-        a.end_time,
-        a.is_deductible,
-        a.is_overtime,
-        a.day_status,
-        a.value1,
-        a.value2,
-        a.value3
-     FROM attendance a
-     WHERE
-        a.employee_id = ?
-        AND a.company_id = ?
-        AND a.attendance_date = ?
-     ORDER BY a.id ASC
-     FOR UPDATE`,
-        [eid, cid, date]
-    );
+    const [attendanceRows] = await conn.query(ATTENDANCE_QUERY, [eid, cid, date]);
 
     const attendanceRow = attendanceRows.find(r => r.type === "attendance") || null;
-
     const breakRows = attendanceRows.filter(r => r.type === "break");
 
     const expectedWorkMinutes = Number(employee.expected_work_minutes) || 0;
-
     const allowedBreakMinutes = Number(employee.break_minutes) || 0;
-
     const graceMinutes = Number(employee.grace_minutes) || 0;
 
     let workedMinutes = 0;
@@ -240,86 +240,58 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
     if (attendanceRow) {
 
         dayStatus = attendanceRow.day_status || "present";
-
         value1 = attendanceRow.value1 || null;
-
         value2 = attendanceRow.value2 || null;
-
         isDeductible = Number(attendanceRow.is_deductible) || 0;
-
         isOvertime = Number(attendanceRow.is_overtime) || 0;
 
         const enableOvertime = Number(employee.enable_overtime) === 1;
         const enableDeduction = Number(employee.enable_deduction) === 1;
 
-        if (!enableOvertime) {
-            isOvertime = 0;
-        }
-
-        if (!enableDeduction) {
-            isDeductible = 0;
-        }
+        if (!enableOvertime) isOvertime = 0;
+        if (!enableDeduction) isDeductible = 0;
 
         const shiftStartDt = buildShiftAnchor(date, employee.shift_start);
-
         let shiftEndDt = buildShiftAnchor(date, employee.shift_end);
-
         shiftEndDt = shiftNextDayIfBefore(shiftEndDt, shiftStartDt);
 
         const attendanceStartDt = alignTimeToShift(date, attendanceRow.start_time, shiftStartDt);
-
         let attendanceEndDt = alignTimeToShift(date, attendanceRow.end_time, shiftStartDt);
-
         attendanceEndDt = shiftNextDayIfBefore(attendanceEndDt, attendanceStartDt);
 
         startTime = formatDatetime(attendanceStartDt);
-
         endTime = formatDatetime(attendanceEndDt);
 
         for (const br of breakRows) {
-
             const breakStartDt = alignTimeToShift(date, br.start_time, shiftStartDt);
-
             let breakEndDt = alignTimeToShift(date, br.end_time, shiftStartDt);
-
             breakEndDt = shiftNextDayIfBefore(breakEndDt, breakStartDt);
-
             breakMinutes += diffMinutesBetween(breakStartDt, breakEndDt);
-
         }
 
         if (attendanceStartDt && attendanceEndDt && dayStatus !== "absent" && dayStatus !== "leave") {
 
             const actualStart = earliestDt([attendanceStartDt]);
-
             const actualEnd = latestDt([attendanceEndDt]);
-
             const presenceMinutes = diffMinutesBetween(actualStart, actualEnd);
-
             const rawWorkedMinutes = Math.max(0, presenceMinutes - breakMinutes);
-
             const paidBreakMinutes = Math.min(breakMinutes, allowedBreakMinutes);
-
             const effectiveWorkedMinutes = rawWorkedMinutes + paidBreakMinutes;
             extraBreakMinutes = Math.max(0, breakMinutes - allowedBreakMinutes);
 
             if (actualStart && shiftStartDt) {
                 lateMinutes = Math.max(0, actualStart.diff(shiftStartDt, "minute"));
             }
-
             if (actualEnd && shiftEndDt) {
                 earlyLeaveMinutes = Math.max(0, shiftEndDt.diff(actualEnd, "minute"));
             }
 
             let requiredMinutes = expectedWorkMinutes;
-
             let overtimeThreshold = expectedWorkMinutes + graceMinutes;
 
             if (dayStatus === "half_day") {
-
                 requiredMinutes = Math.floor(expectedWorkMinutes / 2);
                 overtimeThreshold = requiredMinutes + graceMinutes;
-
                 value1 = normalizeHalfDayType(value1);
                 value2 = null;
             }
@@ -340,14 +312,12 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
         }
 
         if (dayStatus === "leave") {
-
             workedMinutes = 0;
             breakMinutes = 0;
             extraBreakMinutes = 0;
             earlyLeaveMinutes = 0;
             lateMinutes = 0;
             deductibleMinutes = 0;
-
             startTime = null;
             endTime = null;
 
@@ -366,10 +336,8 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
             lateMinutes = 0;
             overtimeMinutes = 0;
             deductibleMinutes = 0;
-
             startTime = null;
             endTime = null;
-
             value1 = null;
             value2 = null;
         }
@@ -377,54 +345,54 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
 
     await conn.query(
         `INSERT INTO shifts (
-        company_id,
-        employee_id,
-        shift_date,
-        start_time,
-        end_time,
-        expected_work_minutes,
-        worked_minutes,
-        allowed_break_minutes,
-        extra_break_minutes,
-        early_leave_minutes,
-        late_minutes,
-        overtime_minutes,
-        deductible_minutes,
-        is_deductible,
-        is_overtime,
-        day_status,
-        value1,
-        value2,
-        created_by,
-        updated_by
-     ) VALUES (
-        ?, ?, ?,
-        ?, ?,
-        ?, ?, ?,
-        ?, ?, ?,
-        ?, ?,
-        ?, ?,
-        ?, ?, ?,
-        ?, ?
-     )
-     ON DUPLICATE KEY UPDATE
-        start_time = VALUES(start_time),
-        end_time = VALUES(end_time),
-        expected_work_minutes = VALUES(expected_work_minutes),
-        worked_minutes = VALUES(worked_minutes),
-        allowed_break_minutes = VALUES(allowed_break_minutes),
-        extra_break_minutes = VALUES(extra_break_minutes),
-        early_leave_minutes = VALUES(early_leave_minutes),
-        late_minutes = VALUES(late_minutes),
-        overtime_minutes = VALUES(overtime_minutes),
-        deductible_minutes = VALUES(deductible_minutes),
-        is_deductible = VALUES(is_deductible),
-        is_overtime = VALUES(is_overtime),
-        day_status = VALUES(day_status),
-        value1 = VALUES(value1),
-        value2 = VALUES(value2),
-        updated_by = VALUES(updated_by),
-        updated_at = CURRENT_TIMESTAMP`,
+            company_id,
+            employee_id,
+            shift_date,
+            start_time,
+            end_time,
+            expected_work_minutes,
+            worked_minutes,
+            allowed_break_minutes,
+            extra_break_minutes,
+            early_leave_minutes,
+            late_minutes,
+            overtime_minutes,
+            deductible_minutes,
+            is_deductible,
+            is_overtime,
+            day_status,
+            value1,
+            value2,
+            created_by,
+            updated_by
+        ) VALUES (
+            ?, ?, ?,
+            ?, ?,
+            ?, ?, ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?, ?,
+            ?, ?
+        )
+        ON DUPLICATE KEY UPDATE
+            start_time = VALUES(start_time),
+            end_time = VALUES(end_time),
+            expected_work_minutes = VALUES(expected_work_minutes),
+            worked_minutes = VALUES(worked_minutes),
+            allowed_break_minutes = VALUES(allowed_break_minutes),
+            extra_break_minutes = VALUES(extra_break_minutes),
+            early_leave_minutes = VALUES(early_leave_minutes),
+            late_minutes = VALUES(late_minutes),
+            overtime_minutes = VALUES(overtime_minutes),
+            deductible_minutes = VALUES(deductible_minutes),
+            is_deductible = VALUES(is_deductible),
+            is_overtime = VALUES(is_overtime),
+            day_status = VALUES(day_status),
+            value1 = VALUES(value1),
+            value2 = VALUES(value2),
+            updated_by = VALUES(updated_by),
+            updated_at = CURRENT_TIMESTAMP`,
         [
             cid,
             eid,
@@ -464,5 +432,4 @@ export async function generateShift(conn, employee_id, company_id, date, modifie
             deductible_minutes: deductibleMinutes
         }
     };
-
 }

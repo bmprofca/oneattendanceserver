@@ -1,6 +1,6 @@
 import axios from "axios";
 import { buildFileUrl } from "./fileService.js";
-import { safeNumber, toBoolean } from "./sendResponse.js";
+import { safeNumber } from "./sendResponse.js";
 
 export const FACE_SERVICE_URL = (process.env.FACE_SERVICE_URL || "http://localhost:8000").replace(
   /\/$/,
@@ -71,8 +71,7 @@ export async function runFaceCheck(conn, { companyId, imageUrl, employeeId = 0 }
       };
     }
 
-    const enrolled =
-      toBoolean(employee.face_enrolled) && Boolean(employee.face_data);
+    const enrolled = employee.face_enrolled === 1 && Boolean(employee.face_data);
     if (!enrolled) {
       return {
         success: false,

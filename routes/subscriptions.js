@@ -4,15 +4,21 @@ import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import {
-    getISTNow, parseISTDateTime, toISTString, isDateTimeBefore, isDateTimeAfter,
-    isDateTimeSame, getDateTimeDiffDays,
+    getISTNow,
+    parseISTDateTime,
+    formatIST,
+    isDateTimeBefore,
+    isDateTimeAfter,
+    isDateTimeSame,
+    getDateTimeDiffDays,
 } from "../utils/time.js";
 import { buildFileUrl } from "../utils/fileService.js";
-
 import axios from "axios";
 
-
 const router = express.Router();
+
+// Alias for backward compatibility
+const toISTString = (date) => formatIST(date);
 
 const ALLOWED_PACKAGE_PERIODS = [
     "monthly",
@@ -100,7 +106,6 @@ async function createZwitchPaymentToken({
 
     console.log(data);
 
-
     if (data?.status !== "created" || !data?.id) {
         throw new Error(data?.message || "Failed to create payment token.");
     }
@@ -151,19 +156,15 @@ async function createCompanySubscription(
     let expiresAt = startsAt.clone();
 
     switch (package_period) {
-
         case "monthly":
             expiresAt = expiresAt.add(1, "month");
             break;
-
         case "quarterly":
             expiresAt = expiresAt.add(3, "month");
             break;
-
         case "half_yearly":
             expiresAt = expiresAt.add(6, "month");
             break;
-
         case "yearly":
             expiresAt = expiresAt.add(1, "year");
             break;
@@ -223,7 +224,6 @@ router.get("/packages", auth(), async (req, res) => {
                 sp.half_yearly_price,
                 sp.yearly_price,
                 sp.accept_periods
-
             FROM subscription_packages sp
             WHERE sp.is_active = 1
               AND sp.is_deleted = 0
@@ -414,7 +414,6 @@ router.post("/purchase-subscription", auth(), async (req, res) => {
                 [user_id]
             ));
 
-
             const profileError = validateOwnerProfile(ownerRows[0]);
 
             if (profileError) {
@@ -578,18 +577,13 @@ router.get("/details", auth(), async (req, res) => {
                 cs.starts_at,
                 cs.expires_at,
                 cs.payment_reference,
-
                 sp.name AS package_name
-
             FROM company_subscriptions cs
-
             INNER JOIN subscription_packages sp
                 ON sp.id = cs.subscription_package_id
                AND sp.is_deleted = 0
-
             WHERE cs.company_id = ?
               AND cs.is_deleted = 0
-
             ORDER BY cs.starts_at ASC
             `,
             [company_id]

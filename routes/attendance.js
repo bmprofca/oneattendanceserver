@@ -5,9 +5,35 @@ import { validateFields, punchTypeValidation, attendanceMethodValidation, getEnu
 import { PUNCH_TYPES, ATTENDANCE_METHODS, DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
 import getClientMeta from "../utils/ipHelper.js";
 import checkPermission from "../middleware/permissionValidationMiddleware.js";
-import { isValidTimeRange, parseDate, isDateAfter, isDateBefore, addMinutesToTime, isValidDate, getISTNow, getCurrentDate, getCurrentTime, toISTDateTime, getWeekendDetails, toDateTime, formatTime12Hour, getDayName, normalizeWeekends, diffMinutes, formatTime, normalizeHalfDayType, parseOvertimeValue, diffMilliseconds, parseAttendanceDateTime, buildShiftAnchor, alignTimeToShift, shiftNextDayIfBefore, diffMinutesBetween, formatDatetime, earliestDt, latestDt } from "../utils/time.js";
+import {
+  isValidTimeRange,
+  parseDate,
+  isDateAfter,
+  isDateBefore,
+  addMinutesToTime,
+  getISTNow,
+  getCurrentDate,
+  getCurrentTime,
+  parseDateTimeIST,
+  weekendInfo,
+  formatTime12Hour,
+  getDayName,
+  normalizeWeekends,
+  diffMinutes,
+  normalizeHalfDayType,
+  parseOvertimeValue,
+  diffMilliseconds,
+  buildShiftAnchor,
+  alignTimeToShift,
+  shiftNextDayIfBefore,
+  diffMinutesBetween,
+  formatDatetime,
+  earliestDt,
+  latestDt,
+  parseTime
+} from "../utils/time.js";
 import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
-import { sendSuccess, sendError, safeNumber, toBoolean, buildMeta } from "../utils/sendResponse.js";
+import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { createAttendanceLog } from "../utils/attendanceLogsUtil.js";
 import { AT } from "../constants/permissions.js";
@@ -19,6 +45,9 @@ import { runFaceCheck, FACE_SERVICE_URL } from "../utils/faceCheckUtil.js";
 const FACE_ATTENDANCE_METHOD = "face";
 
 const router = express.Router();
+
+// local helper for isValidDate (not in new time.js)
+const isValidDate = (value) => !!parseDate(value);
 
 function getDistanceInMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3;
@@ -251,7 +280,7 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     let day_status = "present";
 
-    const weekendStatus = getWeekendDetails(attendance_date, employee.weekends);
+    const weekendStatus = weekendInfo(attendance_date, employee.weekends);
 
     if (weekendStatus?.isWeekend) {
       throw new Error("Today is a weekend");
@@ -1193,6 +1222,7 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
   }
 });
 
+// Helper to normalize face attendance type string
 const normalizeFaceAttendanceType = (raw) => {
   const key = String(raw || "").trim().toLowerCase().replace(/_/g, " ").replace(/-/g, " ");
 
@@ -1296,8 +1326,8 @@ const validateFaceAttendanceType = async (conn, company_id, employee_id, weekend
       };
     }
 
-    const weekendStatus = getWeekendDetails(attendance_date, weekends);
-    if (weekendStatus?.isWeekend) {
+    const weekendStatus = weekendInfo(attendance_date, weekends);
+    if (weekendStatus?.is_weekend) {
       return {
         ok: false,
         message: "Punch-in is not allowed. Today is marked as a weekend for this employee.",
@@ -1504,7 +1534,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
       [employee.id, company_id],
     );
 
-    if (!faceRow || !toBoolean(faceRow.face_enrolled) || !faceRow.face_data) {
+    if (!faceRow || Number(faceRow.face_enrolled) !== 1 || !faceRow.face_data) {
       return sendError(res, 400, "Face enrollment is not set for this employee", faceResult.responseData);
     }
 
@@ -1602,7 +1632,7 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
       [employee_id, company_id],
     );
 
-    if (!faceRow || !toBoolean(faceRow.face_enrolled) || !faceRow.face_data) {
+    if (!faceRow || Number(faceRow.face_enrolled) !== 1 || !faceRow.face_data) {
       return await fail(400, "Face enrollment is not set for this employee");
     }
 
@@ -1989,15 +2019,13 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
 
   const normalizeTime = (value) => {
     if (!value) return null;
-    if (typeof value === "string") {
-      return value.length >= 8 ? value.slice(0, 8) : value;
-    }
-    return value;
+    const parsed = parseTime(value, "HH:mm:ss");
+    return parsed || null;
   };
 
   const timeToMinutes = (time) => {
-    const [hours, minutes, seconds = 0] = time.split(":").map(Number);
-    return hours * 60 + minutes + Math.floor(seconds / 60);
+    const parts = String(time || "00:00:00").split(":").map(Number);
+    return parts[0] * 60 + (parts[1] || 0) + Math.floor((parts[2] || 0) / 60);
   };
 
   const minutesToTime = (minutes) => {
@@ -2353,14 +2381,14 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     date = String(date || "").trim();
     type = String(type || "").trim().toLowerCase();
     status = String(status || "").trim().toLowerCase();
-    start_time = formatTime(start_time);
-    end_time = formatTime(end_time);
+    start_time = parseTime(start_time, "HH:mm:ss");
+    end_time = parseTime(end_time, "HH:mm:ss");
     half_day_type = normalizeHalfDayType(half_day_type ? String(half_day_type).trim().toLowerCase() : null);
     leave_type = leave_type ? String(leave_type).trim().toLowerCase() : null;
     leave_type_value = leave_type_value ? String(leave_type_value).trim().toLowerCase() : null;
     notes = notes ? String(notes).trim() : null;
-    is_deductible = toBoolean(is_deductible);
-    is_overtime = toBoolean(is_overtime);
+    is_deductible = Number(is_deductible) === 1;
+    is_overtime = Number(is_overtime) === 1;
 
     const staticPaidLeaveValues = ["weekend", "holiday"];
 
@@ -2373,8 +2401,8 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     if (!["attendance", "break"].includes(type)) return fail(400, "Invalid type");
     if (type === "attendance" && !["present", "half_day", "absent", "leave"].includes(status))
       return fail(400, "Invalid status");
-    if (start_time && !formatTime(start_time)) return fail(400, "Invalid start_time");
-    if (end_time && !formatTime(end_time)) return fail(400, "Invalid end_time");
+    if (start_time && !parseTime(start_time)) return fail(400, "Invalid start_time");
+    if (end_time && !parseTime(end_time)) return fail(400, "Invalid end_time");
 
     // Fetch employee (with lock)
     const [[employee]] = await conn.query(
@@ -2405,8 +2433,8 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
         db_day_status = "half_day";
         db_value1 = half_day_type;
 
-        const shiftStart = formatTime(employee.shift_start);
-        const shiftEnd = formatTime(employee.shift_end);
+        const shiftStart = parseTime(employee.shift_start, "HH:mm:ss");
+        const shiftEnd = parseTime(employee.shift_end, "HH:mm:ss");
         if (shiftStart && shiftEnd) {
           const totalShiftMinutes = diffMinutes(shiftStart, shiftEnd);
           const halfShiftMinutes = Math.floor(totalShiftMinutes / 2);
@@ -2474,21 +2502,18 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 
       db_day_status = attendanceRow.day_status;
 
-      const attendanceStart = formatTime(attendanceRow.start_time);
-      const attendanceEnd = formatTime(attendanceRow.end_time);
+      const attendanceStart = parseTime(attendanceRow.start_time, "HH:mm:ss");
+      const attendanceEnd = parseTime(attendanceRow.end_time, "HH:mm:ss");
 
-      // Existing checks
       if (start_time && attendanceStart && start_time < attendanceStart)
         return fail(400, "Break before attendance start");
       if (end_time && attendanceEnd && end_time > attendanceEnd)
         return fail(400, "Break exceeds attendance");
-
-      // ✅ NEW CHECK: Break start must not be after attendance end
       if (start_time && attendanceEnd && start_time > attendanceEnd)
         return fail(400, "Break starts after attendance end");
     }
 
-    // ---------------------- UPSERT LOGIC (FIXED) ----------------------
+    // ---------------------- UPSERT LOGIC ----------------------
     let existing = null;
 
     if (attendance_id) {
@@ -2529,7 +2554,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
           const openBreak = rows?.[0];
           if (!openBreak) return fail(400, "No open break found to update");
           existing = openBreak;
-          start_time = formatTime(openBreak.start_time);
+          start_time = parseTime(openBreak.start_time, "HH:mm:ss");
         }
       }
     }
@@ -2563,7 +2588,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
         "value3 = ?",
         "remark = ?"
       ];
-      const updateValues = [is_deductible, is_overtime, user_id, db_day_status, db_value1, db_value2, db_value3, notes];
+      const updateValues = [is_deductible ? 1 : 0, is_overtime ? 1 : 0, user_id, db_day_status, db_value1, db_value2, db_value3, notes];
 
       if (type === "break" || ["present", "half_day"].includes(db_day_status)) {
         updateFields.unshift("start_time = ?", "end_time = ?");
@@ -2587,14 +2612,14 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
            day_status, value1, value2, value3,
            remark
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?)`,
-        [employee_id, company_id, date, type, start_time, end_time, is_deductible, is_overtime, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes]
+        [employee_id, company_id, date, type, start_time, end_time, is_deductible ? 1 : 0, is_overtime ? 1 : 0, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes]
       );
       attendance_id_final = insertResult.insertId;
     }
 
     // Logging
-    const old_start_time = formatTime(existing?.start_time);
-    const old_end_time = formatTime(existing?.end_time);
+    const old_start_time = parseTime(existing?.start_time, "HH:mm:ss");
+    const old_end_time = parseTime(existing?.end_time, "HH:mm:ss");
     const old_day_status = existing?.day_status;
 
     if (start_time && start_time !== old_start_time) {
@@ -2797,9 +2822,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
     const query = `
       SELECT
-        -- =========================================
-        -- ATTENDANCE
-        -- =========================================
         a.id,
         a.employee_id,
         a.type,
@@ -2812,10 +2834,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         a.is_overtime,
         a.is_deductible,
         a.remark,
-
-        -- =========================================
-        -- SHIFT TABLE
-        -- =========================================
         s.id AS shift_id,
         s.worked_minutes,
         s.allowed_break_minutes AS actual_break_minutes,
@@ -2823,18 +2841,10 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         s.late_minutes,
         s.early_leave_minutes,
         s.overtime_minutes,
-
-        -- =========================================
-        -- START LOG
-        -- =========================================
         ls.method AS start_method,
         ls.ip_address AS start_ip,
         ls.latitude AS start_lat,
         ls.longitude AS start_lng,
-
-        -- =========================================
-        -- END LOG
-        -- =========================================
         le.method AS end_method,
         le.ip_address AS end_ip,
         le.latitude AS end_lat,
@@ -2842,9 +2852,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
       FROM attendance a
 
-      -- =========================================
-      -- VERIFIED SHIFT
-      -- =========================================
       LEFT JOIN shifts s
         ON s.employee_id = a.employee_id
         AND s.company_id = a.company_id
@@ -2852,9 +2859,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         AND s.is_deleted = 0
         AND s.is_active = 1
 
-      -- =========================================
-      -- LATEST START LOG
-      -- =========================================
       LEFT JOIN attendance_logs ls
         ON ls.id = (
           SELECT l1.id
@@ -2866,9 +2870,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
           LIMIT 1
         )
 
-      -- =========================================
-      -- LATEST END LOG
-      -- =========================================
       LEFT JOIN attendance_logs le
         ON le.id = (
           SELECT l2.id
@@ -2896,17 +2897,14 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       if (!time) {
         return null;
       }
-
-      const [h, m] = String(time).split(":").map(Number);
-
-      return h * 60 + m;
+      const parts = String(time).split(":").map(Number);
+      return parts[0] * 60 + (parts[1] || 0);
     };
 
     const calculateMinutes = (start, end) => {
       if (!start || !end) {
         return 0;
       }
-
       return Math.max(0, timeToMinutes(end) - timeToMinutes(start));
     };
 
@@ -2914,7 +2912,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       if (!time) {
         return null;
       }
-
       return {
         time,
         method: method || null,
@@ -2928,7 +2925,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       const isBreak = r.type === "break";
 
       const startPunch = buildPunchObject(r.start_time, r.start_method, r.start_lat, r.start_lng, r.start_ip);
-
       const endPunch = buildPunchObject(r.end_time, r.end_method, r.end_lat, r.end_lng, r.end_ip);
 
       let calculations = {
@@ -2951,25 +2947,18 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         };
       } else {
         const workedMinutes = calculateMinutes(r.start_time, r.end_time);
-
         let lateMinutes = 0;
-
         if (employee.shift_start && r.start_time) {
           lateMinutes = Math.max(0, calculateMinutes(employee.shift_start, r.start_time) - Number(employee.grace_minutes || 0));
         }
-
         let earlyLeaveMinutes = 0;
-
         if (employee.shift_end && r.end_time) {
           earlyLeaveMinutes = Math.max(0, calculateMinutes(r.end_time, employee.shift_end));
         }
-
         let overtimeMinutes = 0;
-
         if (workedMinutes > Number(employee.expected_work_minutes || 0)) {
           overtimeMinutes = workedMinutes - Number(employee.expected_work_minutes || 0);
         }
-
         calculations = {
           worked_minutes: workedMinutes,
           break_minutes: Number(employee.break_minutes || 0),
@@ -3007,11 +2996,9 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
       if (!isBreak) {
         response.punch_in = startPunch;
-
         response.punch_out = endPunch;
       } else {
         response.break_start = startPunch;
-
         response.break_end = endPunch;
       }
 
@@ -3356,12 +3343,12 @@ router.get("/current-status", auth(), async (req, res) => {
         continue;
       }
 
-      const start = parseAttendanceDateTime(today, row.start_time);
+      const start = parseDateTimeIST(today, row.start_time);
 
       let end = null;
 
       if (row.end_time) {
-        end = parseAttendanceDateTime(today, row.end_time);
+        end = parseDateTimeIST(today, row.end_time);
       } else {
         end = now;
         isWorking = true;
@@ -3379,12 +3366,12 @@ router.get("/current-status", auth(), async (req, res) => {
         continue;
       }
 
-      const start = parseAttendanceDateTime(today, row.start_time);
+      const start = parseDateTimeIST(today, row.start_time);
 
       let end = null;
 
       if (row.end_time) {
-        end = parseAttendanceDateTime(today, row.end_time);
+        end = parseDateTimeIST(today, row.end_time);
       } else {
         end = now;
         isOnBreak = true;
@@ -4102,7 +4089,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
             type: "break",
             attendance_date: breakRow.attendance_date,
             day_status: normalizeDayStatus(breakRow.day_status || "unmarked"),
-            is_verified: toBoolean(breakRow.is_verified),
+            is_verified: Number(breakRow.is_verified) === 1,
             is_deductible: false,
             is_overtime: false,
             remark: breakRow.remark || null,
@@ -4151,7 +4138,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
             const extraBreakMinutes = Math.max(0, totalBreakMinutes - allowedBreakMinutes);
             const effectiveWorkMinutes = Math.max(0, attendanceDuration - extraBreakMinutes);
 
-            if (toBoolean(attendanceRow.is_overtime)) {
+            if (Number(attendanceRow.is_overtime) === 1) {
               const overtimeThreshold = expectedWorkMinutes + graceMinutes;
               if (effectiveWorkMinutes > overtimeThreshold) {
                 calculations.overtime_minutes = effectiveWorkMinutes - expectedWorkMinutes;
@@ -4160,7 +4147,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
               }
             }
 
-            if (toBoolean(attendanceRow.is_deductible)) {
+            if (Number(attendanceRow.is_deductible) === 1) {
               const shortfall = expectedWorkMinutes - effectiveWorkMinutes;
               if (shortfall > 0) {
                 calculations.deductible_minutes = shortfall;
@@ -4175,7 +4162,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
             const extraBreakMinutes = Math.max(0, totalBreakMinutes - allowedBreakMinutes);
             const effectiveWorkMinutes = Math.max(0, attendanceDuration - extraBreakMinutes);
 
-            if (toBoolean(attendanceRow.is_overtime)) {
+            if (Number(attendanceRow.is_overtime) === 1) {
               const overtimeThreshold = halfExpected + graceMinutes;
               if (effectiveWorkMinutes > overtimeThreshold) {
                 calculations.overtime_minutes = effectiveWorkMinutes - halfExpected;
@@ -4184,7 +4171,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
               }
             }
 
-            if (toBoolean(attendanceRow.is_deductible)) {
+            if (Number(attendanceRow.is_deductible) === 1) {
               const shortfall = halfExpected - effectiveWorkMinutes;
               if (shortfall > 0) {
                 calculations.deductible_minutes = shortfall;
@@ -4193,7 +4180,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
 
             calculations.worked_minutes = effectiveWorkMinutes;
           } else if (finalDayStatus === "leave") {
-            if (toBoolean(attendanceRow.is_overtime) && attendanceRow.value3 != null) {
+            if (Number(attendanceRow.is_overtime) === 1 && attendanceRow.value3 != null) {
               const numericOT = safeNumber(attendanceRow.value3, null);
               if (numericOT !== null && numericOT > 0) {
                 calculations.overtime_minutes = numericOT;
@@ -4220,9 +4207,9 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
               value1: finalValue1,
               value2: finalValue2,
             }),
-            is_verified: toBoolean(attendanceRow.is_verified),
-            is_deductible: toBoolean(attendanceRow.is_deductible),
-            is_overtime: toBoolean(attendanceRow.is_overtime),
+            is_verified: Number(attendanceRow.is_verified) === 1,
+            is_deductible: Number(attendanceRow.is_deductible) === 1,
+            is_overtime: Number(attendanceRow.is_overtime) === 1,
             remark: attendanceRow.remark || null,
             punch_out: finalEndPayload,
             punch_in: finalStartPayload,
@@ -4426,7 +4413,6 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     const [[attendanceStats]] = await conn.query(
       `
         SELECT
-
           COUNT(
             DISTINCT CASE
               WHEN a.day_status IN (
@@ -4514,7 +4500,6 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     const [[shiftStats]] = await conn.query(
       `
         SELECT
-
           COUNT(*) AS total_shifts,
           SUM(
             worked_minutes
@@ -4609,7 +4594,6 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     const [[holidayStats]] = await conn.query(
       `
         SELECT
-
           COUNT(*) AS total_holidays,
           SUM(
             CASE

@@ -1,5 +1,5 @@
 import { generatePdfFromHtml } from "./pdfGenerator.js";
-import { parseISTDateTime, formatTime12Hour, formatTime } from "../utils/time.js";
+import { parseISTDateTime, formatTime12Hour } from "../utils/time.js";
 
 const formatPeriod = (value) => {
   if (!value) return "-";
