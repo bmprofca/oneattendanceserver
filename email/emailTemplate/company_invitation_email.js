@@ -1,40 +1,39 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
 import { EMAIL_USER } from "../../config/config.js";
+import { formatIST, formatTime12Hour } from "../../utils/time.js";
 
 
 const valueOrDash = (value) => value ?? "-";
 
 const formatDate = (value) => {
     if (!value) return "-";
-    return new Intl.DateTimeFormat("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-    }).format(new Date(value));
+    // formatIST returns null for invalid dates; fallback to "-"
+    return formatIST(value, "DD MMM YYYY") || "-";
 };
 
 const formatMinutes = (minutes) => {
     if (minutes === null || minutes === undefined || minutes === "") return "-";
     const total = Number(minutes);
-    if (Number.isNaN(total)) return minutes;
+    if (Number.isNaN(total)) return minutes; // fallback to raw value
+
     const hours = Math.floor(total / 60);
     const mins = total % 60;
-    return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+
+    if (hours === 0) {
+        return `${mins} min`;
+    }
+    if (mins === 0) {
+        return `${hours} hr`;
+    }
+    return `${hours} hr ${mins} min`;
 };
 
 const formatTime12h = (timeStr) => {
     if (!timeStr) return "-";
-    try {
-        const [hoursStr, minutesStr] = timeStr.split(":");
-        let hours = parseInt(hoursStr, 10);
-        const minutes = parseInt(minutesStr || "0", 10);
-        const ampm = hours >= 12 ? "PM" : "AM";
-        hours = hours % 12 || 12; 
-        return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${ampm}`;
-    } catch {
-        return timeStr; 
-    }
+    // time.js formatTime12Hour returns null when parsing fails
+    const formatted = formatTime12Hour(timeStr);
+    return formatted ?? timeStr; // fallback to raw value if invalid
 };
 
 const formatWeekends = (weekends) => {

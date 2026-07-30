@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { apiReference } from '@scalar/express-api-reference';
 import routes from './routes/index.js';
 import "./cron/index.js";
 import path from "path";
@@ -7,7 +8,8 @@ import { PORT, SMTP_HOST } from "./config/config.js";
 import { generateDatabaseContext } from "./config/generateDatabaseContext.js";
 import { verifySmtpConnection } from "./config/mail.config.js";
 import { triggerEmailQueue } from "./email/services/emailQueueWorker.js";
-
+import openApiSpec from './docs/openapi.js';
+import { scalarApiReferenceConfig } from './docs/scalar.js';
 
 const app = express();
 
@@ -16,9 +18,20 @@ app.use(cors({
   credentials: true
 }));
 
-
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+app.get('/openapi.json', (req, res) => {
+  res.json(openApiSpec);
+});
+
+app.use(
+  '/docs',
+  apiReference({
+    content: openApiSpec,
+    ...scalarApiReferenceConfig,
+  })
+);
 
 app.use('/', routes);
 
@@ -60,6 +73,7 @@ const startServer = async () => {
 
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`API docs available at http://localhost:${PORT}/docs`);
   });
 };
 

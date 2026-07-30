@@ -6,6 +6,7 @@ import {
   employmentValidation,
   salaryValidation,
   designationValidation,
+  attendanceMethodValidation
 } from "../utils/constantsValidator.js";
 import { generateRandomToken } from "../utils/auth.js";
 import { sendSuccess, sendError, parseJSONSafe, buildMeta } from "../utils/sendResponse.js";
@@ -15,7 +16,7 @@ import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
 import { INV, INV_PKG } from "../constants/permissions.js";
 import { normalizeWeekends, formatIST } from "../utils/time.js";
-import { FRONTEND_URL, EMAIL_USER } from "../config/config.js";
+import { FRONTEND_URL, EMAIL_USER, NODE_ENV } from "../config/config.js";
 
 const router = express.Router();
 
@@ -33,13 +34,6 @@ const SELECT_EXISTING_PACKAGE_BY_CODE = `
   WHERE company_id = ? AND code = ? AND is_deleted = 0
   LIMIT 1
   FOR UPDATE
-`;
-
-const SELECT_PERMISSION_PACKAGE = `
-  SELECT id
-  FROM permission_packages
-  WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
-  LIMIT 1
 `;
 
 const SELECT_SALARY_COMPONENT_PACKAGE = `
@@ -62,21 +56,6 @@ const INSERT_INVITE_PACKAGE = `
 const UPDATE_INVITE_PACKAGE = `
   UPDATE invite_packages SET __SET__ WHERE id = ? AND company_id = ? AND is_deleted = 0
 `;
-
-const COUNT_INVITE_PACKAGES = `
-  SELECT COUNT(*) as total FROM invite_packages ip
-`;
-
-const LIST_INVITE_PACKAGES = `
-  SELECT ip.*, pp.package_name AS permission_package_name
-  FROM invite_packages ip
-  LEFT JOIN permission_packages pp ON pp.id = ip.permission_package_id
-  WHERE 1=1
-  ORDER BY ip.id DESC
-  LIMIT ? OFFSET ?
-`;
-
-const SELECT_PACKAGE_IDS = `SELECT id FROM invite_packages ip WHERE 1=1`;
 
 const SELECT_PERMISSIONS_FOR_PACKAGES = `
   SELECT ppi.package_id, p.id, p.action, p.code, p.name
@@ -134,6 +113,29 @@ const formatInvitePackage = (pkg, { permissions = [], salaryComponents = [] } = 
   salary_components: salaryComponents,
 });
 
+const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
+const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
+const convertHHMMToMinutes = (value) => {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const cleanAttendanceMethods = (methods, companyMethods) => {
+  if (!Array.isArray(methods)) return { success: false, status: 400, message: "attendance_methods must be an array" };
+  const cleaned = [];
+  const seen = new Set();
+  for (const m of methods) {
+    const method = (typeof m === "string" ? m : m?.method)?.trim()?.toLowerCase();
+    if (!method) return { success: false, status: 400, message: "Invalid attendance method" };
+    if (!companyMethods.includes(method)) return { success: false, status: 400, message: `Attendance method not enabled in company: ${method}` };
+    if (!seen.has(method)) {
+      seen.add(method);
+      cleaned.push(method);
+    }
+  }
+  return { success: true, data: JSON.stringify(cleaned) };
+};
+
 router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
   let conn;
   try {
@@ -167,77 +169,96 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
     is_active = is_active == null ? 1 : (is_active == 1 ? 1 : 0);
 
     if (!code || !name) {
+      await conn.rollback();
       return sendError(res, 400, "code and name are required");
     }
 
     const validations = [];
-    if (designation) validations.push({ field: "designation", value: designation, validator: designationValidation });
-    if (salary_type) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
-    if (employment_type) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
+    if (designation !== undefined && designation !== null) validations.push({ field: "designation", value: designation, validator: designationValidation });
+    if (salary_type !== undefined && salary_type !== null) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
+    if (employment_type !== undefined && employment_type !== null) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
+    if (attendance_methods !== undefined && attendance_methods !== null) validations.push({ field: "attendance_methods", value: attendance_methods, validator: attendanceMethodValidation });
+
     const errors = validateFields(validations);
-    if (errors.length) return sendError(res, 422, errors[0].message);
+    if (errors.length) {
+      await conn.rollback();
+      return sendError(res, 422, errors[0].message);
+    }
 
-    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
-    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
-    const convertHHMMToMinutes = (value) => {
-      const [hours, minutes] = value.split(":").map(Number);
-      return hours * 60 + minutes;
-    };
-
-    if (shift_start && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
-    if (shift_end && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
-    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
+    if (shift_start && !isValidHHMMSS(shift_start)) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_start must be HH:mm:ss");
+    }
+    if (shift_end && !isValidHHMMSS(shift_end)) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_end must be HH:mm:ss");
+    }
+    if (shift_start && shift_end && shift_start === shift_end) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_start and shift_end cannot be same");
+    }
 
     if (break_minutes !== undefined) {
-      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
+      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) {
+        await conn.rollback();
+        return sendError(res, 400, "break_minutes must be HH:mm");
+      }
       break_minutes = convertHHMMToMinutes(break_minutes);
     } else {
       break_minutes = null;
     }
 
     if (grace_minutes !== undefined) {
-      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
+      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) {
+        await conn.rollback();
+        return sendError(res, 400, "grace_minutes must be HH:mm");
+      }
       grace_minutes = convertHHMMToMinutes(grace_minutes);
     } else {
       grace_minutes = null;
     }
 
     const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
-    if (!company) throw { status: 404, message: "Company not found" };
+    if (!company) {
+      await conn.rollback();
+      return sendError(res, 404, "Company not found");
+    }
 
-    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
     const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
 
+    // Default to company methods if not provided
     if (attendance_methods === undefined) {
       attendance_methods = companyAttendanceMethods;
     }
-    if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
 
-    const cleanedMethods = [];
-    const uniqueMethods = new Set();
-    for (let i = 0; i < attendance_methods.length; i++) {
-      const method = attendance_methods[i];
-      if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
-      const normalizedMethod = method.trim().toLowerCase();
-      if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
-      if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
-      if (uniqueMethods.has(normalizedMethod)) continue;
-      uniqueMethods.add(normalizedMethod);
-      cleanedMethods.push(normalizedMethod);
+    // Clean, validate, and convert to JSON string
+    const cleanRes = cleanAttendanceMethods(attendance_methods, companyAttendanceMethods);
+    if (!cleanRes.success) {
+      await conn.rollback();
+      return sendError(res, cleanRes.status, cleanRes.message);
     }
-    attendance_methods = JSON.stringify(cleanedMethods);
+    attendance_methods = cleanRes.data;
 
     const [existingPackage] = await conn.query(SELECT_EXISTING_PACKAGE_BY_CODE, [company_id, code]);
-    if (existingPackage.length) throw { status: 409, message: "Invite package code already exists" };
+    if (existingPackage.length) {
+      await conn.rollback();
+      return sendError(res, 409, "Invite package code already exists");
+    }
 
     if (permission_package_id) {
-      const [[permissionPackage]] = await conn.query(SELECT_PERMISSION_PACKAGE, [permission_package_id, company_id]);
-      if (!permissionPackage) throw { status: 400, message: "Invalid permission_package_id" };
+      const [[permissionPackage]] = await conn.query(CHECK_SINGLE_PERMISSION_PACKAGE, [permission_package_id, company_id]);
+      if (!permissionPackage) {
+        await conn.rollback();
+        return sendError(res, 400, "Invalid permission_package_id");
+      }
     }
 
     if (component_package !== undefined && component_package !== null && component_package !== "") {
       const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
-      if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
+      if (!salaryPackage) {
+        await conn.rollback();
+        return sendError(res, 400, "Invalid component_package ID");
+      }
       component_package = salaryPackage.id;
     } else {
       component_package = null;
@@ -261,7 +282,7 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
   } catch (err) {
     if (conn) await conn.rollback();
     console.error("Create Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
@@ -275,7 +296,10 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
 
     const company_id = req.company?.id;
     const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company missing");
+    if (!company_id) {
+      await conn.rollback();
+      return sendError(res, 400, "Company missing");
+    }
 
     let {
       package_id, name,
@@ -288,17 +312,26 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
       remarks, component_package
     } = req.body;
 
-    if (!package_id) return sendError(res, 400, "package_id is required");
+    if (!package_id) {
+      await conn.rollback();
+      return sendError(res, 400, "package_id is required");
+    }
 
     const [[existingPackage]] = await conn.query(
       `SELECT id, code, company_id, is_active, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
       [package_id, company_id]
     );
-    if (!existingPackage) throw { status: 404, message: "Invite package not found" };
+    if (!existingPackage) {
+      await conn.rollback();
+      return sendError(res, 404, "Invite package not found");
+    }
 
     if (name !== undefined) {
       name = name?.trim();
-      if (!name) throw { status: 400, message: "name cannot be empty" };
+      if (!name) {
+        await conn.rollback();
+        return sendError(res, 400, "name cannot be empty");
+      }
     }
     if (designation !== undefined) designation = designation?.trim()?.toLowerCase() || null;
     if (salary_type !== undefined) salary_type = salary_type?.trim()?.toLowerCase() || null;
@@ -314,60 +347,72 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
     if (designation !== undefined && designation !== null) validations.push({ field: "designation", value: designation, validator: designationValidation });
     if (salary_type !== undefined && salary_type !== null) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
     if (employment_type !== undefined && employment_type !== null) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
-    const errors = validateFields(validations);
-    if (errors.length) return sendError(res, 422, errors[0].message);
+    if (attendance_methods !== undefined && attendance_methods !== null) validations.push({ field: "attendance_methods", value: attendance_methods, validator: attendanceMethodValidation });
 
-    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
-    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
-    const convertHHMMToMinutes = (value) => {
-      const [hours, minutes] = value.split(":").map(Number);
-      return hours * 60 + minutes;
-    };
+    const errors = validateFields(validations);
+    if (errors.length) {
+      await conn.rollback();
+      return sendError(res, 422, errors[0].message);
+    }
 
     let parsedBreakMinutes = null, parsedGraceMinutes = null;
     if (break_minutes !== undefined) {
-      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
-      parsedBreakMinutes = convertHHMMToMinutes(break_minutes);
+      const resBreak = parseMinutes(break_minutes, "break_minutes");
+      if (resBreak.error) {
+        await conn.rollback();
+        return sendError(res, 400, resBreak.error);
+      }
+      parsedBreakMinutes = resBreak.value;
     }
     if (grace_minutes !== undefined) {
-      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
-      parsedGraceMinutes = convertHHMMToMinutes(grace_minutes);
+      const resGrace = parseMinutes(grace_minutes, "grace_minutes");
+      if (resGrace.error) {
+        await conn.rollback();
+        return sendError(res, 400, resGrace.error);
+      }
+      parsedGraceMinutes = resGrace.value;
     }
 
-    if (shift_start !== undefined && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
-    if (shift_end !== undefined && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
-    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
+    if (shift_start !== undefined && !isValidHHMMSS(shift_start)) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_start must be HH:mm:ss");
+    }
+    if (shift_end !== undefined && !isValidHHMMSS(shift_end)) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_end must be HH:mm:ss");
+    }
+    if (shift_start && shift_end && shift_start === shift_end) {
+      await conn.rollback();
+      return sendError(res, 400, "shift_start and shift_end cannot be same");
+    }
 
     if (component_package !== undefined) {
       if (component_package !== null && component_package !== "") {
         const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
-        if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
+        if (!salaryPackage) {
+          await conn.rollback();
+          return sendError(res, 400, "Invalid component_package ID");
+        }
         component_package = salaryPackage.id;
       } else {
         component_package = null;
       }
     }
 
-    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
     let attendance_methods_json;
     if (attendance_methods !== undefined) {
       const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
-      if (!company) throw { status: 404, message: "Company not found" };
-      const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
-      if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
-      const cleanedMethods = [];
-      const uniqueMethods = new Set();
-      for (let i = 0; i < attendance_methods.length; i++) {
-        const method = attendance_methods[i];
-        if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
-        const normalizedMethod = method.trim().toLowerCase();
-        if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
-        if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
-        if (uniqueMethods.has(normalizedMethod)) continue;
-        uniqueMethods.add(normalizedMethod);
-        cleanedMethods.push(normalizedMethod);
+      if (!company) {
+        await conn.rollback();
+        return sendError(res, 404, "Company not found");
       }
-      attendance_methods_json = JSON.stringify(cleanedMethods);
+      const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
+      const cleanRes = cleanAttendanceMethods(attendance_methods, companyAttendanceMethods);
+      if (!cleanRes.success) {
+        await conn.rollback();
+        return sendError(res, cleanRes.status, cleanRes.message);
+      }
+      attendance_methods_json = cleanRes.data;
     }
 
     const fields = [];
@@ -393,7 +438,10 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
     if (component_package !== undefined) pushField("component_package", component_package);
     pushField("updated_by", user_id || null);
 
-    if (fields.length <= 1) throw { status: 400, message: "No fields to update" };
+    if (fields.length <= 1) {
+      await conn.rollback();
+      return sendError(res, 400, "No fields to update");
+    }
 
     if (fields.length > 1) {
       await conn.query(UPDATE_INVITE_PACKAGE.replace("__SET__", fields.join(", ")), [...values, package_id, company_id]);
@@ -404,7 +452,7 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
   } catch (err) {
     if (conn) await conn.rollback();
     console.error("Update Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
@@ -499,20 +547,35 @@ router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
 
     const company_id = req.company?.id;
     const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company missing");
+    if (!company_id) {
+      await conn.rollback();
+      return sendError(res, 400, "Company missing");
+    }
 
     const { package_id } = req.body;
-    if (!package_id) return sendError(res, 400, "package_id is required");
+    if (!package_id) {
+      await conn.rollback();
+      return sendError(res, 400, "package_id is required");
+    }
 
     const [[pkg]] = await conn.query(
       `SELECT id, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? LIMIT 1 FOR UPDATE`,
       [package_id, company_id]
     );
-    if (!pkg) return sendError(res, 404, "Invite package not found");
-    if (pkg.is_deleted) return sendError(res, 400, "Package already deleted");
+    if (!pkg) {
+      await conn.rollback();
+      return sendError(res, 404, "Invite package not found");
+    }
+    if (pkg.is_deleted) {
+      await conn.rollback();
+      return sendError(res, 400, "Package already deleted");
+    }
 
     const [[{ total }]] = await conn.query(COUNT_EMPLOYEES_USING_PACKAGE, [package_id, company_id]);
-    if (total > 0) return sendError(res, 400, "Cannot delete package: assigned to employees");
+    if (total > 0) {
+      await conn.rollback();
+      return sendError(res, 400, "Cannot delete package: assigned to employees");
+    }
 
     await conn.query(SOFT_DELETE_INVITE_PACKAGE, [user_id || null, package_id]);
     await conn.commit();
@@ -520,7 +583,7 @@ router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
   } catch (err) {
     if (conn) await conn.rollback();
     console.error("Delete Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
@@ -584,7 +647,7 @@ const ACCEPT_SELECT_INVITE = `
 `;
 
 const ACCEPT_INVITE_OPEN = `
-  SELECT * FROM company_invites ci
+  SELECT ci.* FROM company_invites ci
   INNER JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
   WHERE ci.invite_token = ? AND ci.status = 'pending'
     AND ci.is_active = 1 AND ci.is_deleted = 0
@@ -674,7 +737,7 @@ const LIST_INVITES_DATA = `
     ci.attendance_methods, ci.auto_approve, ci.enable_overtime, ci.enable_deduction,
     ci.joining_date, ci.base_amount, ci.effective_from, ci.effective_to,
     u.name AS user_name, u.email AS user_email, u.profile_picture,
-    ib.name AS inviter_name,
+    ib.name AS inviter_name, ib.email as inviter_email, ib.profile_picture AS inviter_profile_picture,
     pp.package_name,
     p.id AS permission_id, p.name AS permission_name, p.code AS permission_code
   FROM company_invites ci
@@ -813,6 +876,8 @@ const formatInvite = (invite, { permissions = [], salaryComponents = [] } = {}) 
   invited_by: {
     id: invite.invited_by,
     name: invite.inviter_name,
+    email: invite.inviter_email,
+    profile_picture: buildFileUrl(invite.inviter_profile_picture),
   },
   permissions,
   attendance_methods: parseJSONSafe(invite.attendance_methods, []).map(m => (typeof m === 'string' ? m : m?.method || '')).filter(Boolean),
@@ -869,6 +934,185 @@ const formatUserInvite = (invite, { permissions = [], salaryComponents = [] } = 
   salary_components: salaryComponents,
 });
 
+const parseMinutes = (val, field) => {
+  if (!val) return { value: null };
+  if (typeof val !== "string") return { error: `${field} must be in HH:mm format` };
+  const [h, m] = val.split(":");
+  const hours = parseInt(h, 10), minutes = parseInt(m, 10);
+  if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return { error: `Invalid ${field}` };
+  return { value: (hours * 60) + minutes };
+};
+
+const processInviteAcceptance = async (conn, invite, userId) => {
+  const {
+    id: inviteId,
+    company_id: companyId,
+    permission_package_id: packageId,
+    designation,
+    salary_type: salaryType,
+    employment_type: employmentType,
+    shift_start,
+    shift_end,
+    break_minutes: breakMinutes,
+    grace_minutes: graceMinutes,
+    weekends,
+    enable_overtime,
+    enable_deduction,
+    joining_date,
+    base_amount,
+    effective_from,
+    effective_to,
+    attendance_methods: attendanceMethodsJson,
+    auto_approve,
+  } = invite;
+
+  // expected work minutes
+  let expectedWorkMinutes = 0;
+  if (shift_start && shift_end) {
+    const start = new Date(`1970-01-01T${shift_start}`);
+    const end = new Date(`1970-01-01T${shift_end}`);
+    if (end <= start) end.setDate(end.getDate() + 1);
+    expectedWorkMinutes = Math.floor((end - start) / 60000);
+  }
+
+  const inviteAttendance = attendanceMethodsJson
+    ? JSON.parse(attendanceMethodsJson)
+    : [];
+
+  // existing employee?
+  const [[existingEmployee]] = await conn.query(
+    SELECT_EXISTING_EMPLOYEE_FOR_INVITE,
+    [companyId, userId]
+  );
+
+  let employeeId, employeeCode;
+  const inviteEnableOvertimeValue = enable_overtime == 1 ? 1 : 0;
+  const inviteEnableDeductionValue =
+    enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
+  const inviteJoiningDateValue =
+    joining_date && !isNaN(Date.parse(joining_date)) ? joining_date : null;
+
+  if (existingEmployee) {
+    employeeId = existingEmployee.id;
+    employeeCode = existingEmployee.employee_code;
+
+    await conn.query(UPDATE_EMPLOYEE, [
+      designation,
+      salaryType,
+      employmentType,
+      packageId,
+      weekends || null,
+      shift_start || null,
+      shift_end || null,
+      breakMinutes || null,
+      graceMinutes || null,
+      expectedWorkMinutes,
+      inviteEnableOvertimeValue,
+      inviteEnableDeductionValue,
+      inviteJoiningDateValue,
+      userId,
+      employeeId,
+    ]);
+  } else {
+    const random = generateRandomToken({
+      size: 1,
+      encoding: "hex",
+      uppercase: true,
+    });
+    employeeCode = `EMP-${companyId}${random}`;
+
+    const [result] = await conn.query(INSERT_EMPLOYEE, [
+      companyId,
+      userId,
+      packageId,
+      employeeCode,
+      designation,
+      salaryType,
+      employmentType,
+      weekends || null,
+      shift_start || null,
+      shift_end || null,
+      expectedWorkMinutes,
+      breakMinutes || null,
+      graceMinutes || null,
+      inviteEnableOvertimeValue,
+      inviteEnableDeductionValue,
+      inviteJoiningDateValue ||
+      new Date().toISOString().split("T")[0],
+      userId,
+      userId,
+    ]);
+    employeeId = result.insertId;
+  }
+
+  if (!employeeId) return { success: false, message: "Failed to create/update employee" };
+
+  // salary structure
+  if (base_amount != null) {
+    const [salaryResult] = await conn.query(INSERT_SALARY_STRUCTURE, [
+      companyId,
+      employeeId,
+      base_amount,
+      effective_from || new Date().toISOString().split("T")[0],
+      effective_to,
+      userId,
+      userId,
+    ]);
+
+    const salaryId = salaryResult.insertId;
+    const [salaryComponents] = await conn.query(SELECT_INVITE_COMPONENTS, [inviteId]);
+    if (salaryComponents.length) {
+      const compValues = salaryComponents.map((comp) => [
+        companyId,
+        employeeId,
+        salaryId,
+        comp.component_id,
+        comp.calc_type,
+        comp.calc_value,
+        comp.remark,
+        1,
+        userId,
+        userId,
+        0,
+      ]);
+      await conn.query(INSERT_EMPLOYEE_SALARY_COMPONENT, [compValues]);
+    }
+  }
+
+  // attendance methods
+  await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
+
+  if (inviteAttendance.length) {
+    const autoApproveVal = Number(auto_approve || 0);
+    const attendanceValues = inviteAttendance
+      .map((m) => {
+        const method =
+          typeof m === "string" ? m : m?.method || "";
+        const isAuto =
+          typeof m === "string"
+            ? autoApproveVal
+            : m?.is_auto || autoApproveVal;
+        return [
+          employeeId,
+          method,
+          Number(isAuto || 0),
+          1,
+          userId,
+          userId,
+          0,
+        ];
+      })
+      .filter((item) => item[1]);
+
+    await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
+  }
+
+  console.log(userId);
+  console.log(inviteId);
+  await conn.query(COMPLETE_INVITE, [userId, inviteId]);
+  return { success: true };
+};
+
 router.post("/send", auth(INV.MNG), async (req, res) => {
   let conn;
   const rollback = async () => { if (conn) await conn.rollback(); };
@@ -907,10 +1151,16 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       base_amount = null;
     }
 
-    if (effective_from && isNaN(Date.parse(effective_from))) errors.effective_from = "Invalid effective_from date format.";
-    else effective_from = null;
-    if (effective_to && isNaN(Date.parse(effective_to))) errors.effective_to = "Invalid effective_to date format.";
-    else effective_to = null;
+    if (effective_from && Number.isNaN(Date.parse(effective_from))) {
+      errors.effective_from = "Invalid effective_from date format.";
+    }
+
+    if (effective_to && Number.isNaN(Date.parse(effective_to))) {
+      errors.effective_to = "Invalid effective_to date format.";
+    }
+
+    effective_from = effective_from || null;
+    effective_to = effective_to || null;
 
     if (components !== undefined && components !== null) {
       if (!Array.isArray(components)) errors.components = "Salary components must be provided in array format.";
@@ -928,25 +1178,27 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       return sendError(res, 422, "Please check the submitted information.", errors);
     }
 
-    const parseMinutes = (val, field) => {
-      if (!val) return null;
-      if (typeof val !== "string") throw new Error(`${field} must be in HH:mm format`);
-      const [h, m] = val.split(":");
-      const hours = parseInt(h, 10), minutes = parseInt(m, 10);
-      if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) throw new Error(`Invalid ${field}`);
-      return (hours * 60) + minutes;
-    };
-
     let breakMinutes = null, graceMinutes = null;
-    try {
-      breakMinutes = parseMinutes(break_minutes, "break time");
-      graceMinutes = parseMinutes(grace_minutes, "grace time");
-    } catch (e) {
-      await rollback();
-      return sendError(res, 422, "Invalid time format provided.", { time: e.message });
+    if (break_minutes) {
+      const resBreak = parseMinutes(break_minutes, "break time");
+      if (resBreak.error) {
+        await rollback();
+        return sendError(res, 422, "Invalid time format provided.", { time: resBreak.error });
+      }
+      breakMinutes = resBreak.value;
+    }
+    if (grace_minutes) {
+      const resGrace = parseMinutes(grace_minutes, "grace time");
+      if (resGrace.error) {
+        await rollback();
+        return sendError(res, 422, "Invalid time format provided.", { time: resGrace.error });
+      }
+      graceMinutes = resGrace.value;
     }
 
-    const isAuto = auto_approve == 1 ? 1 : 0;
+    const isAuto = Boolean(auto_approve) ? 1 : 0;
+    const inviteEnableOvertime = Boolean(enable_overtime) ? 1 : 0;
+    const inviteEnableDeduction = enable_deduction == null ? 1 : (Boolean(enable_deduction) ? 1 : 0);
 
     const [[company]] = await conn.query(SELECT_COMPANY_BY_ID, [company_id]);
     if (!company) {
@@ -1004,8 +1256,6 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const inviteEnableOvertime = enable_overtime == 1 ? 1 : 0;
-    const inviteEnableDeduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
     const inviteJoiningDate = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
 
     const [inviteResult] = await conn.query(INSERT_INVITE, [
@@ -1030,8 +1280,12 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
 
     await conn.commit();
 
+    const APP_URL =
+      NODE_ENV === "production"
+        ? (FRONTEND_URL || "https://oneattendanceclient.vercel.app")
+        : "http://localhost:3000";
     try {
-      const appUrl = FRONTEND_URL || "https://oneattendanceclient.vercel.app";
+      const appUrl = APP_URL;
       const acceptUrl = `${appUrl}/accept-invite?token=${inviteToken}`;
       await queueCompanyInvitationEmail({
         to: user.email,
@@ -1130,8 +1384,12 @@ router.post("/resend", auth(INV.MNG), async (req, res) => {
 
     await conn.commit();
 
+    const APP_URL =
+      NODE_ENV === "production"
+        ? (FRONTEND_URL || "https://oneattendanceclient.vercel.app")
+        : "http://localhost:3000";
     try {
-      const appUrl = FRONTEND_URL || "https://oneattendanceclient.vercel.app";
+      const appUrl = APP_URL;
       const acceptUrl = `${appUrl}/accept-invite?token=${invite.invite_token}`;
       await queueCompanyInvitationEmail({
         to: user.email,
@@ -1146,9 +1404,9 @@ router.post("/resend", auth(INV.MNG), async (req, res) => {
         invitedBy: { id: req.user?.id, name: req.user?.name, email: req.user?.email },
         company: { id: company.id, name: company.name },
         invite: {
-          employment_type: getEnumObject(EMPLOYMENT_TYPES, invite.employment_type),
-          designation: getEnumObject(DESIGNATIONS, invite.designation),
-          salary_type: getEnumObject(SALARY_TYPES, invite.salary_type),
+          employment_type: getEnumObject(EMPLOYMENT_TYPES, invite.employment_type)?.label ?? '-',
+          designation: getEnumObject(DESIGNATIONS, invite.designation)?.label ?? '-',
+          salary_type: getEnumObject(SALARY_TYPES, invite.salary_type)?.label ?? '-',
           shift_start: invite.shift_start,
           shift_end: invite.shift_end,
           break_minutes: invite.break_minutes,
@@ -1172,7 +1430,7 @@ router.post("/resend", auth(INV.MNG), async (req, res) => {
   } catch (err) {
     if (conn) await rollback();
     console.error("Resend Invite Error:", err);
-    return sendError(res, 500, err.message || "Internal server error");
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
@@ -1194,99 +1452,18 @@ router.post("/accept", auth(), async (req, res) => {
       return sendError(res, 400, "Invalid or expired invite");
     }
 
-    const {
-      id: inviteId, company_id: companyId, permission_package_id: packageId,
-      designation, salary_type: salaryType, employment_type: employmentType,
-      shift_start, shift_end, break_minutes, grace_minutes, weekends,
-      enable_overtime, enable_deduction, joining_date
-    } = invite;
-
-    let expectedWorkMinutes = 0;
-    if (shift_start && shift_end) {
-      const start = new Date(`1970-01-01T${shift_start}`);
-      const end = new Date(`1970-01-01T${shift_end}`);
-      if (end <= start) end.setDate(end.getDate() + 1);
-      expectedWorkMinutes = Math.floor((end - start) / 60000);
+    const result = await processInviteAcceptance(conn, invite, userId);
+    if (!result.success) {
+      await conn.rollback();
+      return sendError(res, 500, result.message || "Failed to accept invite");
     }
 
-    const breakMinutes = break_minutes;
-    const graceMinutes = grace_minutes;
-    const inviteAttendance = invite.attendance_methods ? JSON.parse(invite.attendance_methods) : [];
-
-    const [[existingEmployee]] = await conn.query(SELECT_EXISTING_EMPLOYEE_FOR_INVITE, [companyId, userId]);
-    let employeeId, employeeCode;
-
-    const inviteEnableOvertimeValue = enable_overtime == 1 ? 1 : 0;
-    const inviteEnableDeductionValue = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
-    const inviteJoiningDateValue = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
-
-    if (existingEmployee) {
-      employeeId = existingEmployee.id;
-      employeeCode = existingEmployee.employee_code;
-
-      await conn.query(UPDATE_EMPLOYEE, [
-        designation, salaryType, employmentType, packageId,
-        weekends || null, shift_start || null, shift_end || null,
-        breakMinutes || null, graceMinutes || null,
-        expectedWorkMinutes, inviteEnableOvertimeValue, inviteEnableDeductionValue,
-        inviteJoiningDateValue, userId, employeeId
-      ]);
-    } else {
-      const random = generateRandomToken({ size: 1, encoding: "hex", uppercase: true });
-      employeeCode = `EMP-${companyId}${random}`;
-
-      const [result] = await conn.query(INSERT_EMPLOYEE, [
-        companyId, userId, packageId, employeeCode,
-        designation, salaryType, employmentType,
-        weekends || null, shift_start || null, shift_end || null,
-        expectedWorkMinutes, breakMinutes || null, graceMinutes || null,
-        inviteEnableOvertimeValue, inviteEnableDeductionValue,
-        inviteJoiningDateValue || new Date().toISOString().split("T")[0],
-        userId, userId
-      ]);
-      employeeId = result.insertId;
-    }
-
-    if (invite.base_amount != null) {
-      const [salaryResult] = await conn.query(INSERT_SALARY_STRUCTURE, [
-        companyId, employeeId, invite.base_amount,
-        invite.effective_from || new Date().toISOString().split('T')[0],
-        invite.effective_to, userId, userId
-      ]);
-
-      const salaryId = salaryResult.insertId;
-      const [salaryComponents] = await conn.query(SELECT_INVITE_COMPONENTS, [inviteId]);
-      if (salaryComponents.length) {
-        const compValues = salaryComponents.map(comp => [
-          companyId, employeeId, salaryId,
-          comp.component_id, comp.calc_type, comp.calc_value, comp.remark,
-          1, userId, userId, 0
-        ]);
-        await conn.query(INSERT_EMPLOYEE_SALARY_COMPONENT, [compValues]);
-      }
-    }
-
-    await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
-
-    if (inviteAttendance.length) {
-      const autoApproveVal = Number(invite.auto_approve || 0);
-      const attendanceValues = inviteAttendance.map(m => {
-        const method = typeof m === "string" ? m : (m?.method || "");
-        const isAuto = typeof m === "string" ? autoApproveVal : (m?.is_auto || autoApproveVal);
-        return [employeeId, method, Number(isAuto || 0), 1, userId, userId, 0];
-      }).filter(item => item[1]);
-
-      await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
-    }
-
-    await conn.query(COMPLETE_INVITE, [userId, inviteId]);
     await conn.commit();
-
     return sendSuccess(res, 200, "Invitation accepted successfully");
   } catch (error) {
     if (conn) await conn.rollback();
     console.error("Accept invite error:", error);
-    return sendError(res, 500, error.message || "Failed to accept invite");
+    return sendError(res, 500, "Failed to accept invite");
   } finally {
     if (conn) conn.release();
   }
@@ -1296,11 +1473,8 @@ router.post("/accept-invite", async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-
     const token = req.query.token?.trim() || req.body.token?.trim();
-    if (!token) {
-      return sendError(res, 400, "Invite token is required");
-    }
+    if (!token) return sendError(res, 400, "Invite token is required");
 
     await conn.beginTransaction();
 
@@ -1310,145 +1484,18 @@ router.post("/accept-invite", async (req, res) => {
       return sendError(res, 400, "Invalid or expired invite");
     }
 
-    const {
-      id: inviteId,
-      company_id: companyId,
-      user_id: userId,
-      permission_package_id: packageId,
-      designation,
-      salary_type: salaryType,
-      employment_type: employmentType,
-      shift_start,
-      shift_end,
-      break_minutes,
-      grace_minutes,
-      weekends,
-      enable_overtime,
-      enable_deduction,
-      joining_date,
-    } = invite;
-
-    let expectedWorkMinutes = 0;
-    if (shift_start && shift_end) {
-      const start = new Date(`1970-01-01T${shift_start}`);
-      const end = new Date(`1970-01-01T${shift_end}`);
-      if (end <= start) end.setDate(end.getDate() + 1);
-      expectedWorkMinutes = Math.floor((end - start) / 60000);
+    const result = await processInviteAcceptance(conn, invite, invite.user_id);
+    if (!result.success) {
+      await conn.rollback();
+      return sendError(res, 500, result.message || "Failed to accept invitation");
     }
 
-    const breakMinutes = break_minutes;
-    const graceMinutes = grace_minutes;
-    const inviteAttendance = invite.attendance_methods ? JSON.parse(invite.attendance_methods) : [];
-
-    const [[existingEmployee]] = await conn.query(SELECT_EXISTING_EMPLOYEE_FOR_INVITE, [companyId, userId]);
-    let employeeId, employeeCode;
-
-    const inviteEnableOvertimeValue = enable_overtime == 1 ? 1 : 0;
-    const inviteEnableDeductionValue = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
-    const inviteJoiningDateValue = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
-
-    if (existingEmployee) {
-      employeeId = existingEmployee.id;
-      employeeCode = existingEmployee.employee_code;
-
-      await conn.query(UPDATE_EMPLOYEE, [
-        designation,
-        salaryType,
-        employmentType,
-        packageId,
-        weekends || null,
-        shift_start || null,
-        shift_end || null,
-        breakMinutes || null,
-        graceMinutes || null,
-        expectedWorkMinutes,
-        inviteEnableOvertimeValue,
-        inviteEnableDeductionValue,
-        inviteJoiningDateValue,
-        userId,
-        employeeId,
-      ]);
-    } else {
-      const random = generateRandomToken({ size: 1, encoding: "hex", uppercase: true });
-      employeeCode = `EMP-${companyId}${random}`;
-
-      const [employeeResult] = await conn.query(INSERT_EMPLOYEE, [
-        companyId,
-        userId,
-        packageId,
-        employeeCode,
-        designation,
-        salaryType,
-        employmentType,
-        weekends || null,
-        shift_start || null,
-        shift_end || null,
-        expectedWorkMinutes,
-        breakMinutes || null,
-        graceMinutes || null,
-        inviteEnableOvertimeValue,
-        inviteEnableDeductionValue,
-        inviteJoiningDateValue || new Date().toISOString().split("T")[0],
-        userId,
-        userId,
-      ]);
-      employeeId = employeeResult.insertId;
-    }
-
-    if (!employeeId) throw new Error("Failed to create employee");
-
-    if (invite.base_amount != null) {
-      const [salaryResult] = await conn.query(INSERT_SALARY_STRUCTURE, [
-        companyId,
-        employeeId,
-        invite.base_amount,
-        invite.effective_from || new Date().toISOString().split('T')[0],
-        invite.effective_to,
-        userId,
-        userId,
-      ]);
-
-      const salaryId = salaryResult.insertId;
-      const [salaryComponents] = await conn.query(SELECT_INVITE_COMPONENTS, [inviteId]);
-      if (salaryComponents.length) {
-        const compValues = salaryComponents.map(comp => [
-          companyId,
-          employeeId,
-          salaryId,
-          comp.component_id,
-          comp.calc_type,
-          comp.calc_value,
-          comp.remark,
-          1,
-          userId,
-          userId,
-          0,
-        ]);
-        await conn.query(INSERT_EMPLOYEE_SALARY_COMPONENT, [compValues]);
-      }
-    }
-
-    await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
-
-    if (inviteAttendance.length > 0) {
-      const autoApproveVal = Number(invite.auto_approve || 0);
-      const attendanceValues = inviteAttendance.map(m => {
-        const method = typeof m === "string" ? m : (m?.method || "");
-        const isAuto = typeof m === "string" ? autoApproveVal : (m?.is_auto || autoApproveVal);
-        return [employeeId, method, Number(isAuto || 0), 1, userId, userId, 0];
-      }).filter(item => item[1]);
-
-      await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
-    }
-
-    await conn.query(COMPLETE_INVITE, [userId, inviteId]);
     await conn.commit();
-
     return sendSuccess(res, 200, "Invitation accepted successfully");
   } catch (error) {
     if (conn) await conn.rollback();
     console.error("Accept invite error:", error);
-    return sendError(res, 500, error.message || "Failed to accept invitation");
+    return sendError(res, 500, "Failed to accept invitation");
   } finally {
     if (conn) conn.release();
   }
@@ -1726,59 +1773,64 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
       return sendError(res, 422, "shift_start must be less than shift_end");
     }
 
-    let breakMinutes = null;
-    let graceMinutes = null;
-    if (break_minutes) {
-      if (typeof break_minutes !== "string") throw { status: 400, message: "break_minutes must be in HH:mm format" };
-      const parts = break_minutes.split(":");
-      if (parts.length !== 2) throw { status: 400, message: "Invalid break_minutes format. Use HH:mm" };
-      const hours = parseInt(parts[0], 10);
-      const minutes = parseInt(parts[1], 10);
-      if (isNaN(hours) || isNaN(minutes)) throw { status: 400, message: "Invalid break_minutes values" };
-      breakMinutes = (hours * 60) + minutes;
+    let breakMinutes = null, graceMinutes = null;
+    if (break_minutes !== undefined) {
+      const resBreak = parseMinutes(break_minutes, "break_minutes");
+      if (resBreak.error) {
+        return sendError(res, 400, resBreak.error);
+      }
+      breakMinutes = resBreak.value;
     }
-    if (grace_minutes) {
-      if (typeof grace_minutes !== "string") throw { status: 400, message: "grace_minutes must be in HH:mm format" };
-      const parts = grace_minutes.split(":");
-      if (parts.length !== 2) throw { status: 400, message: "Invalid grace_minutes format. Use HH:mm" };
-      const hours = parseInt(parts[0], 10);
-      const minutes = parseInt(parts[1], 10);
-      if (isNaN(hours) || isNaN(minutes)) throw { status: 400, message: "Invalid grace_minutes values" };
-      graceMinutes = (hours * 60) + minutes;
+    if (grace_minutes !== undefined) {
+      const resGrace = parseMinutes(grace_minutes, "grace_minutes");
+      if (resGrace.error) {
+        return sendError(res, 400, resGrace.error);
+      }
+      graceMinutes = resGrace.value;
     }
 
     if (base_amount !== undefined && base_amount !== null && base_amount !== "") {
       const parsedBase = parseFloat(base_amount);
-      if (isNaN(parsedBase) || parsedBase < 0) throw { status: 400, message: "base_amount must be a valid non-negative number" };
+      if (isNaN(parsedBase) || parsedBase < 0) return sendError(res, 400, "base_amount must be a valid non-negative number");
       base_amount = parsedBase;
     } else if (base_amount === "") {
       base_amount = null;
     }
 
-    if (effective_from && isNaN(Date.parse(effective_from))) throw { status: 400, message: "Invalid effective_from date format" };
-    if (effective_to && isNaN(Date.parse(effective_to))) throw { status: 400, message: "Invalid effective_to date format" };
-    if (joining_date !== undefined && joining_date !== null && joining_date !== "" && isNaN(Date.parse(joining_date))) throw { status: 400, message: "Invalid joining_date format" };
+    if (effective_from && isNaN(Date.parse(effective_from))) return sendError(res, 400, "Invalid effective_from date format");
+    if (effective_to && isNaN(Date.parse(effective_to))) return sendError(res, 400, "Invalid effective_to date format");
+    if (joining_date !== undefined && joining_date !== null && joining_date !== "" && isNaN(Date.parse(joining_date))) return sendError(res, 400, "Invalid joining_date format");
 
     if (components !== undefined && components !== null) {
-      if (!Array.isArray(components)) throw { status: 400, message: "components must be an array" };
+      if (!Array.isArray(components)) return sendError(res, 400, "components must be an array");
       for (let idx = 0; idx < components.length; idx++) {
         const comp = components[idx];
-        if (!comp.component_id || !Number.isInteger(Number(comp.component_id))) throw { status: 400, message: `Invalid component_id at index ${idx}` };
-        if (!comp.calc_type || typeof comp.calc_type !== "string" || !comp.calc_type.trim()) throw { status: 400, message: `Calculation type is required at index ${idx}` };
-        if (comp.calc_value === undefined || isNaN(parseFloat(comp.calc_value))) throw { status: 400, message: `Invalid calculation value at index ${idx}` };
+        if (!comp.component_id || !Number.isInteger(Number(comp.component_id))) return sendError(res, 400, `Invalid component_id at index ${idx}`);
+        if (!comp.calc_type || typeof comp.calc_type !== "string" || !comp.calc_type.trim()) return sendError(res, 400, `Calculation type is required at index ${idx}`);
+        if (comp.calc_value === undefined || isNaN(parseFloat(comp.calc_value))) return sendError(res, 400, `Invalid calculation value at index ${idx}`);
       }
     }
 
     if (attendance_methods !== undefined) {
-      if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
+      if (!Array.isArray(attendance_methods)) return sendError(res, 400, "attendance_methods must be an array");
       const methodSet = new Set();
-      attendance_methods = attendance_methods.map(m => {
+      let invalidMethod = false;
+      const cleaned = [];
+      for (const m of attendance_methods) {
         const method = typeof m === "string" ? m : m?.method;
-        if (!method) throw new Error("Invalid attendance method");
-        if (methodSet.has(method)) return null;
-        methodSet.add(method);
-        return method;
-      }).filter(Boolean);
+        if (!method) {
+          invalidMethod = true;
+          break;
+        }
+        if (!methodSet.has(method)) {
+          methodSet.add(method);
+          cleaned.push(method);
+        }
+      }
+      if (invalidMethod) {
+        return sendError(res, 400, "Invalid attendance method");
+      }
+      attendance_methods = cleaned;
     }
 
     await conn.beginTransaction();
@@ -1839,9 +1891,12 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (components !== undefined && components !== null) {
       if (components.length > 0) {
         const componentIds = [...new Set(components.map(c => Number(c.component_id)))];
-        const placeholders = componentIds.map(() => "?").join(", ");
-        const [validComps] = await conn.query(SELECT_VALID_SALARY_COMPONENTS, [...componentIds, company_id]);
+        console.log("componnents id", componentIds);
+        const [validComps] = await conn.query(SELECT_VALID_SALARY_COMPONENTS, [componentIds, company_id]);
+        console.log("Valid Component", validComps);
+
         const validIds = new Set(validComps.map(r => r.id));
+        console.log("Valid id", validIds);
         for (const id of componentIds) {
           if (!validIds.has(id)) {
             await conn.rollback();
@@ -1872,15 +1927,13 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
   } catch (err) {
     if (conn) await conn.rollback();
     console.error("Invite update error:", err);
-    const status = err?.status || 500;
-    const message = err?.message || "Internal server error";
-    return sendError(res, status, message);
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
 });
 
-router.delete("/cancel", auth(), async (req, res) => {
+router.delete("/cancel", auth(INV.MNG), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1905,11 +1958,6 @@ router.delete("/cancel", auth(), async (req, res) => {
     if (!invite) {
       await conn.rollback();
       return sendError(res, 404, "Invalid, expired, or already processed invite");
-    }
-
-    if (invite.user_id !== userId) {
-      await conn.rollback();
-      return sendError(res, 403, "You are not the recipient of this invite");
     }
 
     await conn.query(CANCEL_INVITE, [userId, invite.id]);

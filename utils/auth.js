@@ -69,7 +69,7 @@ export const generateRandomPassword = (length = 12) => {
   return password.join("");
 };
 
-export const generateTransactionId=() =>{
+export const generateTransactionId = () => {
   const timestamp = Date.now();
   const random = crypto.randomBytes(3).toString("hex").toUpperCase();
 

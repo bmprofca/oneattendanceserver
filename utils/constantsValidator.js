@@ -41,30 +41,29 @@ const createValidator = (constantObj, fieldName, extraCheck = null) => {
 };
 
 
-const employmentValidation     = createValidator(EMPLOYMENT_TYPES,  "employment_type");
-const salaryValidation         = createValidator(SALARY_TYPES,       "salary_type");
-const designationValidation    = createValidator(DESIGNATIONS,       "designation");
-const inviteStatusValidation   = createValidator(INVITE_STATUSES,    "status");
-const employeeStatusValidation = createValidator(EMPLOYEE_STATUSES,  "status");
-const punchTypeValidation      = createValidator(PUNCH_TYPES,        "punch_type");
-const attendanceModeValidation = createValidator(ATTENDANCE_MODES,   "mode");
-const leaveTypeValidation      = createValidator(LEAVE_TYPES,        "leave_type");
-const halfDayTypeValidation    = createValidator(HALF_DAY_TYPES,     "half_day_type");
-const leaveStatusValidation    = createValidator(LEAVE_STATUSES,     "leave_status");
-const accrualTypeValidation    = createValidator(ACCRUAL_TYPES,      "accrual_type");
-const payrollStatusValidation  = createValidator(PAY_ROLL_STATUSES,  "payroll_status");
-const paymentMethodValidation  = createValidator(PAYMENT_METHODS,    "payment_method");
-const currencyTypeValidation   = createValidator(CURRENCY_TYPES,     "currency");
+const employmentValidation = createValidator(EMPLOYMENT_TYPES, "employment_type");
+const salaryValidation = createValidator(SALARY_TYPES, "salary_type");
+const designationValidation = createValidator(DESIGNATIONS, "designation");
+const inviteStatusValidation = createValidator(INVITE_STATUSES, "status");
+const employeeStatusValidation = createValidator(EMPLOYEE_STATUSES, "status");
+const punchTypeValidation = createValidator(PUNCH_TYPES, "punch_type");
+const leaveTypeValidation = createValidator(LEAVE_TYPES, "leave_type");
+const halfDayTypeValidation = createValidator(HALF_DAY_TYPES, "half_day_type");
+const leaveStatusValidation = createValidator(LEAVE_STATUSES, "leave_status");
+const accrualTypeValidation = createValidator(ACCRUAL_TYPES, "accrual_type");
+const payrollStatusValidation = createValidator(PAY_ROLL_STATUSES, "payroll_status");
+const paymentMethodValidation = createValidator(PAYMENT_METHODS, "payment_method");
+const currencyTypeValidation = createValidator(CURRENCY_TYPES, "currency");
 
-const attendanceMethodValidation = createValidator(
-  ATTENDANCE_METHODS,
-  "method",
-  (value, constantObj) => {
-    const entry = Object.values(constantObj).find((m) => m.value === value);
-    if (!entry.is_available) return `method '${value}' is not available yet`;
-    return null;
+const attendanceMethodValidation = (value) => {
+  if (!value) return "attendance_methods is required";
+  const methods = Array.isArray(value) ? value : [value];
+  for (const m of methods) {
+    const error = validateConstant(m, ATTENDANCE_METHODS, "attendance_methods");
+    if (error) return error;
   }
-);
+  return null;
+};
 
 const validateFields = (rules) => {
   return rules.reduce((errors, { field, value, validator }) => {
@@ -76,8 +75,8 @@ const validateFields = (rules) => {
 
 export {
   validateFields,
-  createValidator,         
-  validateConstant,        
+  createValidator,
+  validateConstant,
   employmentValidation,
   salaryValidation,
   designationValidation,
@@ -85,7 +84,6 @@ export {
   employeeStatusValidation,
   punchTypeValidation,
   attendanceMethodValidation,
-  attendanceModeValidation,
   leaveTypeValidation,
   halfDayTypeValidation,
   leaveStatusValidation,
