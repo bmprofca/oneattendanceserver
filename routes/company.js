@@ -108,38 +108,6 @@ const normalizePhone = (value) => {
   return digits.length >= 10 ? digits : null;
 };
 
-const maskEmail = (email) => {
-  if (!email || typeof email !== "string") {
-    return null;
-  }
-
-  const trimmed = email.trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  const at = trimmed.indexOf("@");
-
-  if (at <= 0) {
-    return "***";
-  }
-
-  const local = trimmed.slice(0, at);
-  const domain = trimmed.slice(at + 1);
-
-  if (!domain) {
-    return "***";
-  }
-
-  const maskedLocal =
-    local.length === 0
-      ? "***"
-      : `${local[0]}${"*".repeat(Math.max(3, local.length - 1))}`;
-
-  return `${maskedLocal}@${domain}`;
-};
-
 const maskPhone = (phone) => {
   if (!phone) {
     return null;
@@ -899,6 +867,7 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
         u.name,
         u.email,
         u.phone,
+        u.profile_picture,
         u.is_active,
         u.is_deleted,
         u.created_at
@@ -1026,8 +995,9 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
     const responseData = {
       id: user.id,
       name: user.name,
-      email: maskEmail(user.email),
+      email: user.email,
       phone: maskPhone(user.phone),
+      profile_picture: buildFileUrl(user.profile_picture),
       is_active: Boolean(user.is_active),
       created_at: user.created_at
     };

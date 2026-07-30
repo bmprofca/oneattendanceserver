@@ -41,6 +41,7 @@ import { generateShift } from "../utils/ShiftUtils.js";
 import { payrollExists, upsertPayroll } from "../utils/payrollUtils.js";
 import axios from "axios";
 import { runFaceCheck, FACE_SERVICE_URL } from "../utils/faceCheckUtil.js";
+import { NODE_ENV } from "../config/config.js";
 
 const FACE_ATTENDANCE_METHOD = "face";
 
@@ -3759,7 +3760,7 @@ router.get("/logs", auth(), async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch logs",
-      error: process.env.NODE_ENV === "development" ? err.message : undefined,
+      error: NODE_ENV === "development" ? err.message : undefined,
     });
   } finally {
     if (conn) conn.release();
@@ -4681,7 +4682,7 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Internal server error",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+      error: NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
     if (conn) {

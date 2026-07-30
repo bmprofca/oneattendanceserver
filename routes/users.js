@@ -10,10 +10,11 @@ import getClientMeta from "../utils/ipHelper.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
+import { NODE_ENV } from "../config/config.js";
+
 
 const router = express.Router();
 
-const { NODE_ENV } = process.env;
 
 const rollbackTransaction = async (conn, transactionStarted) => {
   if (!conn || !transactionStarted) {
@@ -446,7 +447,7 @@ router.put("/update-profile", auth(), async (req, res) => {
         "Failed to update user profile",
 
       error:
-        process.env.NODE_ENV ===
+        NODE_ENV ===
           "development"
           ? error.message
           : undefined,
@@ -553,7 +554,7 @@ router.post("/delete/request-otp", auth(), async (req, res) => {
       userName: "User",
     })
       .then(() => {
-        if (process.env.NODE_ENV !== "production") {
+        if (NODE_ENV !== "production") {
           console.log(`Delete account OTP for ${email}: ${otp}`);
         }
       })
@@ -1140,7 +1141,7 @@ router.get("/profile-role", auth(), async (req, res) => {
       message: "Internal server error",
 
       error:
-        process.env.NODE_ENV === "development"
+        NODE_ENV === "development"
           ? error.message
           : undefined
     });
@@ -1272,7 +1273,7 @@ router.put("/update-password", auth(), async (req, res) => {
       success: false,
       message: "Failed to update password",
       error:
-        process.env.NODE_ENV === "development"
+        NODE_ENV === "development"
           ? error.message
           : undefined,
     });

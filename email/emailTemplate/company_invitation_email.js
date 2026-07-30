@@ -1,6 +1,6 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
-
+import { EMAIL_USER } from "../../config/config.js";
 
 
 const valueOrDash = (value) => value ?? "-";
@@ -80,7 +80,7 @@ const buildAcceptUrl = ({ acceptUrl, appUrl, inviteToken }) => {
 export const sendCompanyInvitationEmail = async ({
     to,
     subject,
-    fromEmail = process.env.EMAIL_USER,
+    fromEmail = EMAIL_USER,
     fromName = "OneAttendance Invite Desk",
     replyTo,
     appUrl,
@@ -125,7 +125,7 @@ export const sendCompanyInvitationEmail = async ({
         contentHtml: `
             <p style="margin: 0 0 16px; font-size: 16px; color: #1f2937;">Hello <strong>${employeeName}</strong>,</p>
             <p style="margin: 0 0 24px; font-size: 16px; color: #4b5563; line-height: 1.5;">
-                <strong>${inviterName}</strong> has invited you to join <strong>${companyName}</strong> as an employee on OneAttendance.
+                <strong>${inviterName}</strong> has invited you to join <strong>${companyName}</strong> as an employee.
             </p>
 
             ${acceptButton}
@@ -184,7 +184,7 @@ export const sendCompanyInvitationEmail = async ({
         `,
     });
 
-    const text = `Hello ${employeeName},\n\n${inviterName} has invited you to join ${companyName} on OneAttendance.\n\nYour invite token: ${token}\n${quickAcceptUrl ? `Accept now: ${quickAcceptUrl}\n` : "Use this token inside the app to accept.\n"}This invitation expires on ${formatDate(invite.expires_at)}.\n\nShift: ${formatTime12h(invite.shift_start)} – ${formatTime12h(invite.shift_end)}\nDesignation: ${valueOrDash(invite.designation)}`;
+    const text = `Hello ${employeeName},\n\n${inviterName} has invited you to join ${companyName} as an employee.\n\nYour invite token: ${token}\n${quickAcceptUrl ? `Accept now: ${quickAcceptUrl}\n` : "Use this token inside the app to accept.\n"}This invitation expires on ${formatDate(invite.expires_at)}.\n\nShift: ${formatTime12h(invite.shift_start)} – ${formatTime12h(invite.shift_end)}\nDesignation: ${valueOrDash(invite.designation)}`;
 
     await transporter.sendMail({
         from: getSender(fromName, fromEmail),

@@ -1,5 +1,6 @@
 import { getTransporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
+import { EMAIL_USER } from "../../config/config.js";
 
 
 const sendOTPEmail = async ({
@@ -10,7 +11,7 @@ const sendOTPEmail = async ({
     heading,
     introText,
     extraContentHtml = "",
-    fromEmail = process.env.EMAIL_USER,
+    fromEmail = EMAIL_USER,
     fromName = "OneAttendance",
     replyTo,
 }) => {

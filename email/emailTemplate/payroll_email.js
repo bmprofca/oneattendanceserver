@@ -1,6 +1,7 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
 import { generatePayslipPdf } from "../../utils/generatePayslipPdf.js";
+import { EMAIL_USER } from "../../config/config.js";
 
 const formatPeriod = (value) => {
   if (!value) return "-";
@@ -13,7 +14,7 @@ const formatPeriod = (value) => {
 export const sendPayrollEmail = async ({
   to,
   subject,
-  fromEmail = process.env.EMAIL_USER,
+  fromEmail = EMAIL_USER,
   fromName = "OneAttendance",
   replyTo,
   payroll = {},

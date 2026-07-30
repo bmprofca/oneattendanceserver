@@ -1,14 +1,11 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import checkPermission from "../middleware/permissionValidationMiddleware.js";
 import {
   validateFields,
   employmentValidation,
   salaryValidation,
   designationValidation,
-  attendanceMethodValidation,
-  inviteStatusValidation,
 } from "../utils/constantsValidator.js";
 import { generateRandomToken } from "../utils/auth.js";
 import { sendSuccess, sendError, parseJSONSafe, buildMeta } from "../utils/sendResponse.js";
@@ -17,12 +14,11 @@ import { queueCompanyInvitationEmail } from "../email/services/email.processor.j
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
 import { INV, INV_PKG } from "../constants/permissions.js";
+import { normalizeWeekends, formatIST } from "../utils/time.js";
+import { FRONTEND_URL, EMAIL_USER } from "../config/config.js";
 
 const router = express.Router();
 
-// ----------------------------------------------------------------------
-// SQL query constants (unchanged)
-// ----------------------------------------------------------------------
 
 const SELECT_COMPANY = `
   SELECT attendance_methods
@@ -113,7 +109,422 @@ const COUNT_EMPLOYEES_USING_PACKAGE = `
   WHERE permission_package_id = ? AND company_id = ? AND is_deleted = 0
 `;
 
-// ------------------- Invite queries -------------------
+const formatInvitePackage = (pkg, { permissions = [], salaryComponents = [] } = {}) => ({
+  id: pkg.id,
+  code: pkg.code,
+  name: pkg.name,
+  designation: getEnumObject(DESIGNATIONS, pkg.designation),
+  salary_type: getEnumObject(SALARY_TYPES, pkg.salary_type),
+  employment_type: getEnumObject(EMPLOYMENT_TYPES, pkg.employment_type),
+  shift_start: pkg.shift_start,
+  shift_end: pkg.shift_end,
+  break_minutes: pkg.break_minutes,
+  grace_minutes: pkg.grace_minutes,
+  permission_package_id: pkg.permission_package_id,
+  permission_package_name: pkg.permission_package_name,
+  auto_approve: !!pkg.auto_approve,
+  enable_overtime: !!pkg.enable_overtime,
+  enable_deduction: !!pkg.enable_deduction,
+  is_active: !!pkg.is_active,
+  weekends: parseJSONSafe(pkg.weekends, []),
+  attendance_methods: parseJSONSafe(pkg.attendance_methods, []),
+  permissions,
+  component_package: pkg.component_package,
+  remarks: pkg.remarks,
+  salary_components: salaryComponents,
+});
+
+router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const company_id = req.company?.id;
+    const user_id = req.user?.id;
+
+    let {
+      code, name,
+      designation, salary_type, employment_type,
+      permission_package_id,
+      shift_start, shift_end,
+      break_minutes, grace_minutes,
+      weekends, attendance_methods,
+      auto_approve, is_active, enable_overtime, enable_deduction,
+      remarks, component_package
+    } = req.body;
+
+    code = code?.trim()?.toUpperCase();
+    name = name?.trim();
+    designation = designation?.trim()?.toLowerCase() || null;
+    salary_type = salary_type?.trim()?.toLowerCase() || null;
+    employment_type = employment_type?.trim()?.toLowerCase() || null;
+    remarks = remarks?.trim() || null;
+
+    auto_approve = auto_approve == 1 ? 1 : 0;
+    enable_overtime = enable_overtime == 1 ? 1 : 0;
+    enable_deduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
+    is_active = is_active == null ? 1 : (is_active == 1 ? 1 : 0);
+
+    if (!code || !name) {
+      return sendError(res, 400, "code and name are required");
+    }
+
+    const validations = [];
+    if (designation) validations.push({ field: "designation", value: designation, validator: designationValidation });
+    if (salary_type) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
+    if (employment_type) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
+    const errors = validateFields(validations);
+    if (errors.length) return sendError(res, 422, errors[0].message);
+
+    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
+    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
+    const convertHHMMToMinutes = (value) => {
+      const [hours, minutes] = value.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
+
+    if (shift_start && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
+    if (shift_end && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
+    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
+
+    if (break_minutes !== undefined) {
+      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
+      break_minutes = convertHHMMToMinutes(break_minutes);
+    } else {
+      break_minutes = null;
+    }
+
+    if (grace_minutes !== undefined) {
+      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
+      grace_minutes = convertHHMMToMinutes(grace_minutes);
+    } else {
+      grace_minutes = null;
+    }
+
+    const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
+    if (!company) throw { status: 404, message: "Company not found" };
+
+    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
+    const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
+
+    if (attendance_methods === undefined) {
+      attendance_methods = companyAttendanceMethods;
+    }
+    if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
+
+    const cleanedMethods = [];
+    const uniqueMethods = new Set();
+    for (let i = 0; i < attendance_methods.length; i++) {
+      const method = attendance_methods[i];
+      if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
+      const normalizedMethod = method.trim().toLowerCase();
+      if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
+      if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
+      if (uniqueMethods.has(normalizedMethod)) continue;
+      uniqueMethods.add(normalizedMethod);
+      cleanedMethods.push(normalizedMethod);
+    }
+    attendance_methods = JSON.stringify(cleanedMethods);
+
+    const [existingPackage] = await conn.query(SELECT_EXISTING_PACKAGE_BY_CODE, [company_id, code]);
+    if (existingPackage.length) throw { status: 409, message: "Invite package code already exists" };
+
+    if (permission_package_id) {
+      const [[permissionPackage]] = await conn.query(SELECT_PERMISSION_PACKAGE, [permission_package_id, company_id]);
+      if (!permissionPackage) throw { status: 400, message: "Invalid permission_package_id" };
+    }
+
+    if (component_package !== undefined && component_package !== null && component_package !== "") {
+      const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
+      if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
+      component_package = salaryPackage.id;
+    } else {
+      component_package = null;
+    }
+
+    await conn.query(INSERT_INVITE_PACKAGE, [
+      company_id, code, name,
+      designation, salary_type, employment_type,
+      shift_start || null, shift_end || null,
+      break_minutes, grace_minutes,
+      permission_package_id || null, component_package,
+      remarks,
+      JSON.stringify(normalizeWeekends(weekends || [])),
+      attendance_methods,
+      auto_approve, enable_overtime, enable_deduction, is_active,
+      user_id || null, user_id || null
+    ]);
+
+    await conn.commit();
+    return sendSuccess(res, 201, "Invite package created successfully");
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error("Create Invite Package Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const company_id = req.company?.id;
+    const user_id = req.user?.id;
+    if (!company_id) return sendError(res, 400, "Company missing");
+
+    let {
+      package_id, name,
+      designation, salary_type, employment_type,
+      permission_package_id,
+      shift_start, shift_end,
+      break_minutes, grace_minutes,
+      weekends, attendance_methods,
+      auto_approve, is_active, enable_overtime, enable_deduction,
+      remarks, component_package
+    } = req.body;
+
+    if (!package_id) return sendError(res, 400, "package_id is required");
+
+    const [[existingPackage]] = await conn.query(
+      `SELECT id, code, company_id, is_active, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+      [package_id, company_id]
+    );
+    if (!existingPackage) throw { status: 404, message: "Invite package not found" };
+
+    if (name !== undefined) {
+      name = name?.trim();
+      if (!name) throw { status: 400, message: "name cannot be empty" };
+    }
+    if (designation !== undefined) designation = designation?.trim()?.toLowerCase() || null;
+    if (salary_type !== undefined) salary_type = salary_type?.trim()?.toLowerCase() || null;
+    if (employment_type !== undefined) employment_type = employment_type?.trim()?.toLowerCase() || null;
+    if (remarks !== undefined) remarks = remarks?.trim() || null;
+
+    if (auto_approve !== undefined) auto_approve = auto_approve == 1 ? 1 : 0;
+    if (enable_overtime !== undefined) enable_overtime = enable_overtime == 1 ? 1 : 0;
+    if (enable_deduction !== undefined) enable_deduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
+    if (is_active !== undefined) is_active = is_active == null ? 1 : (is_active == 1 ? 1 : 0);
+
+    const validations = [];
+    if (designation !== undefined && designation !== null) validations.push({ field: "designation", value: designation, validator: designationValidation });
+    if (salary_type !== undefined && salary_type !== null) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
+    if (employment_type !== undefined && employment_type !== null) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
+    const errors = validateFields(validations);
+    if (errors.length) return sendError(res, 422, errors[0].message);
+
+    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
+    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
+    const convertHHMMToMinutes = (value) => {
+      const [hours, minutes] = value.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
+
+    let parsedBreakMinutes = null, parsedGraceMinutes = null;
+    if (break_minutes !== undefined) {
+      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
+      parsedBreakMinutes = convertHHMMToMinutes(break_minutes);
+    }
+    if (grace_minutes !== undefined) {
+      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
+      parsedGraceMinutes = convertHHMMToMinutes(grace_minutes);
+    }
+
+    if (shift_start !== undefined && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
+    if (shift_end !== undefined && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
+    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
+
+    if (component_package !== undefined) {
+      if (component_package !== null && component_package !== "") {
+        const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
+        if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
+        component_package = salaryPackage.id;
+      } else {
+        component_package = null;
+      }
+    }
+
+    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
+    let attendance_methods_json;
+    if (attendance_methods !== undefined) {
+      const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
+      if (!company) throw { status: 404, message: "Company not found" };
+      const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
+      if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
+      const cleanedMethods = [];
+      const uniqueMethods = new Set();
+      for (let i = 0; i < attendance_methods.length; i++) {
+        const method = attendance_methods[i];
+        if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
+        const normalizedMethod = method.trim().toLowerCase();
+        if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
+        if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
+        if (uniqueMethods.has(normalizedMethod)) continue;
+        uniqueMethods.add(normalizedMethod);
+        cleanedMethods.push(normalizedMethod);
+      }
+      attendance_methods_json = JSON.stringify(cleanedMethods);
+    }
+
+    const fields = [];
+    const values = [];
+    const pushField = (field, value) => { fields.push(`${field} = ?`); values.push(value); };
+
+    if (name !== undefined) pushField("name", name);
+    if (designation !== undefined) pushField("designation", designation);
+    if (salary_type !== undefined) pushField("salary_type", salary_type);
+    if (employment_type !== undefined) pushField("employment_type", employment_type);
+    if (shift_start !== undefined) pushField("shift_start", shift_start);
+    if (shift_end !== undefined) pushField("shift_end", shift_end);
+    if (break_minutes !== undefined) pushField("break_minutes", parsedBreakMinutes);
+    if (grace_minutes !== undefined) pushField("grace_minutes", parsedGraceMinutes);
+    if (permission_package_id !== undefined) pushField("permission_package_id", permission_package_id);
+    if (weekends !== undefined) pushField("weekends", JSON.stringify(normalizeWeekends(weekends || [])));
+    if (attendance_methods !== undefined) pushField("attendance_methods", attendance_methods_json);
+    if (auto_approve !== undefined) pushField("auto_approve", auto_approve);
+    if (enable_overtime !== undefined) pushField("enable_overtime", enable_overtime);
+    if (enable_deduction !== undefined) pushField("enable_deduction", enable_deduction);
+    if (is_active !== undefined) pushField("is_active", is_active);
+    if (remarks !== undefined) pushField("remarks", remarks);
+    if (component_package !== undefined) pushField("component_package", component_package);
+    pushField("updated_by", user_id || null);
+
+    if (fields.length <= 1) throw { status: 400, message: "No fields to update" };
+
+    if (fields.length > 1) {
+      await conn.query(UPDATE_INVITE_PACKAGE.replace("__SET__", fields.join(", ")), [...values, package_id, company_id]);
+    }
+
+    await conn.commit();
+    return sendSuccess(res, 200, "Invite package updated successfully");
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error("Update Invite Package Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    const company_id = req.company?.id;
+    if (!company_id) return sendError(res, 400, "Company missing");
+
+    let { page = 1, limit = 10, search = "", is_active } = req.query;
+    page = Math.max(Number(page) || 1, 1);
+    limit = Math.max(Number(limit) || 10, 1);
+    const offset = (page - 1) * limit;
+
+    let where = `WHERE ip.company_id = ? AND ip.is_deleted = 0`;
+    const params = [company_id];
+    if (search) {
+      where += ` AND (ip.code LIKE ? OR ip.name LIKE ?)`;
+      params.push(`%${search}%`, `%${search}%`);
+    }
+    if (is_active !== undefined) {
+      where += ` AND ip.is_active = ?`;
+      params.push(is_active === "true" || is_active == 1 ? 1 : 0);
+    }
+
+    const [[{ total }]] = await conn.query(`SELECT COUNT(*) as total FROM invite_packages ip ${where}`, params);
+    const [packages] = await conn.query(
+      `SELECT ip.*, pp.package_name AS permission_package_name
+       FROM invite_packages ip
+       LEFT JOIN permission_packages pp ON pp.id = ip.permission_package_id
+       ${where}
+       ORDER BY ip.id DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const packageIds = packages.map(p => p.id);
+    const permissionPackageIds = packages.map(p => p.permission_package_id).filter(Boolean);
+
+    const permissionsMap = new Map();
+    if (permissionPackageIds.length > 0) {
+      const [permRows] = await conn.query(SELECT_PERMISSIONS_FOR_PACKAGES, [permissionPackageIds]);
+      for (const row of permRows) {
+        if (!permissionsMap.has(row.package_id)) permissionsMap.set(row.package_id, []);
+        permissionsMap.get(row.package_id).push({ id: row.id, action: row.action, code: row.code, name: row.name });
+      }
+    }
+
+    const salaryComponentsMap = new Map();
+    const componentPackageIds = packages.map(p => p.component_package).filter(Boolean);
+    if (componentPackageIds.length > 0) {
+      const [salaryRows] = await conn.query(SELECT_SALARY_COMPONENTS_FOR_PACKAGES, [componentPackageIds]);
+      for (const sRow of salaryRows) {
+        if (!salaryComponentsMap.has(sRow.component_package_id)) salaryComponentsMap.set(sRow.component_package_id, []);
+        salaryComponentsMap.get(sRow.component_package_id).push({
+          id: sRow.id,
+          component_id: sRow.component_id,
+          component_name: sRow.component_name,
+          component_code: sRow.component_code,
+          component_type: sRow.component_type,
+          calc_type: sRow.calc_type,
+          calc_value: parseFloat(sRow.calc_value),
+          is_active: !!sRow.is_active,
+        });
+      }
+    }
+
+    const data = packages.map(pkg =>
+      formatInvitePackage(pkg, {
+        permissions: permissionsMap.get(pkg.permission_package_id) || [],
+        salaryComponents: salaryComponentsMap.get(pkg.component_package) || [],
+      })
+    );
+
+    return sendSuccess(res, 200, "Invite package list fetched successfully", data, buildMeta(page, limit, total, data.length));
+  } catch (err) {
+    console.error("Package List Error:", err);
+    return sendError(res, 500, "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const company_id = req.company?.id;
+    const user_id = req.user?.id;
+    if (!company_id) return sendError(res, 400, "Company missing");
+
+    const { package_id } = req.body;
+    if (!package_id) return sendError(res, 400, "package_id is required");
+
+    const [[pkg]] = await conn.query(
+      `SELECT id, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? LIMIT 1 FOR UPDATE`,
+      [package_id, company_id]
+    );
+    if (!pkg) return sendError(res, 404, "Invite package not found");
+    if (pkg.is_deleted) return sendError(res, 400, "Package already deleted");
+
+    const [[{ total }]] = await conn.query(COUNT_EMPLOYEES_USING_PACKAGE, [package_id, company_id]);
+    if (total > 0) return sendError(res, 400, "Cannot delete package: assigned to employees");
+
+    await conn.query(SOFT_DELETE_INVITE_PACKAGE, [user_id || null, package_id]);
+    await conn.commit();
+    return sendSuccess(res, 200, "Invite package deleted successfully");
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error("Delete Invite Package Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
 
 const SELECT_USER_BY_ID = `
   SELECT id, name, email, is_active
@@ -361,35 +772,6 @@ const CHECK_SINGLE_PERMISSION_PACKAGE = `
   WHERE id = ? AND company_id = ? AND is_active = 1 AND is_deleted = 0
 `;
 
-// ----------------------------------------------------------------------
-// Local formatters (unchanged)
-// ----------------------------------------------------------------------
-
-const formatInvitePackage = (pkg, { permissions = [], salaryComponents = [] } = {}) => ({
-  id: pkg.id,
-  code: pkg.code,
-  name: pkg.name,
-  designation: getEnumObject(DESIGNATIONS, pkg.designation),
-  salary_type: getEnumObject(SALARY_TYPES, pkg.salary_type),
-  employment_type: getEnumObject(EMPLOYMENT_TYPES, pkg.employment_type),
-  shift_start: pkg.shift_start,
-  shift_end: pkg.shift_end,
-  break_minutes: pkg.break_minutes,
-  grace_minutes: pkg.grace_minutes,
-  permission_package_id: pkg.permission_package_id,
-  permission_package_name: pkg.permission_package_name,
-  auto_approve: !!pkg.auto_approve,
-  enable_overtime: !!pkg.enable_overtime,
-  enable_deduction: !!pkg.enable_deduction,
-  is_active: !!pkg.is_active,
-  weekends: parseJSONSafe(pkg.weekends, []),
-  attendance_methods: parseJSONSafe(pkg.attendance_methods, []),
-  permissions,
-  component_package: pkg.component_package,
-  remarks: pkg.remarks,
-  salary_components: salaryComponents,
-});
-
 const formatInvite = (invite, { permissions = [], salaryComponents = [] } = {}) => ({
   invite_id: invite.id,
   token: invite.invite_token,
@@ -411,22 +793,22 @@ const formatInvite = (invite, { permissions = [], salaryComponents = [] } = {}) 
   auto_approve: !!invite.auto_approve,
   enable_overtime: !!invite.enable_overtime,
   enable_deduction: !!invite.enable_deduction,
-  joining_date: invite.joining_date ? toISTString(invite.joining_date).split(' ')[0] : null,
+  joining_date: invite.joining_date ? formatIST(invite.joining_date, "YYYY-MM-DD") : null,
   is_deleted: !!invite.is_deleted,
-  deleted_at: invite.deleted_at ? toISTString(invite.deleted_at) : null,
+  deleted_at: invite.deleted_at ? formatIST(invite.deleted_at) : null,
   deleted_by: invite.deleted_by,
-  expires_at: invite.expires_at ? toISTString(invite.expires_at) : null,
-  created_at: invite.created_at ? toISTString(invite.created_at) : null,
+  expires_at: invite.expires_at ? formatIST(invite.expires_at) : null,
+  created_at: invite.created_at ? formatIST(invite.created_at) : null,
   base_amount: invite.base_amount != null ? parseFloat(invite.base_amount) : null,
-  effective_from: invite.effective_from ? toISTString(invite.effective_from).split(' ')[0] : null,
-  effective_to: invite.effective_to ? toISTString(invite.effective_to).split(' ')[0] : null,
+  effective_from: invite.effective_from ? formatIST(invite.effective_from, "YYYY-MM-DD") : null,
+  effective_to: invite.effective_to ? formatIST(invite.effective_to, "YYYY-MM-DD") : null,
   user: invite.user_id
     ? {
-        id: invite.user_id,
-        name: invite.user_name,
-        email: invite.user_email,
-        profile_picture: buildFileUrl(invite.profile_picture),
-      }
+      id: invite.user_id,
+      name: invite.user_name,
+      email: invite.user_email,
+      profile_picture: buildFileUrl(invite.profile_picture),
+    }
     : null,
   invited_by: {
     id: invite.invited_by,
@@ -454,15 +836,15 @@ const formatUserInvite = (invite, { permissions = [], salaryComponents = [] } = 
   auto_approve: !!invite.auto_approve,
   enable_overtime: !!invite.enable_overtime,
   enable_deduction: !!invite.enable_deduction,
-  joining_date: invite.joining_date ? toISTString(invite.joining_date).split(' ')[0] : null,
+  joining_date: invite.joining_date ? formatIST(invite.joining_date, "YYYY-MM-DD") : null,
   is_deleted: !!invite.is_deleted,
-  deleted_at: invite.deleted_at ? toISTString(invite.deleted_at) : null,
+  deleted_at: invite.deleted_at ? formatIST(invite.deleted_at) : null,
   deleted_by: invite.deleted_by,
-  expires_at: invite.expires_at ? toISTString(invite.expires_at) : null,
-  created_at: invite.created_at ? toISTString(invite.created_at) : null,
+  expires_at: invite.expires_at ? formatIST(invite.expires_at) : null,
+  created_at: invite.created_at ? formatIST(invite.created_at) : null,
   base_amount: invite.base_amount != null ? parseFloat(invite.base_amount) : null,
-  effective_from: invite.effective_from ? toISTString(invite.effective_from).split(' ')[0] : null,
-  effective_to: invite.effective_to ? toISTString(invite.effective_to).split(' ')[0] : null,
+  effective_from: invite.effective_from ? formatIST(invite.effective_from, "YYYY-MM-DD") : null,
+  effective_to: invite.effective_to ? formatIST(invite.effective_to, "YYYY-MM-DD") : null,
   company: {
     id: invite.company_id,
     name: invite.company_name,
@@ -475,420 +857,17 @@ const formatUserInvite = (invite, { permissions = [], salaryComponents = [] } = 
   },
   invited_by: invite.invited_by_id
     ? {
-        id: invite.invited_by_id,
-        name: invite.invited_by_name,
-        email: invite.invited_by_email,
-        profile_picture: buildFileUrl(invite.invited_by_profile_picture),
-      }
+      id: invite.invited_by_id,
+      name: invite.invited_by_name,
+      email: invite.invited_by_email,
+      profile_picture: buildFileUrl(invite.invited_by_profile_picture),
+    }
     : null,
   permission_package: invite.package_id ? { id: invite.package_id, name: invite.package_name } : null,
   permissions,
   attendance_methods: parseJSONSafe(invite.attendance_methods, []).map(m => (typeof m === 'string' ? m : m?.method || '')).filter(Boolean),
   salary_components: salaryComponents,
 });
-
-// ----------------------------------------------------------------------
-// Routes (refactored)
-// ----------------------------------------------------------------------
-
-router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-
-    let {
-      code, name,
-      designation, salary_type, employment_type,
-      permission_package_id,
-      shift_start, shift_end,
-      break_minutes, grace_minutes,
-      weekends, attendance_methods,
-      auto_approve, is_active, enable_overtime, enable_deduction,
-      remarks, component_package
-    } = req.body;
-
-    code = code?.trim()?.toUpperCase();
-    name = name?.trim();
-    designation = designation?.trim()?.toLowerCase() || null;
-    salary_type = salary_type?.trim()?.toLowerCase() || null;
-    employment_type = employment_type?.trim()?.toLowerCase() || null;
-    remarks = remarks?.trim() || null;
-
-    // Boolean fields – strict true/false expected
-    auto_approve = auto_approve === true ? 1 : 0;
-    enable_overtime = enable_overtime === true ? 1 : 0;
-    enable_deduction = enable_deduction === undefined ? 1 : (enable_deduction === true ? 1 : 0);
-    is_active = is_active === undefined ? 1 : (is_active === true ? 1 : 0);
-
-    if (!code || !name) {
-      return sendError(res, 400, "code and name are required");
-    }
-
-    const validations = [];
-    if (designation) validations.push({ field: "designation", value: designation, validator: designationValidation });
-    if (salary_type) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
-    if (employment_type) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
-    const errors = validateFields(validations);
-    if (errors.length) return sendError(res, 422, errors[0].message);
-
-    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
-    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
-    const convertHHMMToMinutes = (value) => {
-      const [hours, minutes] = value.split(":").map(Number);
-      return hours * 60 + minutes;
-    };
-
-    if (shift_start && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
-    if (shift_end && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
-    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
-
-    if (break_minutes !== undefined) {
-      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
-      break_minutes = convertHHMMToMinutes(break_minutes);
-    } else {
-      break_minutes = null;
-    }
-
-    if (grace_minutes !== undefined) {
-      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
-      grace_minutes = convertHHMMToMinutes(grace_minutes);
-    } else {
-      grace_minutes = null;
-    }
-
-    const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
-    if (!company) throw { status: 404, message: "Company not found" };
-
-    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
-    const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
-
-    if (attendance_methods === undefined) {
-      attendance_methods = companyAttendanceMethods;
-    }
-    if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
-
-    const cleanedMethods = [];
-    const uniqueMethods = new Set();
-    for (let i = 0; i < attendance_methods.length; i++) {
-      const method = attendance_methods[i];
-      if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
-      const normalizedMethod = method.trim().toLowerCase();
-      if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
-      if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
-      if (uniqueMethods.has(normalizedMethod)) continue;
-      uniqueMethods.add(normalizedMethod);
-      cleanedMethods.push(normalizedMethod);
-    }
-    attendance_methods = JSON.stringify(cleanedMethods);
-
-    const [existingPackage] = await conn.query(SELECT_EXISTING_PACKAGE_BY_CODE, [company_id, code]);
-    if (existingPackage.length) throw { status: 409, message: "Invite package code already exists" };
-
-    if (permission_package_id) {
-      const [[permissionPackage]] = await conn.query(SELECT_PERMISSION_PACKAGE, [permission_package_id, company_id]);
-      if (!permissionPackage) throw { status: 400, message: "Invalid permission_package_id" };
-    }
-
-    if (component_package !== undefined && component_package !== null && component_package !== "") {
-      const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
-      if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
-      component_package = salaryPackage.id;
-    } else {
-      component_package = null;
-    }
-
-    await conn.query(INSERT_INVITE_PACKAGE, [
-      company_id, code, name,
-      designation, salary_type, employment_type,
-      shift_start || null, shift_end || null,
-      break_minutes, grace_minutes,
-      permission_package_id || null, component_package,
-      remarks,
-      JSON.stringify(normalizeWeekends(weekends || [])),
-      attendance_methods,
-      auto_approve, enable_overtime, enable_deduction, is_active,
-      user_id || null, user_id || null
-    ]);
-
-    await conn.commit();
-    return sendSuccess(res, 201, "Invite package created successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Create Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company missing");
-
-    let {
-      package_id, name,
-      designation, salary_type, employment_type,
-      permission_package_id,
-      shift_start, shift_end,
-      break_minutes, grace_minutes,
-      weekends, attendance_methods,
-      auto_approve, is_active, enable_overtime, enable_deduction,
-      remarks, component_package
-    } = req.body;
-
-    if (!package_id) return sendError(res, 400, "package_id is required");
-
-    const [[existingPackage]] = await conn.query(
-      `SELECT id, code, company_id, is_active, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
-      [package_id, company_id]
-    );
-    if (!existingPackage) throw { status: 404, message: "Invite package not found" };
-
-    if (name !== undefined) {
-      name = name?.trim();
-      if (!name) throw { status: 400, message: "name cannot be empty" };
-    }
-    if (designation !== undefined) designation = designation?.trim()?.toLowerCase() || null;
-    if (salary_type !== undefined) salary_type = salary_type?.trim()?.toLowerCase() || null;
-    if (employment_type !== undefined) employment_type = employment_type?.trim()?.toLowerCase() || null;
-    if (remarks !== undefined) remarks = remarks?.trim() || null;
-
-    // Strict booleans
-    if (auto_approve !== undefined) auto_approve = auto_approve === true ? 1 : 0;
-    if (enable_overtime !== undefined) enable_overtime = enable_overtime === true ? 1 : 0;
-    if (enable_deduction !== undefined) enable_deduction = enable_deduction === true ? 1 : 0;
-    if (is_active !== undefined) is_active = is_active === true ? 1 : 0;
-
-    const validations = [];
-    if (designation !== undefined && designation !== null) validations.push({ field: "designation", value: designation, validator: designationValidation });
-    if (salary_type !== undefined && salary_type !== null) validations.push({ field: "salary_type", value: salary_type, validator: salaryValidation });
-    if (employment_type !== undefined && employment_type !== null) validations.push({ field: "employment_type", value: employment_type, validator: employmentValidation });
-    const errors = validateFields(validations);
-    if (errors.length) return sendError(res, 422, errors[0].message);
-
-    // Time parsing (same as create)
-    const isValidHHMM = (value) => /^([0-1]\d|2[0-3]):([0-5]\d)$/.test(value);
-    const isValidHHMMSS = (value) => /^([0-1]\d|2[0-3]):([0-5]\d):([0-5]\d)$/.test(value);
-    const convertHHMMToMinutes = (value) => {
-      const [hours, minutes] = value.split(":").map(Number);
-      return hours * 60 + minutes;
-    };
-
-    let parsedBreakMinutes = null, parsedGraceMinutes = null;
-    if (break_minutes !== undefined) {
-      if (typeof break_minutes !== "string" || !isValidHHMM(break_minutes)) throw { status: 400, message: "break_minutes must be HH:mm" };
-      parsedBreakMinutes = convertHHMMToMinutes(break_minutes);
-    }
-    if (grace_minutes !== undefined) {
-      if (typeof grace_minutes !== "string" || !isValidHHMM(grace_minutes)) throw { status: 400, message: "grace_minutes must be HH:mm" };
-      parsedGraceMinutes = convertHHMMToMinutes(grace_minutes);
-    }
-
-    if (shift_start !== undefined && !isValidHHMMSS(shift_start)) throw { status: 400, message: "shift_start must be HH:mm:ss" };
-    if (shift_end !== undefined && !isValidHHMMSS(shift_end)) throw { status: 400, message: "shift_end must be HH:mm:ss" };
-    if (shift_start && shift_end && shift_start === shift_end) throw { status: 400, message: "shift_start and shift_end cannot be same" };
-
-    // Component package validation
-    if (component_package !== undefined) {
-      if (component_package !== null && component_package !== "") {
-        const [[salaryPackage]] = await conn.query(SELECT_SALARY_COMPONENT_PACKAGE, [component_package, company_id]);
-        if (!salaryPackage) throw { status: 400, message: "Invalid component_package ID" };
-        component_package = salaryPackage.id;
-      } else {
-        component_package = null;
-      }
-    }
-
-    // Attendance methods
-    const allowedAttendanceMethods = ["manual", "ip", "gps", "qr", "face"];
-    let attendance_methods_json;
-    if (attendance_methods !== undefined) {
-      const [[company]] = await conn.query(SELECT_COMPANY, [company_id]);
-      if (!company) throw { status: 404, message: "Company not found" };
-      const companyAttendanceMethods = company.attendance_methods ? JSON.parse(company.attendance_methods) : [];
-      if (!Array.isArray(attendance_methods)) throw { status: 400, message: "attendance_methods must be an array" };
-      const cleanedMethods = [];
-      const uniqueMethods = new Set();
-      for (let i = 0; i < attendance_methods.length; i++) {
-        const method = attendance_methods[i];
-        if (!method || typeof method !== "string") throw { status: 400, message: `Invalid attendance method at index ${i}` };
-        const normalizedMethod = method.trim().toLowerCase();
-        if (!allowedAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Unsupported attendance method: ${normalizedMethod}` };
-        if (!companyAttendanceMethods.includes(normalizedMethod)) throw { status: 400, message: `Attendance method not enabled in company: ${normalizedMethod}` };
-        if (uniqueMethods.has(normalizedMethod)) continue;
-        uniqueMethods.add(normalizedMethod);
-        cleanedMethods.push(normalizedMethod);
-      }
-      attendance_methods_json = JSON.stringify(cleanedMethods);
-    }
-
-    const fields = [];
-    const values = [];
-    const pushField = (field, value) => { fields.push(`${field} = ?`); values.push(value); };
-
-    if (name !== undefined) pushField("name", name);
-    if (designation !== undefined) pushField("designation", designation);
-    if (salary_type !== undefined) pushField("salary_type", salary_type);
-    if (employment_type !== undefined) pushField("employment_type", employment_type);
-    if (shift_start !== undefined) pushField("shift_start", shift_start);
-    if (shift_end !== undefined) pushField("shift_end", shift_end);
-    if (break_minutes !== undefined) pushField("break_minutes", parsedBreakMinutes);
-    if (grace_minutes !== undefined) pushField("grace_minutes", parsedGraceMinutes);
-    if (permission_package_id !== undefined) pushField("permission_package_id", permission_package_id);
-    if (weekends !== undefined) pushField("weekends", JSON.stringify(normalizeWeekends(weekends || [])));
-    if (attendance_methods !== undefined) pushField("attendance_methods", attendance_methods_json);
-    if (auto_approve !== undefined) pushField("auto_approve", auto_approve);
-    if (enable_overtime !== undefined) pushField("enable_overtime", enable_overtime);
-    if (enable_deduction !== undefined) pushField("enable_deduction", enable_deduction);
-    if (is_active !== undefined) pushField("is_active", is_active);
-    if (remarks !== undefined) pushField("remarks", remarks);
-    if (component_package !== undefined) pushField("component_package", component_package);
-    pushField("updated_by", user_id || null);
-
-    if (fields.length <= 1) throw { status: 400, message: "No fields to update" };
-
-    if (fields.length > 1) {
-      await conn.query(UPDATE_INVITE_PACKAGE.replace("__SET__", fields.join(", ")), [...values, package_id, company_id]);
-    }
-
-    await conn.commit();
-    return sendSuccess(res, 200, "Invite package updated successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Update Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    if (!company_id) return sendError(res, 400, "Company missing");
-
-    let { page = 1, limit = 10, search = "", is_active } = req.query;
-    page = Math.max(Number(page) || 1, 1);
-    limit = Math.max(Number(limit) || 10, 1);
-    const offset = (page - 1) * limit;
-
-    let where = `WHERE ip.company_id = ? AND ip.is_deleted = 0`;
-    const params = [company_id];
-    if (search) {
-      where += ` AND (ip.code LIKE ? OR ip.name LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`);
-    }
-    if (is_active !== undefined) {
-      where += ` AND ip.is_active = ?`;
-      params.push(is_active === "true" || is_active == 1 ? 1 : 0);
-    }
-
-    const [[{ total }]] = await conn.query(`SELECT COUNT(*) as total FROM invite_packages ip ${where}`, params);
-    const [packages] = await conn.query(
-      `SELECT ip.*, pp.package_name AS permission_package_name
-       FROM invite_packages ip
-       LEFT JOIN permission_packages pp ON pp.id = ip.permission_package_id
-       ${where}
-       ORDER BY ip.id DESC
-       LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
-
-    const packageIds = packages.map(p => p.id);
-    const permissionPackageIds = packages.map(p => p.permission_package_id).filter(Boolean);
-
-    const permissionsMap = new Map();
-    if (permissionPackageIds.length > 0) {
-      const [permRows] = await conn.query(SELECT_PERMISSIONS_FOR_PACKAGES, [permissionPackageIds]);
-      for (const row of permRows) {
-        if (!permissionsMap.has(row.package_id)) permissionsMap.set(row.package_id, []);
-        permissionsMap.get(row.package_id).push({ id: row.id, action: row.action, code: row.code, name: row.name });
-      }
-    }
-
-    const salaryComponentsMap = new Map();
-    const componentPackageIds = packages.map(p => p.component_package).filter(Boolean);
-    if (componentPackageIds.length > 0) {
-      const [salaryRows] = await conn.query(SELECT_SALARY_COMPONENTS_FOR_PACKAGES, [componentPackageIds]);
-      for (const sRow of salaryRows) {
-        if (!salaryComponentsMap.has(sRow.component_package_id)) salaryComponentsMap.set(sRow.component_package_id, []);
-        salaryComponentsMap.get(sRow.component_package_id).push({
-          id: sRow.id,
-          component_id: sRow.component_id,
-          component_name: sRow.component_name,
-          component_code: sRow.component_code,
-          component_type: sRow.component_type,
-          calc_type: sRow.calc_type,
-          calc_value: parseFloat(sRow.calc_value),
-          is_active: !!sRow.is_active,
-        });
-      }
-    }
-
-    const data = packages.map(pkg =>
-      formatInvitePackage(pkg, {
-        permissions: permissionsMap.get(pkg.permission_package_id) || [],
-        salaryComponents: salaryComponentsMap.get(pkg.component_package) || [],
-      })
-    );
-
-    return sendSuccess(res, 200, "Invite package list fetched successfully", data, buildMeta(page, limit, total, data.length));
-  } catch (err) {
-    console.error("Package List Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company missing");
-
-    const { package_id } = req.body;
-    if (!package_id) return sendError(res, 400, "package_id is required");
-
-    const [[pkg]] = await conn.query(
-      `SELECT id, is_deleted FROM invite_packages WHERE id = ? AND company_id = ? LIMIT 1 FOR UPDATE`,
-      [package_id, company_id]
-    );
-    if (!pkg) return sendError(res, 404, "Invite package not found");
-    if (pkg.is_deleted) return sendError(res, 400, "Package already deleted");
-
-    const [[{ total }]] = await conn.query(COUNT_EMPLOYEES_USING_PACKAGE, [package_id, company_id]);
-    if (total > 0) return sendError(res, 400, "Cannot delete package: assigned to employees");
-
-    await conn.query(SOFT_DELETE_INVITE_PACKAGE, [user_id || null, package_id]);
-    await conn.commit();
-    return sendSuccess(res, 200, "Invite package deleted successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete Invite Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-// ----- Invite routes (send, resend, accept, list, my, update, cancel, reject) -----
 
 router.post("/send", auth(INV.MNG), async (req, res) => {
   let conn;
@@ -949,7 +928,6 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       return sendError(res, 422, "Please check the submitted information.", errors);
     }
 
-    // Parse minutes
     const parseMinutes = (val, field) => {
       if (!val) return null;
       if (typeof val !== "string") throw new Error(`${field} must be in HH:mm format`);
@@ -964,10 +942,11 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       breakMinutes = parseMinutes(break_minutes, "break time");
       graceMinutes = parseMinutes(grace_minutes, "grace time");
     } catch (e) {
+      await rollback();
       return sendError(res, 422, "Invalid time format provided.", { time: e.message });
     }
 
-    const isAuto = auto_approve === true ? 1 : 0;
+    const isAuto = auto_approve == 1 ? 1 : 0;
 
     const [[company]] = await conn.query(SELECT_COMPANY_BY_ID, [company_id]);
     if (!company) {
@@ -1025,8 +1004,8 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
     }
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    const inviteEnableOvertime = enable_overtime === true ? 1 : 0;
-    const inviteEnableDeduction = enable_deduction === undefined ? 1 : (enable_deduction === true ? 1 : 0);
+    const inviteEnableOvertime = enable_overtime == 1 ? 1 : 0;
+    const inviteEnableDeduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
     const inviteJoiningDate = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
 
     const [inviteResult] = await conn.query(INSERT_INVITE, [
@@ -1052,12 +1031,12 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
     await conn.commit();
 
     try {
-      const appUrl = process.env.FRONTEND_URL || "https://oneattendanceclient.vercel.app";
+      const appUrl = FRONTEND_URL || "https://oneattendanceclient.vercel.app";
       const acceptUrl = `${appUrl}/accept-invite?token=${inviteToken}`;
       await queueCompanyInvitationEmail({
         to: user.email,
         subject: `Invitation to join ${company.name}`,
-        fromEmail: process.env.EMAIL_USER,
+        fromEmail: EMAIL_USER,
         fromName: company.name || "OneAttendance",
         replyTo: req.user?.email,
         appUrl, acceptUrl, inviteToken,
@@ -1091,7 +1070,6 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
   }
 });
 
-// Resend Invite
 router.post("/resend", auth(INV.MNG), async (req, res) => {
   let conn;
   const rollback = async () => { if (conn) await conn.rollback(); };
@@ -1140,25 +1118,25 @@ router.post("/resend", auth(INV.MNG), async (req, res) => {
       return sendError(res, 404, "Company not found");
     }
 
-    // Format attendance methods
     const methods = invite.attendance_methods ? JSON.parse(invite.attendance_methods) : [];
+    const isAutoFromDb = Number(invite.auto_approve || 0);
     const cleanedAttendance = methods
       .map(method => {
         const name = typeof method === "string" ? method : (method?.method || "");
-        const isAuto = typeof method === "string" ? (invite.auto_approve || 0) : (method?.is_auto || invite.auto_approve || 0);
-        return { method: name, is_auto: isAuto };
+        const isAuto = typeof method === "string" ? isAutoFromDb : (method?.is_auto || isAutoFromDb);
+        return { method: name, is_auto: Number(isAuto) };
       })
       .filter(m => m.method);
 
     await conn.commit();
 
     try {
-      const appUrl = process.env.FRONTEND_URL || "https://oneattendanceclient.vercel.app";
+      const appUrl = FRONTEND_URL || "https://oneattendanceclient.vercel.app";
       const acceptUrl = `${appUrl}/accept-invite?token=${invite.invite_token}`;
       await queueCompanyInvitationEmail({
         to: user.email,
         subject: `Invitation reminder from ${company.name}`,
-        fromEmail: process.env.EMAIL_USER,
+        fromEmail: EMAIL_USER,
         fromName: company.name || "OneAttendance",
         replyTo: req.user?.email,
         appUrl,
@@ -1200,7 +1178,6 @@ router.post("/resend", auth(INV.MNG), async (req, res) => {
   }
 });
 
-// Accept Invite (authenticated)
 router.post("/accept", auth(), async (req, res) => {
   let conn;
   try {
@@ -1239,8 +1216,8 @@ router.post("/accept", auth(), async (req, res) => {
     const [[existingEmployee]] = await conn.query(SELECT_EXISTING_EMPLOYEE_FOR_INVITE, [companyId, userId]);
     let employeeId, employeeCode;
 
-    const inviteEnableOvertimeValue = enable_overtime === true ? 1 : 0;
-    const inviteEnableDeductionValue = enable_deduction === undefined ? 1 : (enable_deduction === true ? 1 : 0);
+    const inviteEnableOvertimeValue = enable_overtime == 1 ? 1 : 0;
+    const inviteEnableDeductionValue = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
     const inviteJoiningDateValue = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
 
     if (existingEmployee) {
@@ -1270,7 +1247,6 @@ router.post("/accept", auth(), async (req, res) => {
       employeeId = result.insertId;
     }
 
-    // Salary structure
     if (invite.base_amount != null) {
       const [salaryResult] = await conn.query(INSERT_SALARY_STRUCTURE, [
         companyId, employeeId, invite.base_amount,
@@ -1290,13 +1266,13 @@ router.post("/accept", auth(), async (req, res) => {
       }
     }
 
-    // Attendance methods
     await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
 
     if (inviteAttendance.length) {
+      const autoApproveVal = Number(invite.auto_approve || 0);
       const attendanceValues = inviteAttendance.map(m => {
         const method = typeof m === "string" ? m : (m?.method || "");
-        const isAuto = typeof m === "string" ? (invite.auto_approve || 0) : (m?.is_auto || invite.auto_approve || 0);
+        const isAuto = typeof m === "string" ? autoApproveVal : (m?.is_auto || autoApproveVal);
         return [employeeId, method, Number(isAuto || 0), 1, userId, userId, 0];
       }).filter(item => item[1]);
 
@@ -1316,7 +1292,6 @@ router.post("/accept", auth(), async (req, res) => {
   }
 });
 
-// Accept Invite (open – no auth middleware)
 router.post("/accept-invite", async (req, res) => {
   let conn;
   try {
@@ -1368,8 +1343,8 @@ router.post("/accept-invite", async (req, res) => {
     const [[existingEmployee]] = await conn.query(SELECT_EXISTING_EMPLOYEE_FOR_INVITE, [companyId, userId]);
     let employeeId, employeeCode;
 
-    const inviteEnableOvertimeValue = enable_overtime === true ? 1 : 0;
-    const inviteEnableDeductionValue = enable_deduction === undefined ? 1 : (enable_deduction === true ? 1 : 0);
+    const inviteEnableOvertimeValue = enable_overtime == 1 ? 1 : 0;
+    const inviteEnableDeductionValue = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
     const inviteJoiningDateValue = joining_date && !Number.isNaN(Date.parse(joining_date)) ? joining_date : null;
 
     if (existingEmployee) {
@@ -1422,7 +1397,6 @@ router.post("/accept-invite", async (req, res) => {
 
     if (!employeeId) throw new Error("Failed to create employee");
 
-    // Salary structure
     if (invite.base_amount != null) {
       const [salaryResult] = await conn.query(INSERT_SALARY_STRUCTURE, [
         companyId,
@@ -1454,13 +1428,13 @@ router.post("/accept-invite", async (req, res) => {
       }
     }
 
-    // Attendance methods
     await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
 
     if (inviteAttendance.length > 0) {
+      const autoApproveVal = Number(invite.auto_approve || 0);
       const attendanceValues = inviteAttendance.map(m => {
         const method = typeof m === "string" ? m : (m?.method || "");
-        const isAuto = typeof m === "string" ? (invite.auto_approve || 0) : (m?.is_auto || invite.auto_approve || 0);
+        const isAuto = typeof m === "string" ? autoApproveVal : (m?.is_auto || autoApproveVal);
         return [employeeId, method, Number(isAuto || 0), 1, userId, userId, 0];
       }).filter(item => item[1]);
 
@@ -1480,7 +1454,6 @@ router.post("/accept-invite", async (req, res) => {
   }
 });
 
-// List Invites (Company side)
 router.get("/list", auth(INV.MNG), async (req, res) => {
   let conn;
   try {
@@ -1597,7 +1570,6 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
   }
 });
 
-// My Invites (User side)
 router.get("/my", auth(), async (req, res) => {
   let conn;
   try {
@@ -1710,7 +1682,6 @@ router.get("/my", auth(), async (req, res) => {
   }
 });
 
-// Update Invite
 router.put("/update", auth(INV.MNG), async (req, res) => {
   let conn;
   try {
@@ -1853,9 +1824,9 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (grace_minutes !== undefined) addField("grace_minutes", graceMinutes);
     if (weekends !== undefined) addField("weekends", JSON.stringify(normalizeWeekends(weekends || [])));
     if (attendance_methods !== undefined) addField("attendance_methods", JSON.stringify(attendance_methods));
-    if (auto_approve !== undefined) addField("auto_approve", auto_approve === true ? 1 : 0);
-    if (enable_overtime !== undefined) addField("enable_overtime", enable_overtime === true ? 1 : 0);
-    if (enable_deduction !== undefined) addField("enable_deduction", enable_deduction === true ? 1 : 0);
+    if (auto_approve !== undefined) addField("auto_approve", auto_approve == 1 ? 1 : 0);
+    if (enable_overtime !== undefined) addField("enable_overtime", enable_overtime == 1 ? 1 : 0);
+    if (enable_deduction !== undefined) addField("enable_deduction", enable_deduction == 1 ? 1 : 0);
     if (joining_date !== undefined) addField("joining_date", joining_date);
     if (base_amount !== undefined) addField("base_amount", base_amount);
     if (effective_from !== undefined) addField("effective_from", effective_from);
@@ -1909,7 +1880,6 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
   }
 });
 
-// Cancel Invite
 router.delete("/cancel", auth(), async (req, res) => {
   let conn;
   try {
@@ -1955,7 +1925,6 @@ router.delete("/cancel", auth(), async (req, res) => {
   }
 });
 
-// Reject Invite
 router.put("/reject", auth(INV.MNG), async (req, res) => {
   let conn;
   try {

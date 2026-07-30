@@ -25,10 +25,7 @@ const isValidDate = (value) => parseDate(value) !== null;
 const formatToDate = (value) => formatIST(value, "YYYY-MM-DD");
 const toISTString = (value) => formatIST(value); // default format "YYYY-MM-DD HH:mm:ss"
 
-const LEDGER_MAX_LIMIT = Math.max(
-  1,
-  safeNumber(process.env.LEDGER_MAX_LIMIT, 100) || 100
-);
+const LEDGER_MAX_LIMIT = Math.max(1, 100);
 
 const hasQueryValue = (value) =>
   value !== undefined && value !== null && String(value).trim() !== "";

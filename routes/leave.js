@@ -29,6 +29,7 @@ import {
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { LEAVE, LEAVE_BAL, LEAVE_CFG } from "../constants/permissions.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
+import { EMAIL_USER } from "../config/config.js";
 
 const router = express.Router();
 
@@ -1070,7 +1071,7 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
     const emailJobs = [];
     const emailPayload = {
       subject: `New Leave Request - ${employee.name}`,
-      fromEmail: process.env.EMAIL_USER,
+      fromEmail: EMAIL_USER,
       fromName: company.name || "OneAttendance",
       requester: { id: employee.user_id, name: employee.name, email: employee.email },
       employee: { id: employee.id, employee_code: employee.employee_code, designation: getEnumObject(DESIGNATIONS, employee.designation), name: employee.name, email: employee.email },
@@ -1232,7 +1233,7 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
         await queueLeaveAcceptanceEmail({
           to: employee.email,
           subject: `Leave Approved - ${config.name}`,
-          fromEmail: process.env.EMAIL_USER,
+          fromEmail: EMAIL_USER,
           fromName: company.name || "OneAttendance",
           replyTo: approver?.email || null,
           requester: { id: employee.user_id, name: employee.name, email: employee.email },

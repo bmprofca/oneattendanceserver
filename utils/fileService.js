@@ -3,11 +3,12 @@ import path from "path";
 import axios from "axios";
 import crypto from "crypto";
 import sharp from "sharp";
+import { SERVER_BASE_URL, NODE_ENV } from "../config/config.js";
 
 
 const BASE_URL =
-  process.env.NODE_ENV === "production"
-    ? process.env.BASE_URL || "https://oneattendanceserver.onesaas.in"
+  NODE_ENV === "production"
+    ? SERVER_BASE_URL || "https://oneattendanceserver.onesaas.in"
     :"http://localhost:7736";
 
 const BASE_UPLOAD_DIR = path.join(

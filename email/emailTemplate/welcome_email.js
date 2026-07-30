@@ -1,5 +1,6 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
+import { EMAIL_USER } from "../../config/config.js";
 
 export const sendWelcomeEmail = async ({
     to,
@@ -7,7 +8,7 @@ export const sendWelcomeEmail = async ({
     userName = "there",
     password,                
     dashboardUrl = "#",
-    fromEmail = process.env.EMAIL_USER,
+    fromEmail = EMAIL_USER,
     fromName = "OneAttendance",
     replyTo,
 }) => {

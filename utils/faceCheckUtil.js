@@ -1,8 +1,9 @@
 import axios from "axios";
 import { buildFileUrl } from "./fileService.js";
 import { safeNumber } from "./sendResponse.js";
+import { FACE_SERVICE_URL as configFaceServiceUrl } from "../config/config.js";
 
-export const FACE_SERVICE_URL = (process.env.FACE_SERVICE_URL || "http://localhost:8000").replace(
+export const FACE_SERVICE_URL = (configFaceServiceUrl || "http://localhost:8000").replace(
   /\/$/,
   ""
 );

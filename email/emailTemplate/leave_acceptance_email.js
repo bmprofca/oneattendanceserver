@@ -1,5 +1,6 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
+import { EMAIL_USER } from "../../config/config.js";
 
 const formatDate = (value) => {
     if (!value) return "-";
@@ -15,7 +16,7 @@ const valueOrDash = (value) => value ?? "-";
 export const sendLeaveAcceptanceEmail = async ({
     to,
     subject,
-    fromEmail = process.env.EMAIL_USER,
+    fromEmail = EMAIL_USER,
     fromName = "OneAttendance Leave Desk",
     replyTo,
     requester = {},

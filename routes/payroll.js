@@ -5,7 +5,8 @@ import {
   validateFields,
   salaryValidation,
   paymentMethodValidation,
-  payrollStatusValidation
+  payrollStatusValidation,
+  getEnumObject
 } from "../utils/constantsValidator.js";
 import {
   SALARY_TYPES,
@@ -14,9 +15,7 @@ import {
   EMPLOYMENT_TYPES,
   DESIGNATIONS,
 } from "../constants/constants_values.js";
-import checkPermission from "../middleware/permissionValidationMiddleware.js";
 import { buildFileUrl } from "../utils/fileService.js";
-import { getEnumObject } from "../utils/constantsValidator.js";
 import { PAY, PAY_ADJ } from "../constants/permissions.js";
 import {
   payrollExists,

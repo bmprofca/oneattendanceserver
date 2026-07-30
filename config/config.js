@@ -30,6 +30,9 @@ const config = {
   WEB_GOOGLE_CLIENT_ID: '1099166791217-ejpnup928oqaitbkjlu7sa7gvuhq5om5.apps.googleusercontent.com',
   APP_GOOGLE_CLIENT_ID: '1099166791217-gv208acpiqat45qg263n6jhuifu7vvji.apps.googleusercontent.com',
 
+  // Server BASE_URL
+  SERVER_BASE_URL:"https://oneattendanceserver.onesaas.in",
+
   // Frontend URL
   FRONTEND_URL: 'https://oneattendanceclient.vercel.app',
 
@@ -41,9 +44,6 @@ const config = {
   FACEBOOK_APP_SECRET: 'b598238311f5aa61fc9b928e73a4f7cd',
 
   NODE_ENV: 'development',
-
-  // Ledger
-  LEDGER_MAX_LIMIT: 100,
 
   // Face Recognition Service
   FACE_SERVICE_URL: 'http://localhost:8000',
@@ -84,12 +84,12 @@ export const {
   SMTP_PORT,
   WEB_GOOGLE_CLIENT_ID,
   APP_GOOGLE_CLIENT_ID,
+  SERVER_BASE_URL,
   FRONTEND_URL,
   TRUECALLER_CLIENT_ID,
   FACEBOOK_APP_ID,
   FACEBOOK_APP_SECRET,
   NODE_ENV,
-  LEDGER_MAX_LIMIT,
   FACE_SERVICE_URL,
   FACE_SERVICE_TIMEOUT_MS,
   ZWITCH_PAYMENT_TOKEN_URL,

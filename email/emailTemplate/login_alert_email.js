@@ -1,5 +1,6 @@
 import { transporter, getSender } from "../../config/mail.config.js";
 import { getBaseEmailTemplate } from "./base_template.js";
+import { EMAIL_USER } from "../../config/config.js";
 
 const valueOrDash = (value) => value ?? "-";
 
@@ -18,7 +19,7 @@ export const sendLoginAlertEmail = async ({
     session = {},
     loginTime = new Date(),
     dashboardUrl = "#",
-    fromEmail = process.env.EMAIL_USER,
+    fromEmail = EMAIL_USER,
     fromName = "OneAttendance Security",
     replyTo,
 }) => {

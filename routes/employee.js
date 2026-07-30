@@ -28,7 +28,9 @@ import {
   getDateTimeDiffDays, getISTNow, toIST, compareDates, compareDateTimes, formatUTCToIST,
 } from "../utils/time.js";
 
-const FACE_SERVICE_URL = (process.env.FACE_SERVICE_URL || "http://localhost:8000").replace(/\/$/, "");
+import { FRONTEND_URL, FACE_SERVICE_URL as configFaceServiceUrl } from "../config/config.js";
+
+const FACE_SERVICE_URL = (configFaceServiceUrl || "http://localhost:8000").replace(/\/$/, "");
 
 const timeStringToMinutes = (value) => {
   if (value === null || value === undefined) return NaN;
@@ -654,7 +656,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
           to: normalizedEmail,
           userName: normalizedName,
           password: generatedPassword,
-          dashboardUrl: process.env.FRONTEND_URL + "/home"
+          dashboardUrl: FRONTEND_URL + "/home"
         });
       } catch (err) {
         console.error("WELCOME EMAIL ERROR:", err);

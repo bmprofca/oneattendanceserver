@@ -14,6 +14,7 @@ import {
 } from "../utils/time.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import axios from "axios";
+import { ZWITCH_PAYMENT_TOKEN_URL, ZWITCH_API_KEY, ZWITCH_API_SECRET } from "../config/config.js";
 
 const router = express.Router();
 
@@ -70,9 +71,9 @@ async function createZwitchPaymentToken({
     package_id,
     subscriptionPackage
 }) {
-    const apiUrl = process.env.ZWITCH_PAYMENT_TOKEN_URL;
-    const accessKey = process.env.ZWITCH_API_KEY;
-    const apiSecret = process.env.ZWITCH_API_SECRET;
+    const apiUrl = ZWITCH_PAYMENT_TOKEN_URL;
+    const accessKey = ZWITCH_API_KEY;
+    const apiSecret = ZWITCH_API_SECRET;
 
     if (!apiUrl || !accessKey || !apiSecret) {
         throw new Error("Payment gateway is not configured.");

@@ -3,6 +3,7 @@ import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { PERM_PKG } from "../constants/permissions.js";
+import { NODE_ENV } from "../config/config.js";
 
 const router = express.Router();
 
@@ -40,7 +41,7 @@ router.get("/list", auth(), async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Failed to fetch permissions",
-            error: process.env.NODE_ENV === "development" ? error.message : undefined
+            error: NODE_ENV === "development" ? error.message : undefined
         });
 
     } finally {
@@ -168,7 +169,7 @@ router.post("/create-package", auth(PERM_PKG.MNG), async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Failed to create package",
-            error: process.env.NODE_ENV === "development" ? error.message : undefined
+            error: NODE_ENV === "development" ? error.message : undefined
         });
 
     } finally {
@@ -360,7 +361,7 @@ router.get("/permission-packages", auth(PERM_PKG.MNG), async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Internal server error while fetching permission packages",
-            error: process.env.NODE_ENV === "development" ? error.message : undefined
+            error: NODE_ENV === "development" ? error.message : undefined
         });
 
     } finally {
@@ -613,7 +614,7 @@ router.put("/update-package", auth(PERM_PKG.MNG), async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Failed to update package",
-            error: process.env.NODE_ENV === "development" ? error.message : undefined
+            error: NODE_ENV === "development" ? error.message : undefined
         });
 
     } finally {
@@ -1183,7 +1184,7 @@ router.put("/transfer-packages", auth(PERM_PKG.MNG), async (req, res) => {
             message:
                 "Internal server error",
             error:
-                process.env.NODE_ENV ===
+                NODE_ENV ===
                     "development"
                     ? error.message
                     : undefined
