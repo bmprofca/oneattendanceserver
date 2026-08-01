@@ -1108,8 +1108,6 @@ const processInviteAcceptance = async (conn, invite, userId) => {
     await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
   }
 
-  console.log(userId);
-  console.log(inviteId);
   await conn.query(COMPLETE_INVITE, [userId, inviteId]);
   return { success: true };
 };
@@ -1519,7 +1517,7 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
     let whereClause = `WHERE ci.company_id = ? AND ci.is_deleted = 0`;
     const params = [companyId];
 
-    let explicitExpired = false; 
+    let explicitExpired = false;
     if (status && String(status).trim().toLowerCase() !== "all") {
       const allowedStatuses = ["pending", "accepted", "rejected", "cancelled", "expired"];
       const normalizedStatus = String(status).trim().toLowerCase();
@@ -1671,7 +1669,7 @@ router.get("/my", auth(), async (req, res) => {
         params.push(normalizedStatus);
       }
     }
-    
+
     if (!explicitExpired) {
       where += ` AND NOT (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())`;
     }
@@ -1922,12 +1920,8 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (components !== undefined && components !== null) {
       if (components.length > 0) {
         const componentIds = [...new Set(components.map(c => Number(c.component_id)))];
-        console.log("componnents id", componentIds);
         const [validComps] = await conn.query(SELECT_VALID_SALARY_COMPONENTS, [componentIds, company_id]);
-        console.log("Valid Component", validComps);
-
         const validIds = new Set(validComps.map(r => r.id));
-        console.log("Valid id", validIds);
         for (const id of componentIds) {
           if (!validIds.has(id)) {
             await conn.rollback();
