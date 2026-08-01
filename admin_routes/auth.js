@@ -131,6 +131,8 @@ router.post("/send-otp", async (req, res) => {
     const otpHash = await hashPassword(otp);
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
+    console.log(`🔐 Generated ADMIN OTP for ${normalizedPhone}: ${otp} (expires at ${expiry.toISOString()})`) ;
+
     await conn.query(SQL.INVALIDATE_PREVIOUS_OTPS, [normalizedPhone]);
     await conn.query(SQL.INSERT_OTP, [normalizedPhone, otpHash, expiry, ip]);
 
