@@ -33,34 +33,34 @@ const SQL = {
   OTP_RATE_LIMIT: `
     SELECT COUNT(*) AS count
     FROM otps
-    WHERE phone = ? AND otp_purpose = 'admin_login'
+    WHERE phone = ? AND otp_purpose = 'login'
       AND created_at > NOW() - INTERVAL 30 SECOND
   `,
   OTP_DAILY_LIMIT: `
     SELECT COUNT(*) AS total
     FROM otps
-    WHERE phone = ? AND otp_purpose = 'admin_login'
+    WHERE phone = ? AND otp_purpose = 'login'
       AND created_at > NOW() - INTERVAL 1 DAY
   `,
   OTP_IP_RATE_LIMIT: `
     SELECT COUNT(*) AS count
     FROM otps
-    WHERE ip_address = ? AND otp_purpose = 'admin_login'
+    WHERE ip_address = ? AND otp_purpose = 'login'
       AND created_at > NOW() - INTERVAL 30 SECOND
   `,
   INVALIDATE_PREVIOUS_OTPS: `
     UPDATE otps
     SET used_at = NOW()
-    WHERE phone = ? AND otp_purpose = 'admin_login' AND used_at IS NULL
+    WHERE phone = ? AND otp_purpose = 'login' AND used_at IS NULL
   `,
   INSERT_OTP: `
     INSERT INTO otps (email, phone, otp_purpose, otp_hash, otp_expiry, used_at, ip_address)
-    VALUES ('', ?, 'admin_login', ?, ?, NULL, ?)
+    VALUES ('', ?, 'login', ?, ?, NULL, ?)
   `,
   GET_LATEST_OTP: `
     SELECT *
     FROM otps
-    WHERE phone = ? AND otp_purpose = 'admin_login' AND used_at IS NULL
+    WHERE phone = ? AND otp_purpose = 'login' AND used_at IS NULL
     ORDER BY created_at DESC
     LIMIT 1
     FOR UPDATE
@@ -203,8 +203,22 @@ router.post("/verify-otp", async (req, res) => {
     const [otpRows] = await conn.query(SQL.GET_LATEST_OTP, [normalizedPhone]);
 
     if (!otpRows.length) {
-      await conn.rollback();
-      return sendError(res, 400, "OTP not found. Please request a new one.");
+      const [legacyOtpRows] = await conn.query(
+        `SELECT *
+         FROM otps
+         WHERE phone = ? AND otp_purpose = 'admin_login' AND used_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [normalizedPhone]
+      );
+
+      if (!legacyOtpRows.length) {
+        await conn.rollback();
+        return sendError(res, 400, "OTP not found. Please request a new one.");
+      }
+
+      otpRows[0] = legacyOtpRows[0];
     }
 
     const otpRecord = otpRows[0];
