@@ -148,7 +148,7 @@ const resolveSignupRequestPayload = (body) => {
     if (hasNonEmptyString(phone)) {
       return { error: { status: 400, message: "Phone is not allowed for email signup" } };
     }
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase().replace(/[^\w@.+_-]/g, '').replace(/^,+|,+$/g, '');    
     if (!emailRegex.test(normalizedEmail)) {
       return { error: { status: 400, message: "Invalid email format" } };
     }
