@@ -1,6 +1,9 @@
 import * as adminAuthDoc from './admin_auth.paths.js';
 import * as adminUsersDoc from './admin_users.paths.js';
 import * as adminCompaniesDoc from './admin_companies.paths.js';
+import * as adminSubscriptionsDoc from './admin_subscriptions.paths.js';
+import * as adminPackagesDoc from './admin_packages.paths.js';
+import * as adminDashboardDoc from './admin_dashboard.paths.js';
 import { SHARED_SCHEMAS } from '../utils/sharedSchemas.js';
 
 const adminOpenApiSpec = {
@@ -43,17 +46,26 @@ const adminOpenApiSpec = {
       ...adminAuthDoc.schemas,
       ...adminUsersDoc.schemas,
       ...adminCompaniesDoc.schemas,
+      ...adminSubscriptionsDoc.schemas,
+      ...adminPackagesDoc.schemas,
+      ...adminDashboardDoc.schemas,
     },
   },
   tags: [
     { name: 'Admin Auth', description: 'Admin authentication via phone OTP' },
     { name: 'Admin Users', description: 'User management (list, create, update, delete)' },
     { name: 'Admin Companies', description: 'Company management (list, create, update, delete)' },
+    { name: 'Admin Subscriptions', description: 'Admin subscription monitoring and status updates' },
+    { name: 'Admin Packages', description: 'Subscription packages management (list, create, update, delete)' },
+    { name: 'Admin Dashboard', description: 'Admin dashboard statistics and KPIs' },
   ],
   paths: {
     ...adminAuthDoc.paths,
     ...adminUsersDoc.paths,
     ...adminCompaniesDoc.paths,
+    ...adminSubscriptionsDoc.paths,
+    ...adminPackagesDoc.paths,
+    ...adminDashboardDoc.paths,
   },
 };
 

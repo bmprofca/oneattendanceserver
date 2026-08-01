@@ -11,14 +11,17 @@ import adminAuth from "../middleware/adminAuthMiddleware.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import { sendOtpSms } from "../utils/sms.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
-import { normalizeTenDigitMobile } from "../utils/mobile.js";
+// normalizeTenDigitMobile not used here — admin phones stored as 12-digit (91XXXXXXXXXX)
 
 const router = express.Router();
 
 // ─── Helpers ───────────────────────────────────────────────────
 
 const normalizePhone = (value) => {
-  return normalizeTenDigitMobile(value) || null;
+  // Admin phones are stored as full 12-digit format (e.g. 919XXXXXXXXX).
+  // Do NOT strip the country code — just remove non-digits and return as-is.
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return digits.length > 0 ? digits : null;
 };
 
 // ─── SQL ───────────────────────────────────────────────────────
@@ -131,10 +134,12 @@ router.post("/send-otp", async (req, res) => {
     const otpHash = await hashPassword(otp);
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
+    // console.log(`🔐 Generated ADMIN OTP for ${normalizedPhone}: ${otp} (expires at ${expiry.toISOString()})`) ;
+
     await conn.query(SQL.INVALIDATE_PREVIOUS_OTPS, [normalizedPhone]);
     await conn.query(SQL.INSERT_OTP, [normalizedPhone, otpHash, expiry, ip]);
 
-    console.log(`🔐 ADMIN OTP for ${normalizedPhone}: ${otp}`);
+    // console.log(`🔐 ADMIN OTP for ${normalizedPhone}: ${otp}`);
 
     // Send via SMS & WhatsApp
     try {
