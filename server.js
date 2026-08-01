@@ -10,6 +10,9 @@ import { verifySmtpConnection } from "./config/mail.config.js";
 import { triggerEmailQueue } from "./email/services/emailQueueWorker.js";
 import openApiSpec from './docs/openapi.js';
 import { scalarApiReferenceConfig } from './docs/scalar.js';
+import adminRoutes from './admin_routes/index.js';
+import adminOpenApiSpec from './admin_docs/openapi.js';
+import { adminScalarApiReferenceConfig } from './admin_docs/scalar.js';
 
 const app = express();
 
@@ -33,6 +36,19 @@ app.use(
   })
 );
 
+app.get('/admin/openapi.json', (req, res) => {
+  res.json(adminOpenApiSpec);
+});
+
+app.use(
+  '/admin/docs',
+  apiReference({
+    content: adminOpenApiSpec,
+    ...adminScalarApiReferenceConfig,
+  })
+);
+
+app.use('/admin', adminRoutes);
 app.use('/', routes);
 
 app.set("trust proxy", true);
@@ -74,6 +90,7 @@ const startServer = async () => {
   app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
     console.log(`API docs available at http://localhost:${PORT}/docs`);
+    console.log(`Admin API docs available at http://localhost:${PORT}/admin/docs`);
   });
 };
 
