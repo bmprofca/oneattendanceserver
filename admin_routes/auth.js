@@ -11,14 +11,17 @@ import adminAuth from "../middleware/adminAuthMiddleware.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import { sendOtpSms } from "../utils/sms.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
-import { normalizeTenDigitMobile } from "../utils/mobile.js";
+// normalizeTenDigitMobile not used here — admin phones stored as 12-digit (91XXXXXXXXXX)
 
 const router = express.Router();
 
 // ─── Helpers ───────────────────────────────────────────────────
 
 const normalizePhone = (value) => {
-  return normalizeTenDigitMobile(value) || null;
+  // Admin phones are stored as full 12-digit format (e.g. 919XXXXXXXXX).
+  // Do NOT strip the country code — just remove non-digits and return as-is.
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return digits.length > 0 ? digits : null;
 };
 
 // ─── SQL ───────────────────────────────────────────────────────
