@@ -6,7 +6,9 @@ import {
   validateFields, employmentValidation, salaryValidation,
   designationValidation, attendanceMethodValidation, getEnumObject,
 } from "../utils/constantsValidator.js";
-import { sendSuccess, sendError, safeNumber } from "../utils/sendResponse.js";
+import {
+  sendSuccess, sendError, safeNumber, buildMeta, parseJSONSafe, sanitizeText
+} from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { EMP, PROFILE } from "../constants/permissions.js";
 import getClientMeta from "../utils/ipHelper.js";
@@ -14,7 +16,7 @@ import {
   generateOTP, hashPassword, comparePassword, verifyOtpHash, generateSessionToken,
   generateRandomPassword, generateRandomToken,
 } from "../utils/auth.js";
-import { queueSignupOTPEmail, sendQueuedWelcomeEmail, } from "../email/services/email.processor.js";
+import { queueSignupOTPEmail, sendQueuedWelcomeEmail } from "../email/services/email.processor.js";
 import axios from "axios";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
 import {
@@ -39,7 +41,7 @@ const timeStringToMinutes = (value) => {
     const trimmed = value.trim();
     if (!trimmed) return NaN;
     if (/^\d+$/.test(trimmed)) return Number(trimmed);
-    const parsed = parseTime(trimmed); // dayjs object or null
+    const parsed = parseTime(trimmed);
     if (parsed) {
       return parsed.hour() * 60 + parsed.minute() + Math.floor(parsed.second() / 60);
     }
@@ -50,10 +52,7 @@ const timeStringToMinutes = (value) => {
 const isValidDate = (value) => !!parseDate(value);
 
 const formatEmployee = (row) => {
-  const weekendsObj = typeof row.weekends === "string"
-    ? JSON.parse(row.weekends || "[]")
-    : row.weekends || [];
-
+  const weekendsObj = parseJSONSafe(row.weekends, []);
   return {
     id: row.id,
     company_id: row.company_id,
@@ -78,16 +77,12 @@ const formatEmployee = (row) => {
     is_deleted: !!row.is_deleted,
     created_at: row.created_at,
     updated_at: row.updated_at,
-
-    // user info
     name: row.name,
     email: row.email,
     phone: row.phone,
     is_system_admin: !!row.is_system_admin,
     last_login: row.last_login,
     profile_picture: buildFileUrl(row.profile_picture),
-
-    // permission package info
     package: {
       id: row.package_id,
       package_name: row.package_name,
@@ -105,17 +100,10 @@ const formatBankAccount = (row) => {
     status: row.status,
   };
   if (row.account_type === "upi") {
-    return {
-      ...base,
-      upi_id: row.upi_id,
-      account_holder_name: row.account_holder_name,
-    };
+    return { ...base, upi_id: row.upi_id, account_holder_name: row.account_holder_name };
   }
   if (row.account_type === "cash") {
-    return {
-      ...base,
-      account_holder_name: row.account_holder_name,
-    };
+    return { ...base, account_holder_name: row.account_holder_name };
   }
   return {
     ...base,
@@ -127,7 +115,6 @@ const formatBankAccount = (row) => {
   };
 };
 
-// Helpers for signup / create
 const normalizeSignupType = (value) => {
   if (!value || typeof value !== "string") return null;
   const type = value.toLowerCase().trim();
@@ -161,7 +148,7 @@ const resolveSignupRequestPayload = (body) => {
     if (hasNonEmptyString(phone)) {
       return { error: { status: 400, message: "Phone is not allowed for email signup" } };
     }
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase().replace(/[^\w@.+_-]/g, '').replace(/^,+|,+$/g, '');    
     if (!emailRegex.test(normalizedEmail)) {
       return { error: { status: 400, message: "Invalid email format" } };
     }
@@ -216,9 +203,6 @@ const resolveSignupPayload = (body) => {
   return { signupType, normalizedEmail: "", normalizedPhone, otp, name: name?.trim() || null };
 };
 
-// ----------------------------------------------------------------------------
-// Pagination & meta helpers
-// ----------------------------------------------------------------------------
 const getPagination = (query, defaultLimit = 20, maxLimit = 100) => {
   const page = Math.max(parseInt(query.page, 10) || 1, 1);
   const limit = Math.min(parseInt(query.limit, 10) || defaultLimit, maxLimit);
@@ -226,9 +210,7 @@ const getPagination = (query, defaultLimit = 20, maxLimit = 100) => {
   return { page, limit, offset };
 };
 
-
 const buildDateFilter = (query, column) => {
-  if (query.date) return { clause: `DATE(${column}) = ?`, params: [query.date] };
   if (query.month && query.year) {
     const mm = String(query.month).padStart(2, "0");
     const first = `${query.year}-${mm}-01`;
@@ -257,14 +239,54 @@ const buildDayStatusPayload = (dayStatus, value1, value2) => {
   return {};
 };
 
-// ----------------------------------------------------------------------------
-// Router
-// ----------------------------------------------------------------------------
+const EMPLOYEE_COLUMNS = [
+  "e.id", "e.company_id", "e.user_id", "e.employee_code", "e.designation",
+  "e.salary_type", "e.employment_type", "e.joining_date", "e.status",
+  "e.face_enrolled", "e.fingerprint_mapped",
+  "e.shift_start", "e.shift_end", "e.expected_work_minutes",
+  "e.break_minutes", "e.grace_minutes", "e.enable_overtime", "e.enable_deduction",
+  "e.weekends", "e.is_active", "e.is_deleted",
+  "e.created_at", "e.updated_at"
+].join(", ");
+
+const USER_COLUMNS = "u.name, u.email, u.phone, u.is_system_admin, u.last_login, u.profile_picture";
+const PACKAGE_COLUMNS = "pp.id AS package_id, pp.package_name, pp.group_code, pp.description";
+
+const FULL_EMPLOYEE_SELECT = `${EMPLOYEE_COLUMNS}, ${USER_COLUMNS}, ${PACKAGE_COLUMNS}`;
+
+const PERMISSIONS_SUBQUERY = `(
+  SELECT JSON_ARRAYAGG(JSON_OBJECT('permission_id', p.id, 'code', p.code, 'name', p.name, 'action', p.action))
+  FROM permission_package_items ppi
+  JOIN permissions p ON p.id = ppi.permission_id
+  WHERE ppi.package_id = pp.id AND ppi.is_active = 1 AND ppi.is_deleted = 0
+) AS permissions`;
+
+const ATTENDANCE_METHODS_SUBQUERY = `(
+  SELECT JSON_ARRAYAGG(JSON_OBJECT('method', eam.method, 'is_auto', eam.is_auto))
+  FROM employee_attendance_methods eam
+  WHERE eam.employee_id = e.id AND eam.is_deleted = 0 AND eam.is_active = 1
+) AS attendance_methods`;
+
+const LEAVE_BALANCES_SUBQUERY = `(
+  SELECT JSON_ARRAYAGG(JSON_OBJECT(
+    'leave_config_id', lc.id, 'leave_code', lc.code, 'leave_name', lc.name,
+    'is_paid', lc.is_paid, 'allow_half_day', lc.allow_half_day,
+    'total_allocated', elb.total_allocated, 'used', elb.used, 'remaining', elb.remaining
+  ))
+  FROM employee_leave_balances elb
+  JOIN leave_configs lc ON lc.id = elb.leave_config_id AND lc.is_deleted = 0 AND lc.is_active = 1
+  WHERE elb.employee_id = e.id AND elb.company_id = e.company_id
+    AND elb.is_deleted = 0 AND elb.is_active = 1
+) AS leave_balances`;
+
+const USER_LEFT_JOIN = `LEFT JOIN users u ON u.id = e.user_id AND u.is_deleted = 0`;
+const USER_INNER_JOIN = `JOIN users u ON u.id = e.user_id AND u.is_deleted = 0`;
+
+const PACKAGE_LEFT_JOIN = `LEFT JOIN permission_packages pp ON pp.id = e.permission_package_id AND pp.is_deleted = 0 AND pp.is_active = 1`;
+const PACKAGE_INNER_JOIN = `JOIN permission_packages pp ON pp.id = e.permission_package_id AND pp.is_deleted = 0`;
+
 const router = express.Router();
 
-// ----------------------------------------------------------------------------
-// 1. Request OTP for employee creation
-// ----------------------------------------------------------------------------
 router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
   let conn;
   try {
@@ -286,7 +308,6 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
     const clientMeta = getClientMeta(req);
     const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || "unknown";
 
-    // check existing user
     const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";
     const existingUserParams = signupType === "email" ? [normalizedEmail] : [normalizedPhone];
     const [existingUser] = await conn.query(
@@ -297,7 +318,6 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 409, signupType === "email" ? "Email already registered" : "Phone already registered");
     }
 
-    // rate limiting
     const [[recentOtp]] = await conn.query(
       `SELECT COUNT(*) AS count FROM otps WHERE ${rateLimitColumn} = ? AND otp_purpose = 'employee_create' AND created_at > NOW() - INTERVAL 30 SECOND`,
       [rateLimitValue]
@@ -317,7 +337,6 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
     const otpHash = await hashPassword(otp);
     const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
 
-    // invalidate previous unused OTPs
     const invalidateOtpSql = signupType === "phone"
       ? `phone = ? AND otp_purpose = 'employee_create' AND used_at IS NULL`
       : `email = ? AND otp_purpose = 'employee_create' AND used_at IS NULL`;
@@ -348,9 +367,6 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// 2. Create employee
-// ----------------------------------------------------------------------------
 router.post("/create", auth(EMP.MNG), async (req, res) => {
   let conn;
   let transactionStarted = false;
@@ -359,9 +375,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     conn = await db.getConnection();
 
     const {
-      platform,
-      latitude,
-      longitude,
       permission_package_id,
       designation,
       salary_type,
@@ -387,7 +400,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     const companyId = req.company?.id;
     const createdBy = req.user?.id;
 
-    const normalizedName = name?.trim();
+    const normalizedName = sanitizeText(name, 200);
     if (!normalizedName || normalizedName.length < 3) {
       return sendError(res, 400, "Invalid employee name (min 3 characters)");
     }
@@ -396,23 +409,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 400, "Company context missing");
     }
 
-    // platform
-    const platformLower = platform?.toLowerCase().trim();
-    const allowedPlatforms = ["web", "android", "ios"];
-    if (!allowedPlatforms.includes(platformLower)) {
-      return sendError(res, 400, "Valid platform required (web/android/ios)");
-    }
-
-    // coordinates
-    const lat = latitude !== undefined && latitude !== null && latitude !== "" ? Number(latitude) : null;
-    const lng = longitude !== undefined && longitude !== null && longitude !== "" ? Number(longitude) : null;
-    if ((lat !== null && lng === null) || (lat === null && lng !== null)) {
-      return sendError(res, 400, "Both latitude and longitude must be provided together");
-    }
-    if (lat !== null && (Number.isNaN(lat) || lat < -90 || lat > 90)) return sendError(res, 400, "Invalid latitude");
-    if (lng !== null && (Number.isNaN(lng) || lng < -180 || lng > 180)) return sendError(res, 400, "Invalid longitude");
-
-    // shift times
     const normalizedShiftStart = parseTime(shift_start, "HH:mm:ss");
     const normalizedShiftEnd = parseTime(shift_end, "HH:mm:ss");
     if (!normalizedShiftStart || !normalizedShiftEnd) {
@@ -425,9 +421,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
 
     const finalJoiningDate = isValidDate(joining_date) ? joining_date : getCurrentDate();
     const employee_code = `EMP-${companyId}${generateRandomToken({ size: 1, encoding: "hex", uppercase: true })}`;
-    const meta = getClientMeta(req);
 
-    // OTP verification
     const otpLookupSql = signupType === "phone"
       ? "phone = ? AND otp_purpose = 'employee_create' AND used_at IS NULL"
       : "email = ? AND otp_purpose = 'employee_create' AND used_at IS NULL";
@@ -467,7 +461,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 400, "Invalid OTP");
     }
 
-    // duplicate user check
     const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";
     const existingUserParams = signupType === "email" ? [normalizedEmail] : [normalizedPhone];
     const [existingUsers] = await conn.query(
@@ -499,8 +492,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     }
     const userId = userResult.insertId;
 
-    // validate permission package
-    const packageId = Number(permission_package_id);
+    const packageId = safeNumber(permission_package_id, 0);
     if (!packageId) {
       await conn.rollback();
       transactionStarted = false;
@@ -516,7 +508,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 404, "Permission package not found");
     }
 
-    // insert employee
     const [employeeResult] = await conn.query(
       `INSERT INTO employees (
          company_id, user_id, permission_package_id, employee_code, designation,
@@ -543,7 +534,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     );
     const employeeId = employeeResult.insertId;
 
-    // salary structure
     if (base_amount && effective_from) {
       const salaryBaseAmount = Number(base_amount);
       if (salaryBaseAmount <= 0) {
@@ -569,7 +559,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
         transactionStarted = false;
         return sendError(res, 400, "components must be an array");
       }
-      const componentIds = components.map(c => Number(c.component_id));
+      const componentIds = components.map(c => safeNumber(c.component_id));
       if (componentIds.some(id => !id)) {
         await conn.rollback();
         transactionStarted = false;
@@ -602,7 +592,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
         const validComponentIds = new Set(validComponents.map(c => Number(c.id)));
         const componentRows = [];
         for (const c of components) {
-          const componentId = Number(c.component_id);
+          const componentId = safeNumber(c.component_id);
           if (!validComponentIds.has(componentId)) {
             await conn.rollback();
             transactionStarted = false;
@@ -633,23 +623,11 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       }
     }
 
-    // mark OTP as used
     await conn.query(
       `UPDATE otps SET is_verified = 1, verified_at = NOW(), used_at = NOW() WHERE id = ?`,
       [otpRecord.id]
     );
 
-    // create session
-    const token = generateSessionToken();
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-    await conn.query(
-      `INSERT INTO sessions (user_id, session_token, ip_v4, ip_v6, latitude, longitude, auth_provider, platform, device_name, expires_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, 'email', ?, ?, ?, ?)`,
-      [userId, token, meta.ip_v4, meta.ip_v6, lat, lng, platformLower, meta.device_name, expiresAt, createdBy]
-    );
-
-    // welcome email
     if (normalizedEmail) {
       try {
         await sendQueuedWelcomeEmail({
@@ -675,15 +653,12 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// 3. List employees (GET)
-// ----------------------------------------------------------------------------
 router.get("/list", auth(EMP.MNG), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
     let { search = "", status, page = 1, limit = 20 } = req.query;
-    search = typeof search === "string" ? search.trim() : "";
+    search = sanitizeText(search) || "";
     const pageNum = Math.max(Number(page) || 1, 1);
     const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
@@ -707,7 +682,6 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
       where += " AND e.status = 'active'";
     }
 
-    // stats
     const [stats] = await conn.query(
       `SELECT
          COUNT(CASE WHEN e.is_active = 1 THEN 1 END) AS active,
@@ -718,70 +692,38 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
     const activeCount = stats[0]?.active || 0;
     const inactiveCount = stats[0]?.inactive || 0;
 
-    // total count
     const [countResult] = await conn.query(
-      `SELECT COUNT(*) AS total FROM employees e LEFT JOIN users u ON u.id = e.user_id ${where}`,
+      `SELECT COUNT(*) AS total FROM employees e ${USER_LEFT_JOIN} ${where}`,
       params
     );
     const total = countResult[0]?.total || 0;
 
-    // main query
+    const listSelect = `
+      ${FULL_EMPLOYEE_SELECT},
+      ${PERMISSIONS_SUBQUERY},
+      ${ATTENDANCE_METHODS_SUBQUERY},
+      ${LEAVE_BALANCES_SUBQUERY}
+    `;
+
     const [rows] = await conn.query(
-      `SELECT
-         e.id, e.company_id, e.user_id, e.employee_code, e.designation,
-         e.salary_type, e.employment_type, e.joining_date, e.status,
-         e.face_enrolled, e.fingerprint_mapped,
-         e.shift_start, e.shift_end, e.expected_work_minutes,
-         e.break_minutes, e.grace_minutes, e.enable_overtime, e.enable_deduction,
-         e.weekends, e.is_active, e.is_deleted,
-         e.created_at, e.updated_at,
-         u.name, u.email, u.phone, u.is_system_admin, u.last_login, u.profile_picture,
-         pp.id AS package_id, pp.package_name, pp.group_code, pp.description,
-         (
-           SELECT JSON_ARRAYAGG(JSON_OBJECT('permission_id', p.id, 'code', p.code, 'name', p.name, 'action', p.action))
-           FROM permission_package_items ppi
-           JOIN permissions p ON p.id = ppi.permission_id
-           WHERE ppi.package_id = pp.id AND ppi.is_active = 1 AND ppi.is_deleted = 0
-         ) AS permissions,
-         (
-           SELECT JSON_ARRAYAGG(JSON_OBJECT('method', eam.method, 'is_auto', eam.is_auto))
-           FROM employee_attendance_methods eam
-           WHERE eam.employee_id = e.id AND eam.is_deleted = 0 AND eam.is_active = 1
-         ) AS attendance_methods,
-         (
-           SELECT JSON_ARRAYAGG(JSON_OBJECT(
-             'leave_config_id', lc.id, 'leave_code', lc.code, 'leave_name', lc.name,
-             'is_paid', lc.is_paid, 'allow_half_day', lc.allow_half_day,
-             'total_allocated', elb.total_allocated, 'used', elb.used, 'remaining', elb.remaining
-           ))
-           FROM employee_leave_balances elb
-           JOIN leave_configs lc ON lc.id = elb.leave_config_id AND lc.is_deleted = 0 AND lc.is_active = 1
-           WHERE elb.employee_id = e.id AND elb.company_id = e.company_id
-             AND elb.is_deleted = 0 AND elb.is_active = 1
-         ) AS leave_balances
+      `SELECT ${listSelect}
        FROM employees e
-       LEFT JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
-       LEFT JOIN permission_packages pp ON pp.id = e.permission_package_id AND pp.is_deleted = 0 AND pp.is_active = 1
+       ${USER_LEFT_JOIN}
+       ${PACKAGE_LEFT_JOIN}
        ${where}
        ORDER BY e.id DESC
        LIMIT ? OFFSET ?`,
       [...params, limitNum, offset]
     );
 
-    const safeJSON = (val) => {
-      if (!val) return [];
-      if (typeof val === "object") return val;
-      try { return JSON.parse(val); } catch { return []; }
-    };
-
     const data = rows.map((row) => {
       const base = formatEmployee(row);
-      const permissions = safeJSON(row.permissions).filter(Boolean);
-      const methods = safeJSON(row.attendance_methods).filter(Boolean).map(m => ({
+      const permissions = parseJSONSafe(row.permissions, []).filter(Boolean);
+      const methods = parseJSONSafe(row.attendance_methods, []).filter(Boolean).map(m => ({
         ...m,
         is_auto: !!m.is_auto
       }));
-      const leaveBalances = safeJSON(row.leave_balances).filter(Boolean).map(l => ({
+      const leaveBalances = parseJSONSafe(row.leave_balances, []).filter(Boolean).map(l => ({
         ...l,
         is_paid: !!l.is_paid,
         allow_half_day: !!l.allow_half_day,
@@ -797,21 +739,13 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
       };
     });
 
-    const totalPages = Math.ceil(total / limitNum) || 1;
-    return res.status(200).json({
-      success: true,
-      message: "Employee list retrieved",
-      data,
-      meta: {
-        total,
-        active: activeCount,
-        inactive: inactiveCount,
-        total_pages: totalPages,
-        page: pageNum,
-        limit: limitNum,
-        is_last_page: offset + data.length >= total
-      }
-    });
+    const meta = {
+      ...buildMeta(pageNum, limitNum, total, data.length),
+      active: activeCount,
+      inactive: inactiveCount,
+    };
+
+    return sendSuccess(res, 200, "Employee list retrieved", data, meta);
   } catch (error) {
     console.error("EMPLOYEE_LIST_ERROR:", error);
     return sendError(res, 500, "Unable to fetch employee list");
@@ -820,9 +754,6 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// 4. Update employee (PUT)
-// ----------------------------------------------------------------------------
 router.put("/update", auth(EMP.MNG), async (req, res) => {
   let conn;
   const VALID_WEEK_DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -861,7 +792,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
     ].some(v => v !== undefined);
     if (!hasUpdates) return sendError(res, 400, "No fields provided for update");
 
-    // enum validations
     if (designation !== undefined && designationValidation(designation)) {
       return sendError(res, 422, "Invalid designation");
     }
@@ -872,7 +802,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 422, "Invalid employment_type");
     }
 
-    // shift times
     if (shift_start !== undefined || shift_end !== undefined) {
       if (!shift_start || !shift_end) return sendError(res, 422, "Both shift_start and shift_end required");
       const start = parseTime(shift_start);
@@ -880,7 +809,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       if (!start || !end) return sendError(res, 422, "Invalid shift time format");
     }
 
-    // break/grace
     const normBreak = break_minutes !== undefined ? timeStringToMinutes(break_minutes) : undefined;
     const normGrace = grace_minutes !== undefined ? timeStringToMinutes(grace_minutes) : undefined;
     if (normBreak !== undefined && (!Number.isInteger(normBreak) || normBreak < 0)) {
@@ -893,7 +821,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 422, "Invalid joining_date");
     }
 
-    // weekends
     let normalizedWeekends = undefined;
     if (weekends !== undefined) {
       if (!Array.isArray(weekends)) return sendError(res, 400, "weekends must be an array");
@@ -904,7 +831,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       normalizedWeekends = cleaned.length ? JSON.stringify(cleaned) : null;
     }
 
-    // attendance methods
     let cleanedAttendance = null;
     if (attendance_methods !== undefined) {
       if (!Array.isArray(attendance_methods)) return sendError(res, 400, "attendance_methods must be an array");
@@ -920,7 +846,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
 
     await conn.beginTransaction();
 
-    // ensure employee exists
     const [empRows] = await conn.query(
       `SELECT id, company_id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1`,
       [employee_id, companyId]
@@ -930,7 +855,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 404, "Employee not found");
     }
 
-    // permission package check
     if (permission_package_id !== undefined && permission_package_id !== null) {
       const [pkgRows] = await conn.query(
         `SELECT id FROM permission_packages WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1`,
@@ -970,7 +894,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       [...updateValues, employee_id, companyId]
     );
 
-    // attendance methods
     if (cleanedAttendance !== null) {
       const [existingRows] = await conn.query(
         `SELECT id, method, is_deleted FROM employee_attendance_methods WHERE employee_id = ?`,
@@ -979,7 +902,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
       const existingMap = new Map(existingRows.map(r => [r.method, r]));
       const incomingMethods = cleanedAttendance.map(m => m.method);
 
-      // soft-delete removed methods
       const deleteIds = existingRows
         .filter(r => r.is_deleted === 0 && !incomingMethods.includes(r.method))
         .map(r => r.id);
@@ -990,7 +912,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
         );
       }
 
-      // insert or restore/update
       for (const m of cleanedAttendance) {
         const existing = existingMap.get(m.method);
         if (!existing) {
@@ -999,7 +920,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
             [employee_id, m.method, m.is_auto, updatedBy]
           );
         } else {
-          // restore if soft-deleted, then update is_auto
           if (existing.is_deleted === 1) {
             await conn.query(
               `UPDATE employee_attendance_methods SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL, is_auto = ?, updated_by = ? WHERE id = ?`,
@@ -1026,9 +946,6 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// 5. Delete employee (soft delete)
-// ----------------------------------------------------------------------------
 router.delete("/delete", auth(EMP.MNG), async (req, res) => {
   let conn;
   try {
@@ -1077,13 +994,10 @@ router.delete("/delete", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
-// 6. Get all employees (minimal list)
-// ----------------------------------------------------------------------------
 router.get("/all-list", auth(EMP.MNG), async (req, res) => {
   try {
     let { search } = req.query;
-    search = typeof search === "string" ? search.trim() : "";
+    search = sanitizeText(search) || "";
     const companyId = req.company.id;
     let where = "WHERE e.is_deleted = 0 AND e.company_id = ?";
     const params = [companyId];
@@ -1103,20 +1017,13 @@ router.get("/all-list", auth(EMP.MNG), async (req, res) => {
        ORDER BY e.id DESC`,
       params
     );
-    return res.status(200).json({
-      success: true,
-      message: "Employee list retrieved",
-      data: rows,
-    });
+    return sendSuccess(res, 200, "Employee list retrieved", rows);
   } catch (error) {
     console.error("Error fetching employee list:", error);
     return sendError(res, 500, "Failed to fetch employee list");
   }
 });
 
-// ----------------------------------------------------------------------------
-// 7. Get employee by ID with optional include
-// ----------------------------------------------------------------------------
 const ALLOWED_INCLUDES = new Set([
   "basic", "permissions", "attendance", "salary", "payroll", "leaves", "shifts", "banks"
 ]);
@@ -1141,25 +1048,28 @@ router.get("/:id(\\d+)", auth(PROFILE.MNG), async (req, res) => {
     }
 
     const result = await EmployeeSectionService.getSection(conn, employeeId, companyId, include, req.query);
-    return res.json({ success: true, data: result.data, meta: result.meta });
+    if (result.error) {
+      return sendError(res, result.error.status, result.error.message);
+    }
+    return sendSuccess(res, 200, "Employee details retrieved", result.data, result.meta);
   } catch (err) {
     console.error("[GET /employees/:id]", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
+    return sendError(res, 500, "Something went wrong");
   } finally {
     conn?.release();
   }
 });
 
-// ----------------------------------------------------------------------------
-// Employee section service – powers the dynamic include
-// ----------------------------------------------------------------------------
+
 class EmployeeSectionService {
   static async getSection(conn, employeeId, companyId, include, query) {
     const [[exists]] = await conn.query(
       `SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
       [employeeId, companyId]
     );
-    if (!exists) throw { status: 404, message: "Employee not found" };
+    if (!exists) {
+      return { error: { status: 404, message: "Employee not found" } };
+    }
 
     const handlers = {
       basic: EmployeeSectionService._basic,
@@ -1174,30 +1084,21 @@ class EmployeeSectionService {
     return handlers[include](conn, employeeId, companyId, query);
   }
 
-  // ---------- basic ----------
-  static async _basic(conn, employeeId) {
+  // -- basic (FIXED: now receives and uses companyId) ----------------
+  static async _basic(conn, employeeId, companyId) {
     const [rows] = await conn.query(
-      `SELECT
-         e.id, e.company_id, e.user_id, e.employee_code, e.designation,
-         e.salary_type, e.employment_type, e.joining_date, e.status,
-         e.face_enrolled, e.fingerprint_mapped,
-         e.shift_start, e.shift_end, e.expected_work_minutes,
-         e.break_minutes, e.grace_minutes, e.enable_overtime, e.enable_deduction,
-         e.weekends, e.is_active, e.is_deleted,
-         e.created_at, e.updated_at,
-         u.name, u.email, u.phone, u.profile_picture, u.is_system_admin, u.last_login,
-         pp.id AS package_id, pp.package_name, pp.group_code, pp.description
+      `SELECT ${FULL_EMPLOYEE_SELECT}
        FROM employees e
-       JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
-       JOIN permission_packages pp ON pp.id = e.permission_package_id AND pp.is_deleted = 0
+       ${USER_INNER_JOIN}
+       ${PACKAGE_INNER_JOIN}
        WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
-      [employeeId]
+      [employeeId, companyId]   // <-- second parameter added
     );
     const data = rows[0] ? formatEmployee(rows[0]) : null;
     return { data: { basic: data }, meta: { basic: { total: data ? 1 : 0 } } };
   }
 
-  // ---------- permissions ----------
+  // -- permissions --------------------------------------------------
   static async _permissions(conn, employeeId, _companyId, query) {
     const { page, limit, offset } = getPagination(query, 50, 200);
     const [[{ total }]] = await conn.query(
@@ -1218,11 +1119,11 @@ class EmployeeSectionService {
     );
     return {
       data: { permissions: rows },
-      meta: { permissions: buildMeta(total, page, limit, rows.length) }
+      meta: { permissions: buildMeta(page, limit, total, rows.length) }
     };
   }
 
-  // ---------- attendance ----------
+  // -- attendance ---------------------------------------------------
   static async _attendance(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 30, 100);
     const dateFilter = buildDateFilter(query, "a.attendance_date");
@@ -1307,11 +1208,11 @@ class EmployeeSectionService {
     const data = Object.values(grouped);
     return {
       data: { attendance: data },
-      meta: { attendance: buildMeta(total, page, limit, data.length) }
+      meta: { attendance: buildMeta(page, limit, total, data.length) }
     };
   }
 
-  // ---------- salary ----------
+  // -- salary -------------------------------------------------------
   static async _salary(conn, employeeId, _companyId, query) {
     const { page, limit, offset } = getPagination(query, 10, 50);
     const dateFilter = buildDateFilter(query, "ss.effective_from");
@@ -1381,10 +1282,13 @@ class EmployeeSectionService {
       };
     });
 
-    return { data: { salary: data }, meta: { salary: buildMeta(total, page, limit,  data.length) } };
+    return {
+      data: { salary: data },
+      meta: { salary: buildMeta(page, limit, total, data.length) }
+    };
   }
 
-  // ---------- payroll ----------
+  // -- payroll ------------------------------------------------------
   static async _payroll(conn, employeeId, _companyId, query) {
     const { page, limit, offset } = getPagination(query, 12, 24);
     const dateFilter = buildDateFilter(query, "pe.payroll_period");
@@ -1450,10 +1354,13 @@ class EmployeeSectionService {
       }
     }
     const data = Object.values(grouped);
-    return { data: { payroll: data }, meta: { payroll: buildMeta(total, page, limit, data.length) } };
+    return {
+      data: { payroll: data },
+      meta: { payroll: buildMeta(page, limit, total, data.length) }
+    };
   }
 
-  // ---------- leaves ----------
+  // -- leaves -------------------------------------------------------
   static async _leaves(conn, employeeId, _companyId, query) {
     const { page, limit, offset } = getPagination(query, 20, 100);
     const year = parseInt(query.year, 10) || new Date().getFullYear();
@@ -1509,7 +1416,6 @@ class EmployeeSectionService {
       }
     }
 
-    // balances
     const [balRows] = await conn.query(
       `SELECT elb.leave_config_id, lc.code, lc.name, lc.is_paid, elb.year,
               elb.total_allocated, elb.used, elb.remaining
@@ -1522,11 +1428,16 @@ class EmployeeSectionService {
 
     return {
       data: { leaves: Object.values(grouped), leave_balances: balRows },
-      meta: { leaves: { ...buildMeta(total, page, limit,  Object.keys(grouped).length), year } }
+      meta: {
+        leaves: {
+          ...buildMeta(page, limit, total, Object.keys(grouped).length),
+          year
+        }
+      }
     };
   }
 
-  // ---------- shifts ----------
+  // -- shifts -------------------------------------------------------
   static async _shifts(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 30, 100);
     const dateFilter = buildDateFilter(query, "shift_date");
@@ -1572,10 +1483,13 @@ class EmployeeSectionService {
       return item;
     });
 
-    return { data: { shifts: data }, meta: { shifts: buildMeta(total, page, limit, data.length) } };
+    return {
+      data: { shifts: data },
+      meta: { shifts: buildMeta(page, limit, total, data.length) }
+    };
   }
 
-  // ---------- banks ----------
+  // -- banks --------------------------------------------------------
   static async _banks(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 20, 100);
     const [[{ total }]] = await conn.query(
@@ -1592,13 +1506,14 @@ class EmployeeSectionService {
       [employeeId, companyId, limit, offset]
     );
     const data = rows.map(formatBankAccount);
-    return { data: { banks: data }, meta: { banks: buildMeta(total, page, limit, data.length) } };
+    return {
+      data: { banks: data },
+      meta: { banks: buildMeta(page, limit, total, data.length) }
+    };
   }
 }
 
-// ----------------------------------------------------------------------------
-// 8. Face enrollment routes
-// ----------------------------------------------------------------------------
+// Face enrollment routes 
 const handleFaceEnrollCheck = async (req, res) => {
   let conn;
   try {
@@ -1712,7 +1627,7 @@ router.get("/face-enroll/list", auth(EMP.MNG), async (req, res) => {
     conn = await db.getConnection();
     const companyId = safeNumber(req.company?.id, 0);
     const { page, limit, offset } = getPagination(req.query, 20, 100);
-    const search = String(req.query?.search || "").trim();
+    const search = sanitizeText(req.query?.search) || "";
 
     if (!companyId || companyId <= 0) return sendError(res, 401, "Unauthorized company");
 
@@ -1750,18 +1665,7 @@ router.get("/face-enroll/list", auth(EMP.MNG), async (req, res) => {
       face_enrolled: !!row.face_enrolled,
     }));
 
-    return res.status(200).json({
-      success: true,
-      message: "Face enrolled employee list fetched",
-      data,
-      meta: {
-        total,
-        page,
-        limit,
-        offset,
-        total_pages: Math.ceil(total / limit) || 1,
-      },
-    });
+    return sendSuccess(res, 200, "Face enrolled employee list fetched", data, buildMeta(page, limit, total, data.length));
   } catch (error) {
     console.error("GET /employees/face-enroll/list ERROR:", error);
     return sendError(res, 500, "Failed to fetch face enrolled employee list");
@@ -1770,5 +1674,4 @@ router.get("/face-enroll/list", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------------------
 export default router;

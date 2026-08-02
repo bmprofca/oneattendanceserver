@@ -782,7 +782,7 @@ const MY_INVITES_DATA = `
     ci.attendance_methods, ci.auto_approve, ci.enable_overtime, ci.enable_deduction,
     ci.joining_date, ci.base_amount, ci.effective_from, ci.effective_to,
     c.name AS company_name, c.city, c.state, c.country,
-    c.address_line1, c.address_line2, c.logo_url,
+    c.address_line1, c.address_line2, c.logo_url, c.postal_code,
     ib.id AS invited_by_id, ib.name AS invited_by_name,
     ib.email AS invited_by_email, ib.profile_picture AS invited_by_profile_picture,
     pp.id AS package_id, pp.package_name,
@@ -913,11 +913,12 @@ const formatUserInvite = (invite, { permissions = [], salaryComponents = [] } = 
   company: {
     id: invite.company_id,
     name: invite.company_name,
-    city: invite.city,
-    state: invite.state,
-    country: invite.country,
     address_line1: invite.address_line1,
     address_line2: invite.address_line2,
+    city: invite.city,
+    state: invite.state,
+    postal_code: invite.postal_code,
+    country: invite.country,
     logo_url: invite.logo_url,
   },
   invited_by: invite.invited_by_id
@@ -1107,8 +1108,6 @@ const processInviteAcceptance = async (conn, invite, userId) => {
     await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
   }
 
-  console.log(userId);
-  console.log(inviteId);
   await conn.query(COMPLETE_INVITE, [userId, inviteId]);
   return { success: true };
 };
@@ -1518,14 +1517,28 @@ router.get("/list", auth(INV.MNG), async (req, res) => {
     let whereClause = `WHERE ci.company_id = ? AND ci.is_deleted = 0`;
     const params = [companyId];
 
+    let explicitExpired = false;
     if (status && String(status).trim().toLowerCase() !== "all") {
-      const allowedStatuses = ["pending", "accepted", "rejected", "cancelled"];
+      const allowedStatuses = ["pending", "accepted", "rejected", "cancelled", "expired"];
       const normalizedStatus = String(status).trim().toLowerCase();
       if (!allowedStatuses.includes(normalizedStatus)) {
         return sendError(res, 400, "Invalid status filter");
       }
-      whereClause += ` AND LOWER(ci.status) = ?`;
-      params.push(normalizedStatus);
+
+      if (normalizedStatus === "expired") {
+        whereClause += ` AND (
+          LOWER(ci.status) = 'expired' 
+          OR (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())
+        )`;
+        explicitExpired = true;
+      } else {
+        whereClause += ` AND LOWER(ci.status) = ?`;
+        params.push(normalizedStatus);
+      }
+    }
+
+    if (!explicitExpired) {
+      whereClause += ` AND NOT (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())`;
     }
 
     search = String(search || "").trim();
@@ -1626,22 +1639,39 @@ router.get("/my", auth(), async (req, res) => {
       return sendError(res, 401, "Invalid user ID");
     }
 
-    let { page = 1, limit = 10, search = "", status, date, month, year, from_date, to_date } = req.query;
+    let { page = 1, limit = 10, search = "", status, month, year, from_date, to_date } = req.query;
     page = Math.max(parseInt(page, 10) || 1, 1);
     limit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
     const offset = (page - 1) * limit;
 
     let where = `WHERE ci.user_id = ? AND ci.is_deleted = 0 AND c.is_deleted = 0`;
     const params = [userId];
+    // permanently exclude cancelled invites
+    where += ` AND LOWER(ci.status) != 'cancelled'`;
+
+    let explicitExpired = false;
 
     if (status && String(status).trim().toLowerCase() !== "all") {
-      const allowedStatuses = ["pending", "accepted", "rejected", "cancelled"];
+      const allowedStatuses = ["pending", "accepted", "rejected", "expired"];
       const normalizedStatus = String(status).trim().toLowerCase();
       if (!allowedStatuses.includes(normalizedStatus)) {
         return sendError(res, 400, "Invalid status filter");
       }
-      where += ` AND LOWER(ci.status) = ?`;
-      params.push(normalizedStatus);
+
+      if (normalizedStatus === "expired") {
+        where += ` AND (
+          LOWER(ci.status) = 'expired'
+          OR (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())
+        )`;
+        explicitExpired = true;
+      } else {
+        where += ` AND LOWER(ci.status) = ?`;
+        params.push(normalizedStatus);
+      }
+    }
+
+    if (!explicitExpired) {
+      where += ` AND NOT (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())`;
     }
 
     search = String(search || "").trim();
@@ -1651,7 +1681,6 @@ router.get("/my", auth(), async (req, res) => {
       params.push(like, like, like, like, like);
     }
 
-    if (date) { where += ` AND DATE(ci.created_at) = ?`; params.push(date); }
     if (month && year) {
       const monthNum = Number(month), yearNum = Number(year);
       if (Number.isInteger(monthNum) && monthNum >= 1 && monthNum <= 12 && Number.isInteger(yearNum)) {
@@ -1891,12 +1920,8 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (components !== undefined && components !== null) {
       if (components.length > 0) {
         const componentIds = [...new Set(components.map(c => Number(c.component_id)))];
-        console.log("componnents id", componentIds);
         const [validComps] = await conn.query(SELECT_VALID_SALARY_COMPONENTS, [componentIds, company_id]);
-        console.log("Valid Component", validComps);
-
         const validIds = new Set(validComps.map(r => r.id));
-        console.log("Valid id", validIds);
         for (const id of componentIds) {
           if (!validIds.has(id)) {
             await conn.rollback();
@@ -1973,7 +1998,7 @@ router.delete("/cancel", auth(INV.MNG), async (req, res) => {
   }
 });
 
-router.put("/reject", auth(INV.MNG), async (req, res) => {
+router.put("/reject", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

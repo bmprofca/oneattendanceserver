@@ -8,6 +8,8 @@ import { ATTENDANCE_METHODS, LEAVE_TYPES } from "../constants/constants_values.j
 import { formatUTCToIST } from "../utils/time.js";
 import { createDefaultPackages } from "../utils/defaultPackages.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
+import { formatPhoneByCountry } from "../utils/getClientCountry.js";
+import { lookup } from "useragent";
 
 const router = express.Router();
 
@@ -128,6 +130,13 @@ const maskPhone = (phone) => {
   }
 
   return `${digits.slice(0, 2)}${"*".repeat(digits.length - 4)}${digits.slice(-2)}`;
+};
+
+const maskEmail = (email) => {
+  if (!email || !email.includes("@")) return email;
+  const [local, domain] = email.split("@");
+  const visible = local.length > 2 ? 2 : 1;
+  return local.slice(0, visible) + "***" + local.slice(-1) + "@" + domain;
 };
 
 router.post("/create", auth(), async (req, res) => {
@@ -792,37 +801,27 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
       return sendError(res, 401, "Your session is invalid or company context is missing. Please login again and select a company.");
     }
 
-    const emailRaw = String(req.query.email || "").trim();
-    const mobileRaw = String(req.query.mobile || "").trim();
+    const identifierRaw = String(req.query.identifier || "").trim();
 
-    const hasEmail = Boolean(emailRaw);
-    const hasMobile = Boolean(mobileRaw);
-
-    if (hasEmail && hasMobile) {
-      return sendError(res, 400, "Please provide either email or mobile, not both at the same time.");
-    }
-
-    if (!hasEmail && !hasMobile) {
-      return sendError(res, 400, "Please enter an email address or mobile number.");
+    if (!identifierRaw) {
+      return sendError(res, 400, "Please provide an email address or mobile number.");
     }
 
     let lookupType = null;
     let email = null;
     let mobile = null;
 
-    if (hasEmail) {
-      email = emailRaw.toLowerCase();
+    if (identifierRaw.includes("@")) {
+      email = identifierRaw.toLowerCase();
 
-      const emailRegex =
-        /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
-
+      const emailRegex = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
       if (!emailRegex.test(email)) {
         return sendError(res, 400, "The email address format is invalid. Please check and try again.");
       }
 
       lookupType = "email";
     } else {
-      mobile = normalizePhone(mobileRaw);
+      mobile = formatPhoneByCountry(req, normalizePhone(identifierRaw));
 
       if (!mobile) {
         return sendError(res, 400, "The mobile number format is invalid. Please check and try again.");
@@ -889,8 +888,7 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
       LIMIT 1
       `;
 
-    const userQueryParams =
-      lookupType === "email" ? [email] : [mobile];
+    const userQueryParams = lookupType === "email" ? [email] : [mobile];
 
     const [userRows] = await conn.query(userQuery, userQueryParams);
 
@@ -924,11 +922,11 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
       SELECT
         id,
         is_active,
-        is_deleted,
         status
       FROM employees
       WHERE company_id = ?
         AND user_id = ?
+        AND is_deleted = 0
       LIMIT 1
       `,
       [companyId, user.id]
@@ -937,7 +935,7 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
     if (employeeRows.length) {
       const employee = employeeRows[0];
 
-      if (employee.status == "inactive") {
+      if (employee.status === "inactive") {
         return sendError(res, 409, "This user was previously associated with the company. Please restore the employee record instead of sending a new invitation.");
       }
 
@@ -950,11 +948,11 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
         id,
         status,
         is_active,
-        is_deleted,
         expires_at
       FROM company_invites
       WHERE company_id = ?
         AND user_id = ?
+        AND is_deleted = 0
       ORDER BY id DESC
       LIMIT 1
       `,
@@ -964,29 +962,11 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
     if (inviteRows.length) {
       const invite = inviteRows[0];
 
-      if (invite.is_deleted) {
-        return sendError(res, 409, "An old invitation record exists for this user. Please create a fresh invitation from the admin panel.");
-      }
-
-      if (invite.status === "accepted") {
-        return sendError(res, 409, "This user has already accepted the company invitation.");
-      }
-
-      if (invite.status === "rejected") {
-        return sendError(res, 409, "This user previously rejected the company invitation. You may send a new invitation.");
-      }
-
       if (
         invite.status === "pending" &&
+        invite.is_active &&
         invite.expires_at &&
-        new Date(invite.expires_at) < new Date()
-      ) {
-        return sendError(res, 409, "A previous invitation for this user has expired. Please resend a new invitation.");
-      }
-
-      if (
-        invite.status === "pending" &&
-        invite.is_active
+        new Date(invite.expires_at) > new Date()
       ) {
         return sendError(res, 409, "A pending invitation has already been sent to this user.");
       }
@@ -995,11 +975,16 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
     const responseData = {
       id: user.id,
       name: user.name,
-      email: user.email,
-      phone: maskPhone(user.phone),
+      lookup_type: lookupType,
+      ...(lookupType === "mobile" && {
+        email: maskEmail(user.email),
+      }),
+      ...(lookupType === "email" && {
+        phone: maskPhone(user.phone),
+      }),
       profile_picture: buildFileUrl(user.profile_picture),
       is_active: Boolean(user.is_active),
-      created_at: user.created_at
+      created_at: user.created_at,
     };
 
     responseData.created_at = formatUTCToIST(responseData.created_at);
@@ -1007,7 +992,6 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
     return sendSuccess(res, 200, "User found and available for company invitation.", responseData);
   } catch (error) {
     console.error("AVAILABLE_USER_ERROR:", error);
-
     return sendError(res, 500, "Something went wrong while checking user availability. Please try again later.");
   } finally {
     if (conn) conn.release();
