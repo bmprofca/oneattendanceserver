@@ -612,7 +612,7 @@ router.post("/:id/notify", async (req, res) => {
         cs.is_active,
         c.name        AS company_name,
         sp.name       AS package_name,
-        u.mobile      AS owner_mobile,
+        u.phone       AS owner_mobile,
         u.name        AS owner_name
       FROM company_subscriptions cs
       LEFT JOIN companies c  ON c.id  = cs.company_id
