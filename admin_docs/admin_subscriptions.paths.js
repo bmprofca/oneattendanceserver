@@ -75,6 +75,40 @@ export const schemas = {
       is_active: { type: 'integer', enum: [0, 1], example: 1 },
     },
   },
+  AdminSubscriptionNotifyResponse: {
+    type: 'object',
+    properties: {
+      success: { type: 'boolean', example: true },
+      message: { type: 'string', example: 'Subscription alert WhatsApp message sent successfully' },
+      data: {
+        type: 'object',
+        oneOf: [
+          {
+            title: 'Expiry Alert (subscription still active)',
+            properties: {
+              type: { type: 'string', enum: ['expiry_alert'], example: 'expiry_alert' },
+              company_name: { type: 'string', example: 'Acme Corp' },
+              package_name: { type: 'string', example: 'Pro' },
+              starts_at: { type: 'string', example: '01 Jul 2026' },
+              expires_at: { type: 'string', example: '01 Aug 2026' },
+              days_remaining: { type: 'integer', example: 5 },
+              mobile_sent_to: { type: 'string', example: '919876543210' },
+            },
+          },
+          {
+            title: 'Renewal Request (subscription already expired)',
+            properties: {
+              type: { type: 'string', enum: ['renewal_request'], example: 'renewal_request' },
+              company_name: { type: 'string', example: 'Acme Corp' },
+              package_name: { type: 'string', example: 'Pro' },
+              expired_on: { type: 'string', example: '01 Jul 2026' },
+              mobile_sent_to: { type: 'string', example: '919876543210' },
+            },
+          },
+        ],
+      },
+    },
+  },
 };
 
 const SECURITY = [{ bearerAuth: [] }];
@@ -282,6 +316,50 @@ export const paths = {
         404: {
           description: 'Subscription not found',
           content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFoundResponse' } } },
+        },
+        ...COMMON_ERRORS,
+      },
+    },
+  },
+
+  '/admin/subscriptions/{id}/notify': {
+    post: {
+      tags: ['Admin Subscriptions'],
+      summary: 'Send subscription WhatsApp notification',
+      description: [
+        'Sends a WhatsApp message to the company owner regarding their subscription status.',
+        '',
+        '**Logic:**',
+        '- If the subscription **has expired** (`now > expires_at`), a **renewal request** message is sent asking the owner to renew.',
+        '- If the subscription is **still active**, a **pre-expiry alert** is sent showing the package name, start date, expiry date, and the number of days remaining.',
+        '',
+        'The response includes a `type` field (`expiry_alert` or `renewal_request`) so the frontend can display the appropriate UI feedback.',
+      ].join('\n'),
+      operationId: 'adminNotifySubscription',
+      security: SECURITY,
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Subscription ID' },
+      ],
+      responses: {
+        200: {
+          description: 'WhatsApp notification sent successfully',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/AdminSubscriptionNotifyResponse' },
+            },
+          },
+        },
+        400: {
+          description: 'Invalid subscription ID',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationErrorResponse' } } },
+        },
+        404: {
+          description: 'Subscription not found',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFoundResponse' } } },
+        },
+        422: {
+          description: 'Owner mobile number not found — cannot send WhatsApp message',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
         },
         ...COMMON_ERRORS,
       },

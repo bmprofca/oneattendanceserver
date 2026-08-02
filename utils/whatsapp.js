@@ -8,6 +8,8 @@ const templates = {
   task_create: () => import('../whatsappTemplates/taskTemplate.js'),
   payment_received: () => import('../whatsappTemplates/paymentTemplate.js'),
   task_complete: () => import('../whatsappTemplates/taskCompleteTemplate.js'),
+  subscription_alert: () => import('../whatsappTemplates/subscriptionAlertTemplate.js'),
+  subscription_renewal: () => import('../whatsappTemplates/subscriptionRenewalTemplate.js'),
 };
 
 const loadTemplate = async (name) => {
@@ -252,11 +254,31 @@ export const sendTaskCompleteWhatsApp = async (
   });
 };
 
+// params: [companyName, packageName, startDate, expiryDate, daysRemaining]
+export const sendSubscriptionAlertWhatsApp = async (mobile, params) => {
+  return sendTemplateMessage({
+    templateName: 'subscription_alert',
+    mobile,
+    params,
+  });
+};
+
+// params: [companyName, packageName, startDate, expiredOnDate]
+export const sendSubscriptionRenewalWhatsApp = async (mobile, params) => {
+  return sendTemplateMessage({
+    templateName: 'subscription_renewal',
+    mobile,
+    params,
+  });
+};
+
 export default {
   sendTemplateMessage,
   sendOtpWhatsApp,
   sendTaskWhatsApp,
   sendPaymentReceviedWhatsApp,
   sendTaskCompleteWhatsApp,
+  sendSubscriptionAlertWhatsApp,
+  sendSubscriptionRenewalWhatsApp,
   formatWhatsAppMobile,
 };

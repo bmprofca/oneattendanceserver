@@ -6,6 +6,10 @@ import {
   sendError,
   buildMeta,
 } from "../utils/sendResponse.js";
+import {
+  sendSubscriptionAlertWhatsApp,
+  sendSubscriptionRenewalWhatsApp,
+} from "../utils/whatsapp.js";
 
 const router = express.Router();
 
@@ -576,6 +580,116 @@ router.put("/:id", async (req, res) => {
   } catch (err) {
     console.error("ADMIN UPDATE SUBSCRIPTION ERROR:", err);
     return sendError(res, 500, "Failed to update subscription");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+/**
+ * POST /:id/notify
+ * Sends a WhatsApp subscription notification to the company owner.
+ * - If subscription has EXPIRED  → renewal request message
+ * - If subscription is ACTIVE    → pre-expiry alert with details
+ */
+router.post("/:id/notify", async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const subscriptionId = parseInt(req.params.id);
+    if (!subscriptionId || subscriptionId <= 0) {
+      return sendError(res, 400, "Valid subscription ID is required");
+    }
+
+    // Fetch subscription with owner mobile
+    const [rows] = await conn.query(
+      `
+      SELECT
+        cs.id,
+        cs.starts_at,
+        cs.expires_at,
+        cs.is_active,
+        c.name        AS company_name,
+        sp.name       AS package_name,
+        u.mobile      AS owner_mobile,
+        u.name        AS owner_name
+      FROM company_subscriptions cs
+      LEFT JOIN companies c  ON c.id  = cs.company_id
+      LEFT JOIN users u      ON u.id  = c.owner_user_id
+      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      LIMIT 1
+      `,
+      [subscriptionId]
+    );
+
+    const sub = rows[0];
+    if (!sub) {
+      return sendError(res, 404, "Subscription not found");
+    }
+
+    if (!sub.owner_mobile) {
+      return sendError(res, 422, "Owner mobile number not found — cannot send WhatsApp message");
+    }
+
+    const now        = new Date();
+    const expiresAt  = sub.expires_at ? new Date(sub.expires_at) : null;
+    const startsAt   = sub.starts_at  ? new Date(sub.starts_at)  : null;
+
+    const formatDate = (date) => {
+      if (!date) return "N/A";
+      return date.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+    };
+
+    const isExpired = expiresAt ? now > expiresAt : false;
+
+    if (isExpired) {
+      // Subscription has already ended — send renewal request
+      await sendSubscriptionRenewalWhatsApp(sub.owner_mobile, [
+        sub.company_name  || "Your Company",
+        sub.package_name  || "Subscription",
+        formatDate(startsAt),
+        formatDate(expiresAt),
+      ]);
+
+      return sendSuccess(res, 200, "Renewal request WhatsApp message sent successfully", {
+        type: "renewal_request",
+        company_name: sub.company_name,
+        package_name: sub.package_name,
+        expired_on: formatDate(expiresAt),
+        mobile_sent_to: sub.owner_mobile,
+      });
+    } else {
+      // Subscription is still active — send pre-expiry alert
+      const msRemaining   = expiresAt ? expiresAt - now : 0;
+      const daysRemaining = expiresAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : 0;
+
+      await sendSubscriptionAlertWhatsApp(sub.owner_mobile, [
+        sub.company_name  || "Your Company",
+        sub.package_name  || "Subscription",
+        formatDate(startsAt),
+        formatDate(expiresAt),
+        String(daysRemaining),
+      ]);
+
+      return sendSuccess(res, 200, "Subscription alert WhatsApp message sent successfully", {
+        type: "expiry_alert",
+        company_name: sub.company_name,
+        package_name: sub.package_name,
+        starts_at: formatDate(startsAt),
+        expires_at: formatDate(expiresAt),
+        days_remaining: daysRemaining,
+        mobile_sent_to: sub.owner_mobile,
+      });
+    }
+  } catch (err) {
+    console.error("ADMIN SUBSCRIPTION NOTIFY ERROR:", err);
+    return sendError(res, 500, "Failed to send subscription WhatsApp notification");
   } finally {
     if (conn) conn.release();
   }
