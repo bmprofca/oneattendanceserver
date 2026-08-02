@@ -31,7 +31,7 @@ const config = {
   APP_GOOGLE_CLIENT_ID: '1099166791217-gv208acpiqat45qg263n6jhuifu7vvji.apps.googleusercontent.com',
 
   // Server BASE_URL
-  SERVER_BASE_URL:"https://oneattendanceserver.onesaas.in",
+  SERVER_BASE_URL: "https://oneattendanceserver.onesaas.in",
 
   // Frontend URL
   FRONTEND_URL: 'https://oneattendanceclient.vercel.app',
@@ -55,9 +55,10 @@ const config = {
   ZWITCH_API_SECRET: '1bc5b906b1d6c9d7dca6cfdbdf2494c8815ffd921da93cde0b9dfeaece8fe8a3',
 
   // OneChatting WhatsApp Integration
-  ONECHATTING_TEMPLATE_TOKEN: 'y248129y92gxih04v36yp70aszq8g23gy8wtl8am61gt5a6ey3p8a6n7t540o8j',
-  ONECHATTING_SEND_TOKEN: '289e1ll1128jj3i8cj11ajjx74bki26sn7lzt0435a2zj4411c65r8uqxeoc5o6',
+  ONECHATTING_TEMPLATE_TOKEN: '4u4jeam9d32kgkvzp27m8zqhumwfy7bd16l1bpwmb015nh54zmmd7t2infrm1x5',
+  ONECHATTING_SEND_TOKEN: 'ekl28if8u7xy772wo22u2f1chnbk47blb8hhq658fx19tqeht05s6v5kj519h6z',
   ONECHATTING_SEND_URL: 'https://server.onechatting.com/developer/message/send-template',
+  TEMPLATE_LIST_URL: 'https://server.onechatting.com/developer/template/template-list',
 
   // Fast2SMS Integration
   FAST2SMS_API_KEY: 'TNcvwZtlCVKAhVecVxeTOBubj8TdQDkRuw9m6r0bcsbdRjYzhv5ylzoyli6T',
@@ -98,6 +99,7 @@ export const {
   ONECHATTING_TEMPLATE_TOKEN,
   ONECHATTING_SEND_TOKEN,
   ONECHATTING_SEND_URL,
+  TEMPLATE_LIST_URL,
   FAST2SMS_API_KEY,
   FAST2SMS_SENDER_ID,
   FAST2SMS_URL,

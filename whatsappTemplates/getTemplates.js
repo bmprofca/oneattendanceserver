@@ -2,20 +2,32 @@ import axios from 'axios';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
-import { ONECHATTING_TEMPLATE_TOKEN } from '../config/config.js';
+import { ONECHATTING_TEMPLATE_TOKEN, TEMPLATE_LIST_URL, } from '../config/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TEMPLATE_LIST_URL =
-  'https://server.onechatting.com/developer/template/template-list';
-
 const OUTPUT_MAP = {
-  otp: path.join(__dirname, 'otpTemplate.js'),
-  task_create: path.join(__dirname, 'taskTemplate.js'),
-  payment_received: path.join(__dirname, 'paymentTemplate.js'),
-  task_complete: path.join(__dirname, 'taskCompleteTemplate.js'),
+  login_otp: path.join(__dirname, 'otpTemplate.js'),
+  oa_subscription_expired_notice: path.join(__dirname, 'subscriptionRenewalTemplate.js'),
+  oa_subscription_expire_alert: path.join(__dirname, 'subscriptionAlertTemplate.js'),
+};
+
+const REQUIRED_TEMPLATES = new Set(Object.keys(OUTPUT_MAP));
+
+const getTemplateName = (template) =>
+  String(template?.template_name ?? template?.name ?? '').trim();
+
+const getTemplates = (response) => {
+  if (Array.isArray(response.data?.data)) {
+    return response.data.data;
+  }
+
+  if (Array.isArray(response.data)) {
+    return response.data;
+  }
+
+  return [];
 };
 
 const buildTemplateSource = (template) =>
@@ -30,32 +42,31 @@ export const fetchAndSaveTemplates = async () => {
 
   const response = await axios.get(TEMPLATE_LIST_URL, {
     headers: {
-      token: token,
+      token,
     },
   });
 
-  const templates = Array.isArray(response.data?.data)
-    ? response.data.data
-    : Array.isArray(response.data)
-      ? response.data
-      : [];
+  const templates = getTemplates(response);
 
   const selectedTemplates = templates.filter((template) =>
-    ['otp', 'task_create', 'payment_received', 'task_complete'].includes(
-      String(template?.template_name ?? template?.name ?? '').trim()
-    )
+    REQUIRED_TEMPLATES.has(getTemplateName(template))
   );
 
-  for (const template of selectedTemplates) {
-    const templateName = String(
-      template?.template_name ?? template?.name ?? ''
-    ).trim();
-    const outputPath = OUTPUT_MAP[templateName];
+  await Promise.all(
+    selectedTemplates.map(async (template) => {
+      const outputPath = OUTPUT_MAP[getTemplateName(template)];
 
-    if (!outputPath) continue;
+      if (!outputPath) {
+        return;
+      }
 
-    await fs.writeFile(outputPath, buildTemplateSource(template), 'utf8');
-  }
+      await fs.writeFile(
+        outputPath,
+        buildTemplateSource(template),
+        'utf8'
+      );
+    })
+  );
 
   return selectedTemplates;
 };

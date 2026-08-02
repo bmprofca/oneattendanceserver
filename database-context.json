@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-01T19:09:24.450Z",
+  "generated_at": "2026-08-02T14:02:10.332Z",
   "database": "u278432002_oneattendance",
   "table_count": 32,
   "tables": {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -4115,7 +4115,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 24,
+      "estimated_rows": 18,
       "comment": null,
       "columns": [
         {
@@ -5084,7 +5084,7 @@
     "permission_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 5,
+      "estimated_rows": 6,
       "comment": null,
       "columns": [
         {
@@ -5262,7 +5262,7 @@
     "permission_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 223,
+      "estimated_rows": 262,
       "comment": null,
       "columns": [
         {
@@ -6167,7 +6167,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 15,
+      "estimated_rows": 17,
       "comment": null,
       "columns": [
         {

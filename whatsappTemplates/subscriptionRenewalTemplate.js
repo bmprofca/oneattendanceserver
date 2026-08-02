@@ -1,29 +1,32 @@
-// WhatsApp template for subscription renewal request (after expiry)
-// Params: {{1}} = company name, {{2}} = package name, {{3}} = start date, {{4}} = expired on date
 export default {
-  "template_id": "subscription_renewal",
-  "category": "UTILITY",
+  "template_id": "rwbq144grjey46n49c29q668uctv713b9556cw873nn",
+  "waba_template_id": "2221667191901791",
+  "category": "MARKETING",
   "language_code": "en",
-  "template_name": "subscription_renewal",
+  "create_date": "2026-08-02 16:04:12",
+  "template_name": "oa_subscription_expired_notice",
   "status": "APPROVED",
+  "reject_reason": "NONE",
   "template": {
-    "name": "subscription_renewal",
+    "name": "oa_subscription_expired_notice",
     "category": "UTILITY",
     "language": "en",
     "components": [
       {
         "type": "BODY",
-        "text": "Dear *{{1}}*,\n\n🔴 *Subscription Expired*\n\nYour subscription for *{{2}}* has expired.\n\n📅 *Started On:* {{3}}\n📅 *Expired On:* {{4}}\n\nTo continue using *OneAttendance* without interruption, please renew your subscription at the earliest.\n\nContact our support team or visit our portal to renew.\n\nThank you,\nTeam *OneAttendance*.",
+        "text": "Hello *{{1}}*,\n\nYour *OneAttendance* subscription expired on *{{2}}*.\n\nPlease renew your subscription to restore uninterrupted access to your account.",
         "example": {
           "body_text": [
             [
-              "ABC Pvt Ltd",
-              "Premium Plan",
-              "01 Jun 2026",
-              "01 Jul 2026"
+              "John",
+              "02 Aug 2026"
             ]
           ]
         }
+      },
+      {
+        "type": "FOOTER",
+        "text": "Team OneAttendance"
       }
     ]
   }

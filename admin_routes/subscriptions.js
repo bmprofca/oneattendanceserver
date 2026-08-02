@@ -651,9 +651,7 @@ router.post("/:id/notify", async (req, res) => {
     if (isExpired) {
       // Subscription has already ended — send renewal request
       await sendSubscriptionRenewalWhatsApp(sub.owner_mobile, [
-        sub.company_name  || "Your Company",
-        sub.package_name  || "Subscription",
-        formatDate(startsAt),
+        sub.company_name || "Your Company",
         formatDate(expiresAt),
       ]);
 
@@ -670,11 +668,10 @@ router.post("/:id/notify", async (req, res) => {
       const daysRemaining = expiresAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : 0;
 
       await sendSubscriptionAlertWhatsApp(sub.owner_mobile, [
-        sub.company_name  || "Your Company",
-        sub.package_name  || "Subscription",
-        formatDate(startsAt),
-        formatDate(expiresAt),
+        sub.company_name || "Your Company",
+        sub.package_name || "Subscription",
         String(daysRemaining),
+        formatDate(expiresAt),
       ]);
 
       return sendSuccess(res, 200, "Subscription alert WhatsApp message sent successfully", {
