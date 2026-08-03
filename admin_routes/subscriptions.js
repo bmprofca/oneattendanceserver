@@ -88,7 +88,8 @@ const formatSubscription = (row) => {
     owner_user_id: row.owner_user_id,
     owner_name: row.owner_name,
     owner_email: row.owner_email,
-    subscription_package_id: row.subscription_package_id,
+    package_id: row.package_id,
+    package_type: row.package_type,
     package_name: row.package_name,
     min_employee_count: row.min_employee_count,
     max_employee_count: row.max_employee_count,
@@ -120,10 +121,11 @@ const getSubscriptionBaseQuery = () => `
     c.owner_user_id,
     u.name AS owner_name,
     u.email AS owner_email,
-    cs.subscription_package_id,
-    sp.name AS package_name,
-    sp.min_employee_count,
-    sp.max_employee_count,
+    cs.package_id,
+    cs.package_type,
+    COALESCE(sp.name, csp.name) AS package_name,
+    COALESCE(sp.min_employee_count, csp.min_employee_count) AS min_employee_count,
+    COALESCE(sp.max_employee_count, csp.max_employee_count) AS max_employee_count,
     cs.employee_limit,
     cs.subscription_type,
     cs.amount_paid,
@@ -143,7 +145,8 @@ const getSubscriptionBaseQuery = () => `
   FROM company_subscriptions cs
   LEFT JOIN companies c ON c.id = cs.company_id
   LEFT JOIN users u ON u.id = c.owner_user_id
-  LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+  LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+  LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
 `;
 
 router.get("/", async (req, res) => {
@@ -179,9 +182,9 @@ router.get("/", async (req, res) => {
     }
 
     if (search && typeof search === "string" && search.trim()) {
-      conditions.push("(c.name LIKE ? OR c.legal_name LIKE ? OR sp.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?)");
+      conditions.push("(c.name LIKE ? OR c.legal_name LIKE ? OR sp.name LIKE ? OR csp.name LIKE ? OR u.name LIKE ? OR u.email LIKE ?)");
       const searchTerm = `%${search.trim()}%`;
-      params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -192,7 +195,8 @@ router.get("/", async (req, res) => {
       FROM company_subscriptions cs
       LEFT JOIN companies c ON c.id = cs.company_id
       LEFT JOIN users u ON u.id = c.owner_user_id
-      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
       ${whereClause}
       `,
       params
@@ -233,7 +237,8 @@ router.post("/", async (req, res) => {
 
     const {
       company_id,
-      subscription_package_id,
+      package_id,
+      package_type = "normal",
       employee_limit,
       subscription_type,
       amount_paid,
@@ -247,8 +252,12 @@ router.post("/", async (req, res) => {
       is_active,
     } = req.body || {};
 
-    if (!company_id || !subscription_package_id || !subscription_type || amount_paid === undefined || !starts_at || !expires_at) {
+    if (!company_id || !package_id || !package_type || !subscription_type || amount_paid === undefined || !starts_at || !expires_at) {
       return sendError(res, 400, "Missing required fields");
+    }
+
+    if (!['normal', 'custom'].includes(package_type)) {
+      return sendError(res, 400, "package_type must be 'normal' or 'custom'");
     }
 
     const [[company]] = await conn.query("SELECT id FROM companies WHERE id = ? AND is_deleted = 0", [company_id]);
@@ -256,15 +265,21 @@ router.post("/", async (req, res) => {
       return sendError(res, 404, "Company not found");
     }
 
-    const [[subPackage]] = await conn.query("SELECT id, max_employee_count FROM subscription_packages WHERE id = ?", [subscription_package_id]);
-    if (!subPackage) {
-      return sendError(res, 404, "Subscription package not found");
+    let pkgMaxEmployees = null;
+    if (package_type === 'normal') {
+      const [[subPackage]] = await conn.query("SELECT id, max_employee_count FROM subscription_packages WHERE id = ? AND is_deleted = 0", [package_id]);
+      if (!subPackage) return sendError(res, 404, "Subscription package not found");
+      pkgMaxEmployees = subPackage.max_employee_count;
+    } else {
+      const [[customPkg]] = await conn.query("SELECT id, max_employee_count FROM custom_subscription_packages WHERE id = ? AND is_deleted = 0", [package_id]);
+      if (!customPkg) return sendError(res, 404, "Custom subscription package not found");
+      pkgMaxEmployees = customPkg.max_employee_count;
     }
 
     const normalizedStartsAt = normalizeDateValue(starts_at);
     const normalizedExpiresAt = normalizeDateValue(expires_at);
     const normalizedPaymentStatus = payment_status !== undefined ? normalizePaymentStatus(payment_status) : "1";
-    const limitToUse = employee_limit || subPackage.max_employee_count;
+    const limitToUse = employee_limit || pkgMaxEmployees;
     const activeFlag = is_active !== undefined ? (Number(is_active) ? 1 : 0) : 1;
 
     if (normalizedStartsAt === null) return sendError(res, 400, "starts_at is invalid");
@@ -273,12 +288,12 @@ router.post("/", async (req, res) => {
 
     const [result] = await conn.query(
       `INSERT INTO company_subscriptions (
-        company_id, subscription_package_id, employee_limit, subscription_type,
+        company_id, package_id, package_type, employee_limit, subscription_type,
         amount_paid, starts_at, expires_at, payment_reference, payment_status,
         payment_order_id, payment_vpa, payment_utr, is_active, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id, subscription_package_id, limitToUse, subscription_type,
+        company_id, package_id, package_type, limitToUse, subscription_type,
         amount_paid, normalizedStartsAt, normalizedExpiresAt, payment_reference || null, normalizedPaymentStatus,
         payment_order_id || null, payment_vpa || null, payment_utr || null, activeFlag, req.admin.id || null
       ]
@@ -450,7 +465,8 @@ router.put("/:id", async (req, res) => {
 
     const {
       company_id,
-      subscription_package_id,
+      package_id,
+      package_type,
       employee_limit,
       subscription_type,
       amount_paid,
@@ -473,12 +489,18 @@ router.put("/:id", async (req, res) => {
       updateFields.push("cs.company_id = ?");
       values.push(company_id);
     }
-    
-    if (subscription_package_id !== undefined) {
-      const [[subPackage]] = await conn.query("SELECT id FROM subscription_packages WHERE id = ?", [subscription_package_id]);
-      if (!subPackage) return sendError(res, 404, "Subscription package not found");
-      updateFields.push("cs.subscription_package_id = ?");
-      values.push(subscription_package_id);
+
+    if (package_type !== undefined) {
+      if (!['normal', 'custom'].includes(package_type)) {
+        return sendError(res, 400, "package_type must be 'normal' or 'custom'");
+      }
+      updateFields.push("cs.package_type = ?");
+      values.push(package_type);
+    }
+
+    if (package_id !== undefined) {
+      updateFields.push("cs.package_id = ?");
+      values.push(package_id);
     }
 
     if (employee_limit !== undefined) {
@@ -611,13 +633,14 @@ router.post("/:id/notify", async (req, res) => {
         cs.expires_at,
         cs.is_active,
         c.name        AS company_name,
-        sp.name       AS package_name,
+        COALESCE(sp.name, csp.name) AS package_name,
         u.phone       AS owner_mobile,
         u.name        AS owner_name
       FROM company_subscriptions cs
       LEFT JOIN companies c  ON c.id  = cs.company_id
       LEFT JOIN users u      ON u.id  = c.owner_user_id
-      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
       WHERE cs.id = ? AND cs.is_deleted = 0
       LIMIT 1
       `,

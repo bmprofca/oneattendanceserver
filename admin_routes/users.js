@@ -318,8 +318,9 @@ router.get("/:id/subscriptions", async (req, res) => {
         cs.id,
         cs.company_id,
         c.name AS company_name,
-        cs.subscription_package_id,
-        sp.name AS package_name,
+        cs.package_id,
+        cs.package_type,
+        COALESCE(sp.name, csp.name) AS package_name,
         cs.employee_limit,
         cs.subscription_type,
         cs.amount_paid,
@@ -333,7 +334,8 @@ router.get("/:id/subscriptions", async (req, res) => {
         cs.updated_at
       FROM company_subscriptions cs
       LEFT JOIN companies c ON c.id = cs.company_id
-      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
       ${whereClause}
       ORDER BY cs.created_at DESC
       LIMIT ? OFFSET ?

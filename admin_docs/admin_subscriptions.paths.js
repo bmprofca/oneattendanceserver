@@ -9,7 +9,8 @@ export const schemas = {
       owner_user_id: { type: 'integer', example: 7 },
       owner_name: { type: 'string', nullable: true, example: 'John Doe' },
       owner_email: { type: 'string', nullable: true, example: 'john@example.com' },
-      subscription_package_id: { type: 'integer', example: 2 },
+      package_id: { type: 'integer', example: 2 },
+      package_type: { type: 'string', example: 'normal' },
       package_name: { type: 'string', example: 'Pro' },
       min_employee_count: { type: 'integer', example: 1 },
       max_employee_count: { type: 'integer', example: 100 },
@@ -33,10 +34,11 @@ export const schemas = {
   },
   AdminCreateSubscriptionRequest: {
     type: 'object',
-    required: ['company_id', 'subscription_package_id', 'subscription_type', 'amount_paid', 'starts_at', 'expires_at'],
+    required: ['company_id', 'package_id', 'package_type', 'subscription_type', 'amount_paid', 'starts_at', 'expires_at'],
     properties: {
       company_id: { type: 'integer', example: 3 },
-      subscription_package_id: { type: 'integer', example: 2 },
+      package_id: { type: 'integer', example: 2 },
+      package_type: { type: 'string', enum: ['normal', 'custom'], example: 'normal' },
       employee_limit: { type: 'integer', example: 100 },
       subscription_type: { type: 'string', enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'], example: 'monthly' },
       amount_paid: { type: 'number', example: 499 },
@@ -61,7 +63,8 @@ export const schemas = {
     type: 'object',
     properties: {
       company_id: { type: 'integer', example: 3 },
-      subscription_package_id: { type: 'integer', example: 2 },
+      package_id: { type: 'integer', example: 2 },
+      package_type: { type: 'string', enum: ['normal', 'custom'], example: 'normal' },
       employee_limit: { type: 'integer', example: 100 },
       subscription_type: { type: 'string', enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'], example: 'monthly' },
       amount_paid: { type: 'number', example: 499 },

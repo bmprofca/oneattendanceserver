@@ -154,8 +154,9 @@ router.get("/:id", async (req, res) => {
       `
       SELECT
         cs.id,
-        cs.subscription_package_id,
-        sp.name AS package_name,
+        cs.package_id,
+        cs.package_type,
+        COALESCE(sp.name, csp.name) AS package_name,
         cs.employee_limit,
         cs.subscription_type,
         cs.amount_paid,
@@ -164,7 +165,8 @@ router.get("/:id", async (req, res) => {
         cs.payment_status,
         cs.is_active
       FROM company_subscriptions cs
-      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
       WHERE cs.company_id = ? AND cs.is_deleted = 0 AND cs.is_active = 1
       ORDER BY cs.expires_at DESC
       LIMIT 1
@@ -305,10 +307,11 @@ router.get("/:id/subscriptions", async (req, res) => {
       `
       SELECT
         cs.id,
-        cs.subscription_package_id,
-        sp.name AS package_name,
-        sp.min_employee_count,
-        sp.max_employee_count,
+        cs.package_id,
+        cs.package_type,
+        COALESCE(sp.name, csp.name) AS package_name,
+        COALESCE(sp.min_employee_count, csp.min_employee_count) AS min_employee_count,
+        COALESCE(sp.max_employee_count, csp.max_employee_count) AS max_employee_count,
         cs.employee_limit,
         cs.subscription_type,
         cs.amount_paid,
@@ -323,7 +326,8 @@ router.get("/:id/subscriptions", async (req, res) => {
         cs.created_at,
         cs.updated_at
       FROM company_subscriptions cs
-      LEFT JOIN subscription_packages sp ON sp.id = cs.subscription_package_id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
       ${whereClause}
       ORDER BY cs.created_at DESC
       LIMIT ? OFFSET ?
