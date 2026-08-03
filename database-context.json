@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-02T14:02:10.332Z",
+  "generated_at": "2026-08-03T05:36:37.865Z",
   "database": "u278432002_oneattendance",
-  "table_count": 32,
+  "table_count": 33,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
@@ -1447,7 +1447,7 @@
     "company_subscriptions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -1473,19 +1473,30 @@
           "comment": null
         },
         {
-          "name": "subscription_package_id",
+          "name": "package_id",
           "position": 3,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": false,
           "default": null,
-          "key": "MUL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "package_type",
+          "position": 4,
+          "data_type": "enum",
+          "column_type": "enum('normal','custom')",
+          "nullable": false,
+          "default": "'normal'",
+          "key": null,
           "extra": null,
           "comment": null
         },
         {
           "name": "employee_limit",
-          "position": 4,
+          "position": 5,
           "data_type": "int",
           "column_type": "int(11)",
           "nullable": false,
@@ -1496,7 +1507,7 @@
         },
         {
           "name": "subscription_type",
-          "position": 5,
+          "position": 6,
           "data_type": "enum",
           "column_type": "enum('monthly','quarterly','half_yearly','yearly')",
           "nullable": false,
@@ -1507,7 +1518,7 @@
         },
         {
           "name": "amount_paid",
-          "position": 6,
+          "position": 7,
           "data_type": "decimal",
           "column_type": "decimal(12,2)",
           "nullable": false,
@@ -1518,7 +1529,7 @@
         },
         {
           "name": "starts_at",
-          "position": 7,
+          "position": 8,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1529,7 +1540,7 @@
         },
         {
           "name": "expires_at",
-          "position": 8,
+          "position": 9,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1540,7 +1551,7 @@
         },
         {
           "name": "payment_reference",
-          "position": 9,
+          "position": 10,
           "data_type": "varchar",
           "column_type": "varchar(255)",
           "nullable": true,
@@ -1551,7 +1562,7 @@
         },
         {
           "name": "is_active",
-          "position": 10,
+          "position": 11,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1562,7 +1573,7 @@
         },
         {
           "name": "created_at",
-          "position": 11,
+          "position": 12,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1573,7 +1584,7 @@
         },
         {
           "name": "created_by",
-          "position": 12,
+          "position": 13,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1584,7 +1595,7 @@
         },
         {
           "name": "updated_at",
-          "position": 13,
+          "position": 14,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1595,7 +1606,7 @@
         },
         {
           "name": "updated_by",
-          "position": 14,
+          "position": 15,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1606,7 +1617,7 @@
         },
         {
           "name": "is_deleted",
-          "position": 15,
+          "position": 16,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1617,7 +1628,7 @@
         },
         {
           "name": "deleted_at",
-          "position": 16,
+          "position": 17,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -1628,7 +1639,7 @@
         },
         {
           "name": "deleted_by",
-          "position": 17,
+          "position": 18,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1639,7 +1650,7 @@
         },
         {
           "name": "payment_status",
-          "position": 18,
+          "position": 19,
           "data_type": "enum",
           "column_type": "enum('0','1','2','3')",
           "nullable": false,
@@ -1650,17 +1661,6 @@
         },
         {
           "name": "payment_order_id",
-          "position": 19,
-          "data_type": "varchar",
-          "column_type": "varchar(100)",
-          "nullable": true,
-          "default": "NULL",
-          "key": null,
-          "extra": null,
-          "comment": null
-        },
-        {
-          "name": "payment_vpa",
           "position": 20,
           "data_type": "varchar",
           "column_type": "varchar(100)",
@@ -1671,8 +1671,19 @@
           "comment": null
         },
         {
-          "name": "payment_utr",
+          "name": "payment_vpa",
           "position": 21,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "payment_utr",
+          "position": 22,
           "data_type": "varchar",
           "column_type": "varchar(100)",
           "nullable": true,
@@ -1688,7 +1699,7 @@
       "foreign_keys": [
         {
           "constraint": "fk_company_subscriptions_package",
-          "column": "subscription_package_id",
+          "column": "package_id",
           "references": {
             "table": "subscription_packages",
             "column": "id"
@@ -1696,13 +1707,6 @@
         }
       ],
       "indexes": [
-        {
-          "name": "fk_company_subscriptions_package",
-          "unique": false,
-          "columns": [
-            "subscription_package_id"
-          ]
-        },
         {
           "name": "idx_company_id",
           "unique": false,
@@ -1715,6 +1719,255 @@
           "unique": false,
           "columns": [
             "expires_at"
+          ]
+        },
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
+    "custom_subscription_packages": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 1,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": "auto_increment",
+          "comment": null
+        },
+        {
+          "name": "client_id",
+          "position": 2,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "name",
+          "position": 3,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "min_employee_count",
+          "position": 4,
+          "data_type": "int",
+          "column_type": "int(11)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "max_employee_count",
+          "position": 5,
+          "data_type": "int",
+          "column_type": "int(11)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "monthly_price",
+          "position": 6,
+          "data_type": "decimal",
+          "column_type": "decimal(12,2)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "quarterly_price",
+          "position": 7,
+          "data_type": "decimal",
+          "column_type": "decimal(12,2)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "half_yearly_price",
+          "position": 8,
+          "data_type": "decimal",
+          "column_type": "decimal(12,2)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "yearly_price",
+          "position": 9,
+          "data_type": "decimal",
+          "column_type": "decimal(12,2)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "accept_periods",
+          "position": 10,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": false,
+          "default": "'\\'\\\\\\'[\"monthly\", \"quarterly\", \"half_yearly\",\"yearly\"]\\\\\\''",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "is_active",
+          "position": 11,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "1",
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "position": 12,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "created_by",
+          "position": 13,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "position": 14,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": "on update current_timestamp()",
+          "comment": null
+        },
+        {
+          "name": "updated_by",
+          "position": 15,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "is_deleted",
+          "position": 16,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "0",
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "deleted_at",
+          "position": 17,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "deleted_by",
+          "position": 18,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [
+        {
+          "constraint": "fk_custom_subscription_package_client",
+          "column": "client_id",
+          "references": {
+            "table": "users",
+            "column": "id"
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_client_id",
+          "unique": false,
+          "columns": [
+            "client_id"
+          ]
+        },
+        {
+          "name": "idx_is_active",
+          "unique": false,
+          "columns": [
+            "is_active"
+          ]
+        },
+        {
+          "name": "idx_is_deleted",
+          "unique": false,
+          "columns": [
+            "is_deleted"
           ]
         },
         {
@@ -4115,7 +4368,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 18,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -6167,7 +6420,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 17,
+      "estimated_rows": 18,
       "comment": null,
       "columns": [
         {
