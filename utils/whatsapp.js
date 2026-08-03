@@ -1,179 +1,148 @@
 import axios from 'axios';
 
-import { ONECHATTING_SEND_URL, ONECHATTING_SEND_TOKEN } from '../config/config.js';
+import {
+  ONECHATTING_SEND_TOKEN,
+  ONECHATTING_SEND_URL,
+} from '../config/config.js';
 import { formatIndianMobileForSend } from './mobile.js';
 
-const templates = {
-  otp: () => import('../whatsappTemplates/otpTemplate.js'),
-  task_create: () => import('../whatsappTemplates/taskTemplate.js'),
-  payment_received: () => import('../whatsappTemplates/paymentTemplate.js'),
-  task_complete: () => import('../whatsappTemplates/taskCompleteTemplate.js'),
-  subscription_alert: () => import('../whatsappTemplates/subscriptionAlertTemplate.js'),
-  subscription_renewal: () => import('../whatsappTemplates/subscriptionRenewalTemplate.js'),
-};
+const TEMPLATES = Object.freeze({
+  login_otp: () => import('../whatsappTemplates/otpTemplate.js'),
+  oa_subscription_expire_alert: () =>
+    import('../whatsappTemplates/subscriptionAlertTemplate.js'),
+  oa_subscription_expired_notice: () =>
+    import('../whatsappTemplates/subscriptionRenewalTemplate.js'),
+});
 
-const loadTemplate = async (name) => {
-  const importer = templates[name];
-
+const loadTemplate = async (templateName) => {
+  const importer = TEMPLATES[templateName];
   if (!importer) {
-    throw new Error(`Unknown WhatsApp template: ${name}`);
+    throw new Error(`Unknown WhatsApp template: ${templateName}`);
   }
-
   const module = await importer();
   return module.default ?? module;
 };
 
+
 const normalizeParams = (params) => {
   if (Array.isArray(params)) {
-    return params.map((value) => String(value ?? '').trim()).filter(Boolean);
+    return params.map((value) => String(value ?? '').trim());
   }
 
   if (params && typeof params === 'object') {
     const name = String(
-      params.name ?? params.first_name ?? params.customer_name ?? 'Customer'
+      params.companyName ?? params.company_name ?? params.name ?? params.first_name ?? params.customer_name ?? 'Customer'
     ).trim();
-    const amount = String(
-      params.amount ?? params.paid_amount ?? params.payment_amount ?? ''
+    const pkg = String(
+      params.packageName ?? params.package_name ?? params.service_name ?? params.service ?? ''
     ).trim();
-    const taskDetails = String(
-      params.task_details ?? params.task ?? params.message ?? ''
+    const days = String(
+      params.daysRemaining ?? params.days_remaining ?? ''
     ).trim();
-    const serviceName = String(
-      params.service_name ?? params.service ?? params.serviceTitle ?? ''
-    ).trim();
-    const receiptNumber = String(
-      params.receipt_no ?? params.receipt_number ?? params.utr ?? params.payment_id ?? ''
+    const date = String(
+      params.expiryDate ?? params.expiredOnDate ?? params.expired_on ?? params.expires_at ?? ''
     ).trim();
 
-    return [name, amount, serviceName, receiptNumber, taskDetails].filter(Boolean);
+    return [name, pkg, days, date].filter(Boolean);
   }
 
   return [String(params ?? '').trim()].filter(Boolean);
 };
 
-const buildComponents = (template, values, headerMedia = {}) => {
+const buildComponents = (template, values = [], headerMedia = {}, otp = null) => {
   const components = [];
   const templateComponents = template?.template?.components ?? [];
 
   const header = templateComponents.find((c) => c.type === 'HEADER');
-
   if (header) {
-    switch (header.format) {
-      case 'IMAGE': {
-        const imageLink =
-          headerMedia.image ?? header.example?.header_handle?.[0];
-
-        if (imageLink) {
-          components.push({
-            type: 'header',
-            parameters: [
-              {
-                type: 'image',
-                image: {
-                  link: imageLink,
-                },
-              },
-            ],
-          });
-        }
-        break;
+    const format = header.format?.toLowerCase();
+    if (['image', 'video', 'document'].includes(format)) {
+      const link = headerMedia[format] ?? header.example?.header_handle?.[0];
+      if (link) {
+        components.push({
+          type: 'header',
+          parameters: [
+            {
+              type: format,
+              [format]: { link },
+            },
+          ],
+        });
       }
-
-      case 'VIDEO': {
-        const videoLink =
-          headerMedia.video ?? header.example?.header_handle?.[0];
-
-        if (videoLink) {
-          components.push({
-            type: 'header',
-            parameters: [
-              {
-                type: 'video',
-                video: {
-                  link: videoLink,
-                },
-              },
-            ],
-          });
-        }
-        break;
-      }
-
-      case 'DOCUMENT': {
-        const documentLink =
-          headerMedia.document ?? header.example?.header_handle?.[0];
-
-        if (documentLink) {
-          components.push({
-            type: 'header',
-            parameters: [
-              {
-                type: 'document',
-                document: {
-                  link: documentLink,
-                },
-              },
-            ],
-          });
-        }
-        break;
-      }
-
-      case 'TEXT': {
-        const text =
-          headerMedia.text ?? header.example?.header_text?.[0];
-
-        if (text) {
-          components.push({
-            type: 'header',
-            parameters: [
-              {
-                type: 'text',
-                text,
-              },
-            ],
-          });
-        }
-        break;
+    } else if (format === 'text') {
+      const text = headerMedia.text ?? header.example?.header_text?.[0];
+      if (text) {
+        components.push({
+          type: 'header',
+          parameters: [
+            {
+              type: 'text',
+              text,
+            },
+          ],
+        });
       }
     }
   }
 
+  
   const body = templateComponents.find((c) => c.type === 'BODY');
-
   if (body) {
-    const count = (body.text?.match(/\{\{\d+\}\}/g) ?? []).length;
+    const placeholderMatches = body.text?.match(/\{\{\d+\}\}/g) ?? [];
+    const variableCount = placeholderMatches.length;
 
-    components.push({
-      type: 'body',
-      parameters: values.slice(0, count || values.length).map((value) => ({
-        type: 'text',
-        text: String(value),
-      })),
+    if (variableCount > 0) {
+      components.push({
+        type: 'body',
+        parameters: values.slice(0, variableCount).map((value) => ({
+          type: 'text',
+          text: String(value ?? ''),
+        })),
+      });
+    }
+  }
+
+  const buttonsComp = templateComponents.find((c) => c.type === 'BUTTONS');
+  if (buttonsComp && Array.isArray(buttonsComp.buttons)) {
+    buttonsComp.buttons.forEach((button, index) => {
+      if (button.type === 'OTP' && otp) {
+        components.push({
+          type: 'button',
+          sub_type: 'otp',
+          index: String(index),
+          parameters: [
+            {
+              type: 'text',
+              text: otp,
+            },
+          ],
+        });
+      }
     });
   }
 
   return components;
 };
 
-export const formatWhatsAppMobile = formatIndianMobileForSend;
-
-const postTemplateMessage = async (url, payload, token) =>
-  axios.post(url, payload, {
+const postTemplateMessage = (payload, token) =>
+  axios.post(ONECHATTING_SEND_URL, payload, {
     headers: {
       token,
       'Content-Type': 'application/json',
     },
   });
 
+export const formatWhatsAppMobile = formatIndianMobileForSend;
+
+
 export const sendTemplateMessage = async ({
   templateName,
   mobile,
   params = [],
   headerMedia,
+  otp,
 }) => {
   const token = String(ONECHATTING_SEND_TOKEN ?? '').trim();
-
   if (!token) {
     throw new Error('ONECHATTING_SEND_TOKEN is required');
   }
@@ -185,16 +154,11 @@ export const sendTemplateMessage = async ({
   const payload = {
     number: normalizedMobile,
     template_id: template.template_id,
-    component: buildComponents(template, templateParams, headerMedia),
+    component: buildComponents(template, templateParams, headerMedia, otp),
   };
 
   try {
-    const response = await postTemplateMessage(
-      ONECHATTING_SEND_URL,
-      payload,
-      token
-    );
-
+    const response = await postTemplateMessage(payload, token);
     return response.data;
   } catch (error) {
     console.error('WhatsApp API Error:', error.response?.status);
@@ -205,79 +169,37 @@ export const sendTemplateMessage = async ({
   }
 };
 
+
 export const sendOtpWhatsApp = async (mobile, otp) => {
   return sendTemplateMessage({
-    templateName: 'otp',
-    mobile: mobile,
-    params: [otp],
-  });
-};
-
-export const sendTaskWhatsApp = async (mobile, taskDetails, serviceImage) => {
-  return sendTemplateMessage({
-    templateName: 'task_create',
+    templateName: 'login_otp',
     mobile,
-    params: taskDetails,
-    headerMedia: {
-      image: serviceImage,
-    },
+    params: [],
+    otp,           
   });
 };
 
-export const sendPaymentReceviedWhatsApp = async (
-  mobile,
-  paymentDetails,
-  paymentImage
-) => {
-  return sendTemplateMessage({
-    templateName: 'payment_received',
-    mobile: mobile,
-    params: paymentDetails,
-    headerMedia: {
-      image: paymentImage,
-    },
-  });
-};
 
-export const sendTaskCompleteWhatsApp = async (
-  mobile,
-  taskDetails,
-  serviceImage
-) => {
-  return sendTemplateMessage({
-    templateName: 'task_complete',
-    mobile,
-    params: taskDetails,
-    headerMedia: {
-      image: serviceImage,
-    },
-  });
-};
-
-// params: [companyName, packageName, startDate, expiryDate, daysRemaining]
 export const sendSubscriptionAlertWhatsApp = async (mobile, params) => {
   return sendTemplateMessage({
-    templateName: 'subscription_alert',
+    templateName: 'oa_subscription_expire_alert',
     mobile,
-    params,
+    params,              
   });
 };
 
-// params: [companyName, packageName, startDate, expiredOnDate]
+
 export const sendSubscriptionRenewalWhatsApp = async (mobile, params) => {
   return sendTemplateMessage({
-    templateName: 'subscription_renewal',
+    templateName: 'oa_subscription_expired_notice',
     mobile,
-    params,
+    params, 
   });
 };
 
 export default {
   sendTemplateMessage,
   sendOtpWhatsApp,
-  sendTaskWhatsApp,
-  sendPaymentReceviedWhatsApp,
-  sendTaskCompleteWhatsApp,
   sendSubscriptionAlertWhatsApp,
   sendSubscriptionRenewalWhatsApp,
   formatWhatsAppMobile,

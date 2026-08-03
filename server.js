@@ -13,6 +13,7 @@ import { scalarApiReferenceConfig } from './docs/scalar.js';
 import adminRoutes from './admin_routes/index.js';
 import adminOpenApiSpec from './admin_docs/openapi.js';
 import { adminScalarApiReferenceConfig } from './admin_docs/scalar.js';
+import fetchAndSaveTemplates from './whatsappTemplates/getTemplates.js';
 
 const app = express();
 
@@ -85,6 +86,12 @@ const startServer = async () => {
     console.log(`✅ SMTP ready (${SMTP_HOST})`);
   } catch (err) {
     console.error("❌ SMTP verification failed:", err.message);
+  }
+
+  try {
+    await fetchAndSaveTemplates();
+  } catch (error) {
+    console.warn('WhatsApp template sync skipped:', error.message);
   }
 
   app.listen(PORT, () => {

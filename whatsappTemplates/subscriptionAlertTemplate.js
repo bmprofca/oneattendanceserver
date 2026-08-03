@@ -1,30 +1,34 @@
-// WhatsApp template for subscription expiry pre-notification alert
-// Params: {{1}} = company name, {{2}} = package name, {{3}} = start date, {{4}} = expiry date, {{5}} = days remaining
 export default {
-  "template_id": "subscription_alert",
-  "category": "UTILITY",
+  "template_id": "519q8oqx146571iu6jlnib465lfo8h0lfft6f667oaw",
+  "waba_template_id": "1439548131345401",
+  "category": "MARKETING",
   "language_code": "en",
-  "template_name": "subscription_alert",
+  "create_date": "2026-08-02 16:01:22",
+  "template_name": "oa_subscription_expire_alert",
   "status": "APPROVED",
+  "reject_reason": "NONE",
   "template": {
-    "name": "subscription_alert",
+    "name": "oa_subscription_expire_alert",
     "category": "UTILITY",
     "language": "en",
     "components": [
       {
         "type": "BODY",
-        "text": "Dear *{{1}}*,\n\n⚠️ *Subscription Expiry Alert*\n\nYour subscription for *{{2}}* is about to expire.\n\n📅 *Start Date:* {{3}}\n📅 *Expiry Date:* {{4}}\n⏳ *Days Remaining:* {{5}} day(s)\n\nPlease renew your subscription before it expires to continue using our services uninterrupted.\n\nThank you,\nTeam *OneAttendance*.",
+        "text": "Hello {{1}},\n\nYour *{{2}}* subscription will expire in *{{3}}* day(s) (*{{4}}*).\n\nPlease renew your subscription before the expiry date to avoid service interruption.",
         "example": {
           "body_text": [
             [
-              "ABC Pvt Ltd",
-              "Premium Plan",
-              "01 Jul 2026",
-              "01 Aug 2026",
-              "5"
+              "John",
+              "OneAttendance",
+              "3",
+              "02 Aug 2026"
             ]
           ]
         }
+      },
+      {
+        "type": "FOOTER",
+        "text": "Team OneAttendance"
       }
     ]
   }
