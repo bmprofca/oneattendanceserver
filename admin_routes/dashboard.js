@@ -26,10 +26,16 @@ router.get("/", async (req, res) => {
     `);
 
     const [recentSubscriptions] = await conn.query(`
-      SELECT cs.id, c.name as company_name, sp.name as package_name, cs.created_at, cs.is_active
+      SELECT cs.id, c.name as company_name,
+        CASE cs.package_type
+          WHEN 'custom' THEN csp.name
+          ELSE sp.name
+        END as package_name,
+        cs.package_type, cs.created_at, cs.is_active
       FROM company_subscriptions cs
       LEFT JOIN companies c ON cs.company_id = c.id
-      LEFT JOIN subscription_packages sp ON cs.subscription_package_id = sp.id
+      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND cs.package_id = sp.id
+      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND cs.package_id = csp.id
       ORDER BY cs.created_at DESC
       LIMIT 5
     `);

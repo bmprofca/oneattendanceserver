@@ -3,6 +3,7 @@ import * as adminUsersDoc from './admin_users.paths.js';
 import * as adminCompaniesDoc from './admin_companies.paths.js';
 import * as adminSubscriptionsDoc from './admin_subscriptions.paths.js';
 import * as adminPackagesDoc from './admin_packages.paths.js';
+import * as adminCustomPackagesDoc from './admin_custom_packages.paths.js';
 import * as adminDashboardDoc from './admin_dashboard.paths.js';
 import { SHARED_SCHEMAS } from '../utils/sharedSchemas.js';
 
@@ -48,6 +49,7 @@ const adminOpenApiSpec = {
       ...adminCompaniesDoc.schemas,
       ...adminSubscriptionsDoc.schemas,
       ...adminPackagesDoc.schemas,
+      ...adminCustomPackagesDoc.schemas,
       ...adminDashboardDoc.schemas,
     },
   },
@@ -57,6 +59,7 @@ const adminOpenApiSpec = {
     { name: 'Admin Companies', description: 'Company management (list, create, update, delete)' },
     { name: 'Admin Subscriptions', description: 'Admin subscription monitoring and status updates' },
     { name: 'Admin Packages', description: 'Subscription packages management (list, create, update, delete)' },
+    { name: 'Admin Custom Packages', description: 'Custom subscription packages management for specific clients' },
     { name: 'Admin Dashboard', description: 'Admin dashboard statistics and KPIs' },
   ],
   paths: {
@@ -65,6 +68,7 @@ const adminOpenApiSpec = {
     ...adminCompaniesDoc.paths,
     ...adminSubscriptionsDoc.paths,
     ...adminPackagesDoc.paths,
+    ...adminCustomPackagesDoc.paths,
     ...adminDashboardDoc.paths,
   },
 };

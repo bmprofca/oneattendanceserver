@@ -4,6 +4,7 @@ import adminUsersRoutes from "./users.js";
 import adminCompaniesRoutes from "./companies.js";
 import adminSubscriptionsRoutes from "./subscriptions.js";
 import adminPackagesRoutes from "./packages.js";
+import adminCustomPackagesRoutes from "./custom_packages.js";
 import adminDashboardRoutes from "./dashboard.js";
 
 const router = express.Router();
@@ -13,6 +14,7 @@ router.use("/users", adminUsersRoutes);
 router.use("/companies", adminCompaniesRoutes);
 router.use("/subscriptions", adminSubscriptionsRoutes);
 router.use("/packages", adminPackagesRoutes);
+router.use("/custom-packages", adminCustomPackagesRoutes);
 router.use("/dashboard", adminDashboardRoutes);
 
 export default router;

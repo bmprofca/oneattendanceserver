@@ -62,7 +62,8 @@ export const schemas = {
         description: 'Currently active subscription, or null if none',
         properties: {
           id: { type: 'integer' },
-          subscription_package_id: { type: 'integer' },
+          package_id: { type: 'integer' },
+          package_type: { type: 'string', example: 'normal' },
           package_name: { type: 'string', nullable: true },
           employee_limit: { type: 'integer' },
           subscription_type: { type: 'string', enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'] },
@@ -106,7 +107,8 @@ export const schemas = {
     type: 'object',
     properties: {
       id: { type: 'integer', example: 1 },
-      subscription_package_id: { type: 'integer', example: 2 },
+      package_id: { type: 'integer', example: 2 },
+      package_type: { type: 'string', example: 'normal' },
       package_name: { type: 'string', nullable: true, example: 'Pro Plan' },
       min_employee_count: { type: 'integer', nullable: true, example: 1 },
       max_employee_count: { type: 'integer', nullable: true, example: 50 },
