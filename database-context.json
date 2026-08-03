@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-08-03T05:04:30.698Z",
   "database": "u278432002_oneattendance",
-  "table_count": 33,
+  "table_count": 35,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
@@ -7669,6 +7669,269 @@
           "unique": true,
           "columns": [
             "id"
+          ]
+        }
+      ]
+    },
+    "subscription_alert_config": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 1,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "int",
+          "column_type": "int(10) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": "auto_increment",
+          "comment": null
+        },
+        {
+          "name": "alert_days_before",
+          "position": 2,
+          "data_type": "tinyint",
+          "column_type": "tinyint(3) unsigned",
+          "nullable": false,
+          "default": "5",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "alert_template_name",
+          "position": 3,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "alert_template_vars",
+          "position": 4,
+          "data_type": "longtext",
+          "column_type": "longtext",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "renewal_template_name",
+          "position": 5,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "renewal_template_vars",
+          "position": 6,
+          "data_type": "longtext",
+          "column_type": "longtext",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "is_renewal_enabled",
+          "position": 7,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "is_alert_enabled",
+          "position": 8,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "1",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_by",
+          "position": 9,
+          "data_type": "int",
+          "column_type": "int(10) unsigned",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "position": 10,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "position": 11,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
+    "subscription_alert_log": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 0,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": "auto_increment",
+          "comment": null
+        },
+        {
+          "name": "subscription_id",
+          "position": 2,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "alert_type",
+          "position": 3,
+          "data_type": "enum",
+          "column_type": "enum('pre_expiry','renewal')",
+          "nullable": false,
+          "default": null,
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "sent_at",
+          "position": 4,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "days_before",
+          "position": 5,
+          "data_type": "smallint",
+          "column_type": "smallint(6)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "mobile",
+          "position": 6,
+          "data_type": "varchar",
+          "column_type": "varchar(20)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "template_name",
+          "position": 7,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "status",
+          "position": 8,
+          "data_type": "enum",
+          "column_type": "enum('sent','failed')",
+          "nullable": false,
+          "default": "sent",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "error_message",
+          "position": 9,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        }
+      ],
+      "indexes": [
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "name": "idx_sub_type_date",
+          "unique": false,
+          "columns": [
+            "subscription_id",
+            "alert_type",
+            "sent_at"
           ]
         }
       ]

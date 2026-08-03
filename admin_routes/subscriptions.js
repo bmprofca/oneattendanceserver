@@ -1,4 +1,5 @@
 import express from "express";
+import axios from "axios";
 import db from "../config/db.js";
 import adminAuth from "../middleware/adminAuthMiddleware.js";
 import {
@@ -7,9 +8,9 @@ import {
   buildMeta,
 } from "../utils/sendResponse.js";
 import {
-  sendSubscriptionAlertWhatsApp,
-  sendSubscriptionRenewalWhatsApp,
-} from "../utils/whatsapp.js";
+  ONECHATTING_TEMPLATE_TOKEN,
+  TEMPLATE_LIST_URL,
+} from "../config/config.js";
 
 const router = express.Router();
 
@@ -608,108 +609,334 @@ router.put("/:id", async (req, res) => {
 });
 
 /**
- * POST /:id/notify
- * Sends a WhatsApp subscription notification to the company owner.
- * - If subscription has EXPIRED  → renewal request message
- * - If subscription is ACTIVE    → pre-expiry alert with details
+ * GET /whatsapp-templates
+ * Fetches all available WhatsApp templates from OneChatting and returns them
+ * with parsed variable info so admin can choose which template to use.
  */
-router.post("/:id/notify", async (req, res) => {
-  let conn;
+router.get("/whatsapp-templates", async (_req, res) => {
+  try {
+    const token = String(ONECHATTING_TEMPLATE_TOKEN ?? "").trim();
+    if (!token) {
+      return sendError(res, 500, "OneChatting template token is not configured");
+    }
 
+    const response = await axios.get(TEMPLATE_LIST_URL, {
+      headers: { token },
+    });
+
+    // Support both response shapes: { data: { data: [...] } } or { data: [...] }
+    const rawTemplates = Array.isArray(response.data?.data)
+      ? response.data.data
+      : Array.isArray(response.data)
+      ? response.data
+      : [];
+
+    const templates = rawTemplates.map((t) => {
+      const bodyComp = t.template?.components?.find((c) => c.type === "BODY");
+      const bodyText = bodyComp?.text ?? "";
+      const variablePlaceholders = bodyText.match(/\{\{\d+\}\}/g) ?? [];
+
+      return {
+        template_name: t.template_name ?? t.name ?? "",
+        template_id: t.template_id ?? "",
+        waba_template_id: t.waba_template_id ?? "",
+        status: t.status ?? "",
+        category: t.category ?? "",
+        language_code: t.language_code ?? "en",
+        body_text: bodyText,
+        variable_count: variablePlaceholders.length,
+        variables: variablePlaceholders,
+        components: t.template?.components ?? [],
+      };
+    });
+
+    return sendSuccess(res, 200, "WhatsApp templates fetched successfully", templates);
+  } catch (err) {
+    console.error("ADMIN GET WA TEMPLATES ERROR:", err?.response?.status, err?.response?.data ?? err.message);
+    return sendError(res, 502, "Failed to fetch WhatsApp templates from OneChatting");
+  }
+});
+
+/**
+ * GET /alert-config
+ * Returns the current subscription WhatsApp alert configuration.
+ */
+router.get("/alert-config", async (_req, res) => {
+  let conn;
   try {
     conn = await db.getConnection();
 
-    const subscriptionId = parseInt(req.params.id);
-    if (!subscriptionId || subscriptionId <= 0) {
-      return sendError(res, 400, "Valid subscription ID is required");
+    const [rows] = await conn.query(
+      `SELECT * FROM subscription_alert_config ORDER BY id ASC LIMIT 1`
+    );
+
+    if (!rows[0]) {
+      return sendError(res, 404, "Alert config not found — please run the DB migration");
     }
 
-    // Fetch subscription with owner mobile
+    const cfg = rows[0];
+    return sendSuccess(res, 200, "Alert config fetched successfully", {
+      id: cfg.id,
+      alert_days_before: cfg.alert_days_before,
+      alert_template_name: cfg.alert_template_name,
+      alert_template_vars: cfg.alert_template_vars ?? [],
+      renewal_template_name: cfg.renewal_template_name,
+      renewal_template_vars: cfg.renewal_template_vars ?? [],
+      is_renewal_enabled: cfg.is_renewal_enabled == 1,
+      is_alert_enabled: cfg.is_alert_enabled == 1,
+      updated_by: cfg.updated_by,
+      updated_at: cfg.updated_at,
+      created_at: cfg.created_at,
+    });
+  } catch (err) {
+    console.error("ADMIN GET ALERT CONFIG ERROR:", err);
+    return sendError(res, 500, "Failed to fetch alert config");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+/**
+ * PUT /alert-config
+ * Admin updates the subscription WhatsApp alert configuration.
+ *
+ * Body fields (all optional — only provided fields are updated):
+ *   alert_days_before      {number}   Days before expiry alerts start (1–90)
+ *   alert_template_name    {string}   OneChatting template name for pre-expiry
+ *   alert_template_vars    {string[]} Ordered list of variable source keys
+ *   renewal_template_name  {string}   Template name for post-expiry renewal notice
+ *   renewal_template_vars  {string[]} Variable source keys for renewal template
+ *   is_renewal_enabled     {boolean}  Whether to send renewal notices
+ *   is_alert_enabled       {boolean}  Master switch for the cron
+ *
+ * Supported variable source keys:
+ *   company_name | package_name | owner_name | subscription_type |
+ *   days_remaining | expiry_date
+ */
+const SUPPORTED_VAR_KEYS = new Set([
+  "company_name",
+  "package_name",
+  "owner_name",
+  "subscription_type",
+  "days_remaining",
+  "expiry_date",
+]);
+
+router.put("/alert-config", async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+
+    const {
+      alert_days_before,
+      alert_template_name,
+      alert_template_vars,
+      renewal_template_name,
+      renewal_template_vars,
+      is_renewal_enabled,
+      is_alert_enabled,
+    } = req.body || {};
+
+    const updateFields = [];
+    const values = [];
+
+    if (alert_days_before !== undefined) {
+      const days = parseInt(alert_days_before);
+      if (isNaN(days) || days < 1 || days > 90) {
+        return sendError(res, 400, "alert_days_before must be a number between 1 and 90");
+      }
+      updateFields.push("alert_days_before = ?");
+      values.push(days);
+    }
+
+    if (alert_template_name !== undefined) {
+      updateFields.push("alert_template_name = ?");
+      values.push(alert_template_name || null);
+    }
+
+    if (alert_template_vars !== undefined) {
+      if (!Array.isArray(alert_template_vars)) {
+        return sendError(res, 400, "alert_template_vars must be an array of strings");
+      }
+      const invalid = alert_template_vars.filter((k) => !SUPPORTED_VAR_KEYS.has(k));
+      if (invalid.length > 0) {
+        return sendError(
+          res,
+          400,
+          `Unsupported variable key(s): ${invalid.join(", ")}. Allowed: ${[...SUPPORTED_VAR_KEYS].join(", ")}`
+        );
+      }
+      updateFields.push("alert_template_vars = ?");
+      values.push(JSON.stringify(alert_template_vars));
+    }
+
+    if (renewal_template_name !== undefined) {
+      updateFields.push("renewal_template_name = ?");
+      values.push(renewal_template_name || null);
+    }
+
+    if (renewal_template_vars !== undefined) {
+      if (!Array.isArray(renewal_template_vars)) {
+        return sendError(res, 400, "renewal_template_vars must be an array of strings");
+      }
+      const invalid = renewal_template_vars.filter((k) => !SUPPORTED_VAR_KEYS.has(k));
+      if (invalid.length > 0) {
+        return sendError(
+          res,
+          400,
+          `Unsupported variable key(s): ${invalid.join(", ")}. Allowed: ${[...SUPPORTED_VAR_KEYS].join(", ")}`
+        );
+      }
+      updateFields.push("renewal_template_vars = ?");
+      values.push(JSON.stringify(renewal_template_vars));
+    }
+
+    if (is_renewal_enabled !== undefined) {
+      updateFields.push("is_renewal_enabled = ?");
+      values.push(Number(is_renewal_enabled) ? 1 : 0);
+    }
+
+    if (is_alert_enabled !== undefined) {
+      updateFields.push("is_alert_enabled = ?");
+      values.push(Number(is_alert_enabled) ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return sendError(res, 400, "No fields provided to update");
+    }
+
+    updateFields.push("updated_by = ?", "updated_at = NOW()");
+    values.push(req.admin.id || null);
+
+    // Upsert: update the first row (or insert if table is somehow empty)
+    const [[existing]] = await conn.query(
+      `SELECT id FROM subscription_alert_config ORDER BY id ASC LIMIT 1`
+    );
+
+    if (existing) {
+      await conn.query(
+        `UPDATE subscription_alert_config SET ${updateFields.join(", ")} WHERE id = ?`,
+        [...values, existing.id]
+      );
+    } else {
+      // No config row yet — create one with defaults merged with provided fields
+      await conn.query(
+        `INSERT INTO subscription_alert_config
+          (alert_days_before, alert_template_name, alert_template_vars,
+           renewal_template_name, renewal_template_vars, is_renewal_enabled, is_alert_enabled,
+           updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [
+          alert_days_before ?? 5,
+          alert_template_name ?? null,
+          JSON.stringify(alert_template_vars ?? []),
+          renewal_template_name ?? null,
+          JSON.stringify(renewal_template_vars ?? []),
+          is_renewal_enabled != null ? (Number(is_renewal_enabled) ? 1 : 0) : 0,
+          is_alert_enabled != null ? (Number(is_alert_enabled) ? 1 : 0) : 1,
+          req.admin.id || null,
+        ]
+      );
+    }
+
+    // Return updated config
+    const [rows] = await conn.query(
+      `SELECT * FROM subscription_alert_config ORDER BY id ASC LIMIT 1`
+    );
+    const cfg = rows[0];
+
+    return sendSuccess(res, 200, "Alert config updated successfully", {
+      id: cfg.id,
+      alert_days_before: cfg.alert_days_before,
+      alert_template_name: cfg.alert_template_name,
+      alert_template_vars: cfg.alert_template_vars ?? [],
+      renewal_template_name: cfg.renewal_template_name,
+      renewal_template_vars: cfg.renewal_template_vars ?? [],
+      is_renewal_enabled: cfg.is_renewal_enabled == 1,
+      is_alert_enabled: cfg.is_alert_enabled == 1,
+      updated_by: cfg.updated_by,
+      updated_at: cfg.updated_at,
+      created_at: cfg.created_at,
+    });
+  } catch (err) {
+    console.error("ADMIN UPDATE ALERT CONFIG ERROR:", err);
+    return sendError(res, 500, "Failed to update alert config");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+/**
+ * GET /alert-logs
+ * Paginated audit log of all subscription WhatsApp alerts sent.
+ * Query params: page, limit, subscription_id, alert_type, status
+ */
+router.get("/alert-logs", async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+
+    let { page = 1, limit = 20, subscription_id, alert_type, status } = req.query;
+    page  = Math.max(parseInt(page)  || 1, 1);
+    limit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const offset = (page - 1) * limit;
+
+    const conditions = [];
+    const params     = [];
+
+    if (subscription_id) {
+      conditions.push("sal.subscription_id = ?");
+      params.push(Number(subscription_id));
+    }
+    if (alert_type && ["pre_expiry", "renewal"].includes(alert_type)) {
+      conditions.push("sal.alert_type = ?");
+      params.push(alert_type);
+    }
+    if (status && ["sent", "failed"].includes(status)) {
+      conditions.push("sal.status = ?");
+      params.push(status);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const [[{ total }]] = await conn.query(
+      `SELECT COUNT(*) AS total FROM subscription_alert_log sal ${whereClause}`,
+      params
+    );
+
     const [rows] = await conn.query(
       `
       SELECT
-        cs.id,
-        cs.starts_at,
-        cs.expires_at,
-        cs.is_active,
-        c.name        AS company_name,
-        COALESCE(sp.name, csp.name) AS package_name,
-        u.phone       AS owner_mobile,
-        u.name        AS owner_name
-      FROM company_subscriptions cs
-      LEFT JOIN companies c  ON c.id  = cs.company_id
-      LEFT JOIN users u      ON u.id  = c.owner_user_id
-      LEFT JOIN subscription_packages sp ON cs.package_type = 'normal' AND sp.id = cs.package_id
-      LEFT JOIN custom_subscription_packages csp ON cs.package_type = 'custom' AND csp.id = cs.package_id
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      LIMIT 1
+        sal.id,
+        sal.subscription_id,
+        sal.alert_type,
+        sal.sent_at,
+        sal.days_before,
+        sal.mobile,
+        sal.template_name,
+        sal.status,
+        sal.error_message,
+        c.name AS company_name
+      FROM subscription_alert_log sal
+      LEFT JOIN company_subscriptions cs ON cs.id = sal.subscription_id
+      LEFT JOIN companies c ON c.id = cs.company_id
+      ${whereClause}
+      ORDER BY sal.sent_at DESC
+      LIMIT ? OFFSET ?
       `,
-      [subscriptionId]
+      [...params, limit, offset]
     );
 
-    const sub = rows[0];
-    if (!sub) {
-      return sendError(res, 404, "Subscription not found");
-    }
-
-    if (!sub.owner_mobile) {
-      return sendError(res, 422, "Owner mobile number not found — cannot send WhatsApp message");
-    }
-
-    const now        = new Date();
-    const expiresAt  = sub.expires_at ? new Date(sub.expires_at) : null;
-    const startsAt   = sub.starts_at  ? new Date(sub.starts_at)  : null;
-
-    const formatDate = (date) => {
-      if (!date) return "N/A";
-      return date.toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
-    };
-
-    const isExpired = expiresAt ? now > expiresAt : false;
-
-    if (isExpired) {
-      // Subscription has already ended — send renewal request
-      await sendSubscriptionRenewalWhatsApp(sub.owner_mobile, [
-        sub.company_name || "Your Company",
-        formatDate(expiresAt),
-      ]);
-
-      return sendSuccess(res, 200, "Renewal request WhatsApp message sent successfully", {
-        type: "renewal_request",
-        company_name: sub.company_name,
-        package_name: sub.package_name,
-        expired_on: formatDate(expiresAt),
-        mobile_sent_to: sub.owner_mobile,
-      });
-    } else {
-      // Subscription is still active — send pre-expiry alert
-      const msRemaining   = expiresAt ? expiresAt - now : 0;
-      const daysRemaining = expiresAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : 0;
-
-      await sendSubscriptionAlertWhatsApp(sub.owner_mobile, [
-        sub.company_name || "Your Company",
-        sub.package_name || "Subscription",
-        String(daysRemaining),
-        formatDate(expiresAt),
-      ]);
-
-      return sendSuccess(res, 200, "Subscription alert WhatsApp message sent successfully", {
-        type: "expiry_alert",
-        company_name: sub.company_name,
-        package_name: sub.package_name,
-        starts_at: formatDate(startsAt),
-        expires_at: formatDate(expiresAt),
-        days_remaining: daysRemaining,
-        mobile_sent_to: sub.owner_mobile,
-      });
-    }
+    return sendSuccess(
+      res,
+      200,
+      "Alert logs fetched successfully",
+      rows,
+      buildMeta(page, limit, total, rows.length)
+    );
   } catch (err) {
-    console.error("ADMIN SUBSCRIPTION NOTIFY ERROR:", err);
-    return sendError(res, 500, "Failed to send subscription WhatsApp notification");
+    console.error("ADMIN GET ALERT LOGS ERROR:", err);
+    return sendError(res, 500, "Failed to fetch alert logs");
   } finally {
     if (conn) conn.release();
   }

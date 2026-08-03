@@ -3,11 +3,13 @@ import config from "./config.js";
 import { cleanup } from "./otpCleanup.cron.js";
 import { cleanupFailedEmails } from "../email/services/email.processQueue.js";
 import { generateAutoAttendance } from "./autoAttendance.js";
+import { runSubscriptionAlerts } from "./subscriptionAlerts.cron.js";
 
 
 let otpCleanupRunning = false;
 let failedCleanupRunning = false;
 let autoAttendanceRunning = false;
+let subscriptionAlertRunning = false;
 
 
 cleanup();
@@ -79,5 +81,30 @@ cron.schedule("0 0 * * *", async () => {
 
   } finally {
     autoAttendanceRunning = false;
+  }
+});
+
+// ─── Subscription WhatsApp Alerts — daily at 9:00 AM ────────────────────────
+cron.schedule("0 9 * * *", async () => {
+
+  if (subscriptionAlertRunning) {
+    console.log("⚠️ Subscription alert skipped (already running)");
+    return;
+  }
+
+  subscriptionAlertRunning = true;
+
+  try {
+    console.log("📲 Subscription alert cron started");
+
+    await runSubscriptionAlerts();
+
+    console.log("✅ Subscription alert cron completed");
+
+  } catch (err) {
+    console.error("❌ SUBSCRIPTION ALERT CRON ERROR:", err);
+
+  } finally {
+    subscriptionAlertRunning = false;
   }
 });
