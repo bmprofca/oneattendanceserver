@@ -309,305 +309,6 @@ router.post("/", async (req, res) => {
   }
 });
 
-router.get("/:id", async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    const subscriptionId = parseInt(req.params.id);
-    if (!subscriptionId || subscriptionId <= 0) {
-      return sendError(res, 400, "Valid subscription ID is required");
-    }
-
-    const [rows] = await conn.query(
-      `
-      ${getSubscriptionBaseQuery()}
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      LIMIT 1
-      `,
-      [subscriptionId]
-    );
-
-    const subscription = rows[0] ? formatSubscription(rows[0]) : null;
-    if (!subscription) {
-      return sendError(res, 404, "Subscription not found");
-    }
-
-    return sendSuccess(res, 200, "Subscription fetched successfully", subscription);
-  } catch (err) {
-    console.error("ADMIN GET SUBSCRIPTION ERROR:", err);
-    return sendError(res, 500, "Failed to fetch subscription");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.patch("/:id/status", async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    const subscriptionId = parseInt(req.params.id);
-    if (!subscriptionId || subscriptionId <= 0) {
-      return sendError(res, 400, "Valid subscription ID is required");
-    }
-
-    const { is_active, payment_status, status, starts_at, expires_at } = req.body || {};
-    const updateFields = [];
-    const values = [];
-
-    if (status !== undefined) {
-      if (typeof status === "string") {
-        const normalizedStatus = status.trim().toLowerCase();
-        if (normalizedStatus === "active") {
-          updateFields.push("cs.is_active = ?");
-          values.push(1);
-        } else if (normalizedStatus === "inactive") {
-          updateFields.push("cs.is_active = ?");
-          values.push(0);
-        } else {
-          return sendError(res, 400, "status must be either active or inactive");
-        }
-      } else {
-        return sendError(res, 400, "status must be either active or inactive");
-      }
-    }
-
-    if (is_active !== undefined) {
-      updateFields.push("cs.is_active = ?");
-      values.push(Number(is_active) ? 1 : 0);
-    }
-
-    if (payment_status !== undefined) {
-      const normalizedPaymentStatus = normalizePaymentStatus(payment_status);
-      if (normalizedPaymentStatus === null) {
-        return sendError(res, 400, "payment_status is invalid");
-      }
-
-      updateFields.push("cs.payment_status = ?");
-      values.push(normalizedPaymentStatus);
-    }
-
-    if (starts_at !== undefined) {
-      const normalizedStartsAt = normalizeDateValue(starts_at);
-      if (normalizedStartsAt === null) {
-        return sendError(res, 400, "starts_at is invalid");
-      }
-
-      updateFields.push("cs.starts_at = ?");
-      values.push(normalizedStartsAt);
-    }
-
-    if (expires_at !== undefined) {
-      const normalizedExpiresAt = normalizeDateValue(expires_at);
-      if (normalizedExpiresAt === null) {
-        return sendError(res, 400, "expires_at is invalid");
-      }
-
-      updateFields.push("cs.expires_at = ?");
-      values.push(normalizedExpiresAt);
-    }
-
-    if (updateFields.length === 0) {
-      return sendError(res, 400, "No subscription fields provided");
-    }
-
-    updateFields.push("cs.updated_by = ?", "cs.updated_at = NOW()");
-    values.push(req.admin.id || null);
-
-    const [result] = await conn.query(
-      `
-      UPDATE company_subscriptions cs
-      SET ${updateFields.join(", ")}
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      `,
-      [...values, subscriptionId]
-    );
-
-    if (!result.affectedRows) {
-      return sendError(res, 404, "Subscription not found");
-    }
-
-    const [rows] = await conn.query(
-      `
-      ${getSubscriptionBaseQuery()}
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      LIMIT 1
-      `,
-      [subscriptionId]
-    );
-
-    return sendSuccess(
-      res,
-      200,
-      "Subscription updated successfully",
-      rows[0] ? formatSubscription(rows[0]) : null
-    );
-  } catch (err) {
-    console.error("ADMIN UPDATE SUBSCRIPTION STATUS ERROR:", err);
-    return sendError(res, 500, "Failed to update subscription status");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.put("/:id", async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    const subscriptionId = parseInt(req.params.id);
-    if (!subscriptionId || subscriptionId <= 0) {
-      return sendError(res, 400, "Valid subscription ID is required");
-    }
-
-    const {
-      company_id,
-      package_id,
-      package_type,
-      employee_limit,
-      subscription_type,
-      amount_paid,
-      starts_at,
-      expires_at,
-      payment_reference,
-      payment_status,
-      payment_order_id,
-      payment_vpa,
-      payment_utr,
-      is_active,
-    } = req.body || {};
-
-    const updateFields = [];
-    const values = [];
-
-    if (company_id !== undefined) {
-      const [[company]] = await conn.query("SELECT id FROM companies WHERE id = ? AND is_deleted = 0", [company_id]);
-      if (!company) return sendError(res, 404, "Company not found");
-      updateFields.push("cs.company_id = ?");
-      values.push(company_id);
-    }
-
-    if (package_type !== undefined) {
-      if (!['normal', 'custom'].includes(package_type)) {
-        return sendError(res, 400, "package_type must be 'normal' or 'custom'");
-      }
-      updateFields.push("cs.package_type = ?");
-      values.push(package_type);
-    }
-
-    if (package_id !== undefined) {
-      updateFields.push("cs.package_id = ?");
-      values.push(package_id);
-    }
-
-    if (employee_limit !== undefined) {
-      updateFields.push("cs.employee_limit = ?");
-      values.push(employee_limit);
-    }
-
-    if (subscription_type !== undefined) {
-      updateFields.push("cs.subscription_type = ?");
-      values.push(subscription_type);
-    }
-
-    if (amount_paid !== undefined) {
-      updateFields.push("cs.amount_paid = ?");
-      values.push(amount_paid);
-    }
-
-    if (starts_at !== undefined) {
-      const normalizedStartsAt = normalizeDateValue(starts_at);
-      if (normalizedStartsAt === null) return sendError(res, 400, "starts_at is invalid");
-      updateFields.push("cs.starts_at = ?");
-      values.push(normalizedStartsAt);
-    }
-
-    if (expires_at !== undefined) {
-      const normalizedExpiresAt = normalizeDateValue(expires_at);
-      if (normalizedExpiresAt === null) return sendError(res, 400, "expires_at is invalid");
-      updateFields.push("cs.expires_at = ?");
-      values.push(normalizedExpiresAt);
-    }
-
-    if (payment_reference !== undefined) {
-      updateFields.push("cs.payment_reference = ?");
-      values.push(payment_reference);
-    }
-
-    if (payment_status !== undefined) {
-      const normalizedPaymentStatus = normalizePaymentStatus(payment_status);
-      if (normalizedPaymentStatus === null) return sendError(res, 400, "payment_status is invalid");
-      updateFields.push("cs.payment_status = ?");
-      values.push(normalizedPaymentStatus);
-    }
-
-    if (payment_order_id !== undefined) {
-      updateFields.push("cs.payment_order_id = ?");
-      values.push(payment_order_id);
-    }
-
-    if (payment_vpa !== undefined) {
-      updateFields.push("cs.payment_vpa = ?");
-      values.push(payment_vpa);
-    }
-
-    if (payment_utr !== undefined) {
-      updateFields.push("cs.payment_utr = ?");
-      values.push(payment_utr);
-    }
-
-    if (is_active !== undefined) {
-      updateFields.push("cs.is_active = ?");
-      values.push(Number(is_active) ? 1 : 0);
-    }
-
-    if (updateFields.length === 0) {
-      return sendError(res, 400, "No fields to update");
-    }
-
-    updateFields.push("cs.updated_by = ?", "cs.updated_at = NOW()");
-    values.push(req.admin.id || null);
-
-    const [result] = await conn.query(
-      `
-      UPDATE company_subscriptions cs
-      SET ${updateFields.join(", ")}
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      `,
-      [...values, subscriptionId]
-    );
-
-    if (!result.affectedRows) {
-      return sendError(res, 404, "Subscription not found");
-    }
-
-    const [rows] = await conn.query(
-      `
-      ${getSubscriptionBaseQuery()}
-      WHERE cs.id = ? AND cs.is_deleted = 0
-      LIMIT 1
-      `,
-      [subscriptionId]
-    );
-
-    return sendSuccess(
-      res,
-      200,
-      "Subscription updated successfully",
-      rows[0] ? formatSubscription(rows[0]) : null
-    );
-  } catch (err) {
-    console.error("ADMIN UPDATE SUBSCRIPTION ERROR:", err);
-    return sendError(res, 500, "Failed to update subscription");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
 /**
  * GET /whatsapp-templates
  * Fetches all available WhatsApp templates from OneChatting and returns them
@@ -937,6 +638,306 @@ router.get("/alert-logs", async (req, res) => {
   } catch (err) {
     console.error("ADMIN GET ALERT LOGS ERROR:", err);
     return sendError(res, 500, "Failed to fetch alert logs");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+router.get("/:id", async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const subscriptionId = parseInt(req.params.id);
+    if (!subscriptionId || subscriptionId <= 0) {
+      return sendError(res, 400, "Valid subscription ID is required");
+    }
+
+    const [rows] = await conn.query(
+      `
+      ${getSubscriptionBaseQuery()}
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      LIMIT 1
+      `,
+      [subscriptionId]
+    );
+
+    const subscription = rows[0] ? formatSubscription(rows[0]) : null;
+    if (!subscription) {
+      return sendError(res, 404, "Subscription not found");
+    }
+
+    return sendSuccess(res, 200, "Subscription fetched successfully", subscription);
+  } catch (err) {
+    console.error("ADMIN GET SUBSCRIPTION ERROR:", err);
+    return sendError(res, 500, "Failed to fetch subscription");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.patch("/:id/status", async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const subscriptionId = parseInt(req.params.id);
+    if (!subscriptionId || subscriptionId <= 0) {
+      return sendError(res, 400, "Valid subscription ID is required");
+    }
+
+    const { is_active, payment_status, status, starts_at, expires_at } = req.body || {};
+    const updateFields = [];
+    const values = [];
+
+    if (status !== undefined) {
+      if (typeof status === "string") {
+        const normalizedStatus = status.trim().toLowerCase();
+        if (normalizedStatus === "active") {
+          updateFields.push("cs.is_active = ?");
+          values.push(1);
+        } else if (normalizedStatus === "inactive") {
+          updateFields.push("cs.is_active = ?");
+          values.push(0);
+        } else {
+          return sendError(res, 400, "status must be either active or inactive");
+        }
+      } else {
+        return sendError(res, 400, "status must be either active or inactive");
+      }
+    }
+
+    if (is_active !== undefined) {
+      updateFields.push("cs.is_active = ?");
+      values.push(Number(is_active) ? 1 : 0);
+    }
+
+    if (payment_status !== undefined) {
+      const normalizedPaymentStatus = normalizePaymentStatus(payment_status);
+      if (normalizedPaymentStatus === null) {
+        return sendError(res, 400, "payment_status is invalid");
+      }
+
+      updateFields.push("cs.payment_status = ?");
+      values.push(normalizedPaymentStatus);
+    }
+
+    if (starts_at !== undefined) {
+      const normalizedStartsAt = normalizeDateValue(starts_at);
+      if (normalizedStartsAt === null) {
+        return sendError(res, 400, "starts_at is invalid");
+      }
+
+      updateFields.push("cs.starts_at = ?");
+      values.push(normalizedStartsAt);
+    }
+
+    if (expires_at !== undefined) {
+      const normalizedExpiresAt = normalizeDateValue(expires_at);
+      if (normalizedExpiresAt === null) {
+        return sendError(res, 400, "expires_at is invalid");
+      }
+
+      updateFields.push("cs.expires_at = ?");
+      values.push(normalizedExpiresAt);
+    }
+
+    if (updateFields.length === 0) {
+      return sendError(res, 400, "No subscription fields provided");
+    }
+
+    updateFields.push("cs.updated_by = ?", "cs.updated_at = NOW()");
+    values.push(req.admin.id || null);
+
+    const [result] = await conn.query(
+      `
+      UPDATE company_subscriptions cs
+      SET ${updateFields.join(", ")}
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      `,
+      [...values, subscriptionId]
+    );
+
+    if (!result.affectedRows) {
+      return sendError(res, 404, "Subscription not found");
+    }
+
+    const [rows] = await conn.query(
+      `
+      ${getSubscriptionBaseQuery()}
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      LIMIT 1
+      `,
+      [subscriptionId]
+    );
+
+    return sendSuccess(
+      res,
+      200,
+      "Subscription updated successfully",
+      rows[0] ? formatSubscription(rows[0]) : null
+    );
+  } catch (err) {
+    console.error("ADMIN UPDATE SUBSCRIPTION STATUS ERROR:", err);
+    return sendError(res, 500, "Failed to update subscription status");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.put("/:id", async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const subscriptionId = parseInt(req.params.id);
+    if (!subscriptionId || subscriptionId <= 0) {
+      return sendError(res, 400, "Valid subscription ID is required");
+    }
+
+    const {
+      company_id,
+      package_id,
+      package_type,
+      employee_limit,
+      subscription_type,
+      amount_paid,
+      starts_at,
+      expires_at,
+      payment_reference,
+      payment_status,
+      payment_order_id,
+      payment_vpa,
+      payment_utr,
+      is_active,
+    } = req.body || {};
+
+    const updateFields = [];
+    const values = [];
+
+    if (company_id !== undefined) {
+      const [[company]] = await conn.query("SELECT id FROM companies WHERE id = ? AND is_deleted = 0", [company_id]);
+      if (!company) return sendError(res, 404, "Company not found");
+      updateFields.push("cs.company_id = ?");
+      values.push(company_id);
+    }
+
+    if (package_type !== undefined) {
+      if (!['normal', 'custom'].includes(package_type)) {
+        return sendError(res, 400, "package_type must be 'normal' or 'custom'");
+      }
+      updateFields.push("cs.package_type = ?");
+      values.push(package_type);
+    }
+
+    if (package_id !== undefined) {
+      updateFields.push("cs.package_id = ?");
+      values.push(package_id);
+    }
+
+    if (employee_limit !== undefined) {
+      updateFields.push("cs.employee_limit = ?");
+      values.push(employee_limit);
+    }
+
+    if (subscription_type !== undefined) {
+      updateFields.push("cs.subscription_type = ?");
+      values.push(subscription_type);
+    }
+
+    if (amount_paid !== undefined) {
+      updateFields.push("cs.amount_paid = ?");
+      values.push(amount_paid);
+    }
+
+    if (starts_at !== undefined) {
+      const normalizedStartsAt = normalizeDateValue(starts_at);
+      if (normalizedStartsAt === null) return sendError(res, 400, "starts_at is invalid");
+      updateFields.push("cs.starts_at = ?");
+      values.push(normalizedStartsAt);
+    }
+
+    if (expires_at !== undefined) {
+      const normalizedExpiresAt = normalizeDateValue(expires_at);
+      if (normalizedExpiresAt === null) return sendError(res, 400, "expires_at is invalid");
+      updateFields.push("cs.expires_at = ?");
+      values.push(normalizedExpiresAt);
+    }
+
+    if (payment_reference !== undefined) {
+      updateFields.push("cs.payment_reference = ?");
+      values.push(payment_reference);
+    }
+
+    if (payment_status !== undefined) {
+      const normalizedPaymentStatus = normalizePaymentStatus(payment_status);
+      if (normalizedPaymentStatus === null) return sendError(res, 400, "payment_status is invalid");
+      updateFields.push("cs.payment_status = ?");
+      values.push(normalizedPaymentStatus);
+    }
+
+    if (payment_order_id !== undefined) {
+      updateFields.push("cs.payment_order_id = ?");
+      values.push(payment_order_id);
+    }
+
+    if (payment_vpa !== undefined) {
+      updateFields.push("cs.payment_vpa = ?");
+      values.push(payment_vpa);
+    }
+
+    if (payment_utr !== undefined) {
+      updateFields.push("cs.payment_utr = ?");
+      values.push(payment_utr);
+    }
+
+    if (is_active !== undefined) {
+      updateFields.push("cs.is_active = ?");
+      values.push(Number(is_active) ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return sendError(res, 400, "No fields to update");
+    }
+
+    updateFields.push("cs.updated_by = ?", "cs.updated_at = NOW()");
+    values.push(req.admin.id || null);
+
+    const [result] = await conn.query(
+      `
+      UPDATE company_subscriptions cs
+      SET ${updateFields.join(", ")}
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      `,
+      [...values, subscriptionId]
+    );
+
+    if (!result.affectedRows) {
+      return sendError(res, 404, "Subscription not found");
+    }
+
+    const [rows] = await conn.query(
+      `
+      ${getSubscriptionBaseQuery()}
+      WHERE cs.id = ? AND cs.is_deleted = 0
+      LIMIT 1
+      `,
+      [subscriptionId]
+    );
+
+    return sendSuccess(
+      res,
+      200,
+      "Subscription updated successfully",
+      rows[0] ? formatSubscription(rows[0]) : null
+    );
+  } catch (err) {
+    console.error("ADMIN UPDATE SUBSCRIPTION ERROR:", err);
+    return sendError(res, 500, "Failed to update subscription");
   } finally {
     if (conn) conn.release();
   }
