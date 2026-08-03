@@ -1473,7 +1473,7 @@
           "comment": null
         },
         {
-          "name": "subscription_package_id",
+          "name": "package_id",
           "position": 3,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
@@ -1484,8 +1484,19 @@
           "comment": null
         },
         {
-          "name": "employee_limit",
+          "name": "package_type",
           "position": 4,
+          "data_type": "enum",
+          "column_type": "enum('normal','custom')",
+          "nullable": false,
+          "default": "'normal'",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "employee_limit",
+          "position": 5,
           "data_type": "int",
           "column_type": "int(11)",
           "nullable": false,
@@ -1496,7 +1507,7 @@
         },
         {
           "name": "subscription_type",
-          "position": 5,
+          "position": 6,
           "data_type": "enum",
           "column_type": "enum('monthly','quarterly','half_yearly','yearly')",
           "nullable": false,
@@ -1507,7 +1518,7 @@
         },
         {
           "name": "amount_paid",
-          "position": 6,
+          "position": 7,
           "data_type": "decimal",
           "column_type": "decimal(12,2)",
           "nullable": false,
@@ -1518,7 +1529,7 @@
         },
         {
           "name": "starts_at",
-          "position": 7,
+          "position": 8,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1529,7 +1540,7 @@
         },
         {
           "name": "expires_at",
-          "position": 8,
+          "position": 9,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1540,7 +1551,7 @@
         },
         {
           "name": "payment_reference",
-          "position": 9,
+          "position": 10,
           "data_type": "varchar",
           "column_type": "varchar(255)",
           "nullable": true,
@@ -1551,7 +1562,7 @@
         },
         {
           "name": "is_active",
-          "position": 10,
+          "position": 11,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1562,7 +1573,7 @@
         },
         {
           "name": "created_at",
-          "position": 11,
+          "position": 12,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1573,7 +1584,7 @@
         },
         {
           "name": "created_by",
-          "position": 12,
+          "position": 13,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1584,7 +1595,7 @@
         },
         {
           "name": "updated_at",
-          "position": 13,
+          "position": 14,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -1595,7 +1606,7 @@
         },
         {
           "name": "updated_by",
-          "position": 14,
+          "position": 15,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1606,7 +1617,7 @@
         },
         {
           "name": "is_deleted",
-          "position": 15,
+          "position": 16,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -1617,7 +1628,7 @@
         },
         {
           "name": "deleted_at",
-          "position": 16,
+          "position": 17,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -1628,7 +1639,7 @@
         },
         {
           "name": "deleted_by",
-          "position": 17,
+          "position": 18,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -1639,28 +1650,17 @@
         },
         {
           "name": "payment_status",
-          "position": 18,
+          "position": 19,
           "data_type": "enum",
           "column_type": "enum('0','1','2','3')",
           "nullable": false,
           "default": "'0'",
           "key": null,
           "extra": null,
-          "comment": "0=pending\r\n1=success\r\n2=fail\r\n3=cancel"
+          "comment": "0=pending 1=success 2=fail 3=cancel"
         },
         {
           "name": "payment_order_id",
-          "position": 19,
-          "data_type": "varchar",
-          "column_type": "varchar(100)",
-          "nullable": true,
-          "default": "NULL",
-          "key": null,
-          "extra": null,
-          "comment": null
-        },
-        {
-          "name": "payment_vpa",
           "position": 20,
           "data_type": "varchar",
           "column_type": "varchar(100)",
@@ -1671,8 +1671,19 @@
           "comment": null
         },
         {
-          "name": "payment_utr",
+          "name": "payment_vpa",
           "position": 21,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "payment_utr",
+          "position": 22,
           "data_type": "varchar",
           "column_type": "varchar(100)",
           "nullable": true,
@@ -1685,43 +1696,34 @@
       "primary_key": [
         "id"
       ],
-      "foreign_keys": [
-        {
-          "constraint": "fk_company_subscriptions_package",
-          "column": "subscription_package_id",
-          "references": {
-            "table": "subscription_packages",
-            "column": "id"
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": [
         {
-          "name": "fk_company_subscriptions_package",
-          "unique": false,
+          "name": "PRIMARY",
+          "unique": true,
           "columns": [
-            "subscription_package_id"
+            "id"
           ]
         },
         {
-          "name": "idx_company_id",
+          "name": "idx_cs_company",
           "unique": false,
           "columns": [
             "company_id"
           ]
         },
         {
-          "name": "idx_expires_at",
+          "name": "idx_cs_package",
           "unique": false,
           "columns": [
-            "expires_at"
+            "package_id"
           ]
         },
         {
-          "name": "PRIMARY",
-          "unique": true,
+          "name": "idx_cs_expires_at",
+          "unique": false,
           "columns": [
-            "id"
+            "expires_at"
           ]
         }
       ]
