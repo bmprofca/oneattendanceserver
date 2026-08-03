@@ -6,14 +6,10 @@ import axios from "axios";
 import { checkCompanyPermissions } from "../utils/checkPermissions.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
-import {
-  DESIGNATIONS,
-  EMPLOYMENT_TYPES,
-  SALARY_TYPES,
-} from "../constants/constants_values.js";
+import { DESIGNATIONS, EMPLOYMENT_TYPES, } from "../constants/constants_values.js";
 import { CMP_BANK, EMP_BANK } from "../constants/permissions.js";
 import { formatUTCToIST } from "../utils/time.js";
-import { sendSuccess, sendError } from "../utils/sendResponse.js";
+import { sendSuccess, sendError, buildMeta, safeNumber, sanitizeText, } from "../utils/sendResponse.js";
 
 const router = express.Router();
 
@@ -41,6 +37,34 @@ const BANK_ACCOUNT_BASE_FIELDS = `
   ba.updated_by
 `;
 
+const USER_EXISTS_QUERY = `SELECT id, is_active, is_deleted FROM users WHERE id = ? LIMIT 1`;
+const COMPANY_EXISTS_QUERY = `SELECT id, owner_user_id, is_active, is_deleted FROM companies WHERE id = ? LIMIT 1`;
+const EMPLOYEE_EXISTS_QUERY = `SELECT id, company_id, is_active, is_deleted FROM employees WHERE id = ? AND company_id = ? LIMIT 1`;
+
+const BANK_SELECT_BY_ID = `SELECT ${BANK_ACCOUNT_BASE_FIELDS} FROM bank_accounts ba WHERE ba.id = ? LIMIT 1`;
+
+const CASH_EXISTS_QUERY = `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_type = 'cash' AND is_deleted = 0 LIMIT 1`;
+
+const DUPLICATE_BANK_QUERY = {
+  employee: `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND account_number = ? AND ifsc_code = ? AND is_deleted = 0 `,
+  company: `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_number = ? AND ifsc_code = ? AND is_deleted = 0 `,
+};
+
+const DUPLICATE_UPI_QUERY = {
+  employee: `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND upi_id = ? AND is_deleted = 0`,
+  company: `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND upi_id = ? AND is_deleted = 0`,
+};
+
+const PRIMARY_EXISTS_QUERY = `SELECT id FROM bank_accounts WHERE company_id = ? AND ((? = 'employee' AND employee_id = ?) OR (? = 'company' AND employee_id IS NULL)) AND is_primary = 1 AND is_deleted = 0 LIMIT 1`;
+
+const UPDATE_PRIMARY_TO_ZERO_QUERY = {
+  employee: `UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE employee_id = ? AND is_deleted = 0`,
+  company: `UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE company_id = ? AND employee_id IS NULL AND is_deleted = 0`,
+};
+
+const INSERT_BANK_QUERY = `INSERT INTO bank_accounts (company_id, employee_id, account_type, bank_name, account_holder_name, account_number, ifsc_code, branch_name, upi_id, is_primary, created_by, updated_by)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
 const maskAccountNumber = (value) => {
   if (!value) return null;
   const clean = String(value).trim();
@@ -59,7 +83,86 @@ const maskUpiId = (value) => {
   return `${username.slice(0, 2)}${"*".repeat(username.length - 2)}@${handle}`;
 };
 
-// IFSC lookup
+const formatBankAccount = (account, options = {}) => {
+  const {
+    idKey = "id",
+    includeMasked = false,
+    includeEmployee = false,
+    ownerType = null,
+    includeCreatedBy = false,
+    overrideBankNameForCash = false,
+  } = options;
+
+  const base = {
+    [idKey]: account.id,
+    company_id: account.company_id,
+    employee_id: account.employee_id,
+    account_type: account.account_type,
+    bank_name:
+      account.account_type === "cash" && overrideBankNameForCash
+        ? "Cash Account"
+        : account.bank_name,
+    account_holder_name: account.account_holder_name,
+    account_number: account.account_number,
+    ifsc_code: account.ifsc_code,
+    branch_name: account.branch_name,
+    upi_id: account.upi_id,
+    is_primary: account.is_primary == 1,
+    status: account.status,
+    is_active: account.is_active == 1,
+    created_at: formatUTCToIST(account.created_at),
+    updated_at: formatUTCToIST(account.updated_at),
+  };
+
+  if (includeMasked) {
+    base.masked_account_number = maskAccountNumber(account.account_number);
+    base.masked_upi_id = maskUpiId(account.upi_id);
+  }
+
+  if (includeCreatedBy) {
+    base.created_by = account.created_by;
+    base.updated_by = account.updated_by;
+  }
+
+  if (ownerType) {
+    base.owner_type = ownerType;
+  }
+
+  if (includeEmployee) {
+    const employee = {};
+    if (account.emp_id !== undefined) employee.id = account.emp_id;
+    if (account.employee_code !== undefined)
+      employee.employee_code = account.employee_code;
+    if (account.designation !== undefined)
+      employee.designation = getEnumObject(DESIGNATIONS, account.designation);
+    if (account.employment_type !== undefined)
+      employee.employment_type = getEnumObject(
+        EMPLOYMENT_TYPES,
+        account.employment_type
+      );
+    if (account.employee_status !== undefined)
+      employee.status = account.employee_status;
+    if (account.joining_date !== undefined)
+      employee.joining_date = account.joining_date;
+
+    if (account.linked_user_id !== undefined) {
+      employee.user = {
+        id: account.linked_user_id,
+        name: account.linked_user_name,
+        email: account.linked_user_email,
+        phone: account.linked_user_phone,
+        profile_picture: buildFileUrl(account.profile_picture),
+      };
+    }
+
+    if (Object.keys(employee).length > 0) {
+      base.employee = employee;
+    }
+  }
+
+  return base;
+};
+
 router.get("/ifsc/:ifsc_code", auth(), async (req, res) => {
   try {
     let { ifsc_code } = req.params;
@@ -98,10 +201,10 @@ router.get("/ifsc/:ifsc_code", auth(), async (req, res) => {
   }
 });
 
-// Create bank account
 router.post("/create", auth(BANK.ALL), async (req, res) => {
   let conn;
   let transactionStarted = false;
+  let responseSent = false;
   const ENABLE_ACCOUNT_MASKING = false;
 
   const sanitizeString = (value, { lower = false, upper = false } = {}) => {
@@ -138,7 +241,13 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
     } = req.body;
 
     bank_owner_type = sanitizeString(bank_owner_type, { lower: true });
-    employee_id = employee_id !== null ? Number(employee_id) : null;
+    employee_id = employee_id !== null && employee_id !== undefined ? safeNumber(employee_id) : null;
+    if (employee_id !== null && (!Number.isInteger(employee_id) || employee_id <= 0)) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, "Invalid employee_id");
+    }
+
     account_type = sanitizeString(account_type, { lower: true });
     bank_name = sanitizeString(bank_name);
     account_holder_name = sanitizeString(account_holder_name);
@@ -150,19 +259,37 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
 
     const allowedOwnerTypes = ["company", "employee"];
     if (!allowedOwnerTypes.includes(bank_owner_type)) {
-      throw { status: 400, message: `bank_owner_type must be one of: ${allowedOwnerTypes.join(", ")}` };
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, `bank_owner_type must be one of: ${allowedOwnerTypes.join(", ")}`);
     }
 
     const companyAccountTypes = ["cash", "current", "savings", "loan", "upi"];
     const employeeAccountTypes = ["current", "savings", "upi"];
 
-    const [[user]] = await conn.query(`SELECT id, is_active, is_deleted FROM users WHERE id = ? LIMIT 1`, [user_id]);
-    if (!user || user.is_deleted) throw { status: 404, message: "User not found" };
-    if (!user.is_active) throw { status: 403, message: "User inactive" };
+    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
+    if (!user || user.is_deleted) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 404, "User not found");
+    }
+    if (!user.is_active) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 403, "User inactive");
+    }
 
-    const [[company]] = await conn.query(`SELECT id, owner_user_id, is_active, is_deleted FROM companies WHERE id = ? LIMIT 1`, [company_id]);
-    if (!company || company.is_deleted) throw { status: 404, message: "Company not found" };
-    if (!company.is_active) throw { status: 403, message: "Company inactive" };
+    const [[company]] = await conn.query(COMPANY_EXISTS_QUERY, [company_id]);
+    if (!company || company.is_deleted) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 404, "Company not found");
+    }
+    if (!company.is_active) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 403, "Company inactive");
+    }
 
     const permissionResult = await checkCompanyPermissions({
       conn,
@@ -173,131 +300,150 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
     const isOwner = permissionResult.role === "owner";
 
     if (bank_owner_type === "employee") {
-      if (!employee_id) throw { status: 400, message: "employee_id is required when bank_owner_type is employee" };
-      if (!employeeAccountTypes.includes(account_type)) {
-        throw { status: 400, message: `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}` };
+      if (!employee_id) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "employee_id is required when bank_owner_type is employee");
       }
-      const [[employee]] = await conn.query(
-        `SELECT id, company_id, is_active, is_deleted FROM employees WHERE id = ? AND company_id = ? LIMIT 1`,
-        [employee_id, company_id]
-      );
-      if (!employee || employee.is_deleted) throw { status: 404, message: "Employee not found" };
-      if (!employee.is_active) throw { status: 403, message: "Employee inactive" };
+      if (!employeeAccountTypes.includes(account_type)) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}`);
+      }
+      const [[employee]] = await conn.query(EMPLOYEE_EXISTS_QUERY, [employee_id, company_id]);
+      if (!employee || employee.is_deleted) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 404, "Employee not found");
+      }
+      if (!employee.is_active) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 403, "Employee inactive");
+      }
     } else {
-      if (!isOwner) throw { status: 403, message: "Only company owner can create company bank accounts" };
-      if (employee_id) throw { status: 400, message: "employee_id is not allowed for company bank accounts" };
+      if (!isOwner) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 403, "Only company owner can create company bank accounts");
+      }
+      if (employee_id) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "employee_id is not allowed for company bank accounts");
+      }
       if (!companyAccountTypes.includes(account_type)) {
-        throw { status: 400, message: `Company account_type must be one of: ${companyAccountTypes.join(", ")}` };
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, `Company account_type must be one of: ${companyAccountTypes.join(", ")}`);
       }
     }
 
     if (account_type === "cash") {
-      const [[existingCash]] = await conn.query(
-        `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_type = 'cash' AND is_deleted = 0 LIMIT 1`,
-        [company_id]
-      );
-      if (existingCash) throw { status: 409, message: "Cash account already exists" };
+      const [[existingCash]] = await conn.query(CASH_EXISTS_QUERY, [company_id]);
+      if (existingCash) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "Cash account already exists");
+      }
     }
 
     if (["current", "savings", "loan"].includes(account_type)) {
       if (!bank_name || !account_holder_name || !account_number || !ifsc_code) {
-        throw { status: 400, message: "bank_name, account_holder_name, account_number and ifsc_code are required" };
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "bank_name, account_holder_name, account_number and ifsc_code are required");
       }
-      if (account_number.length < 6 || account_number.length > 50) throw { status: 400, message: "Invalid account number" };
+      if (account_number.length < 6 || account_number.length > 50) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid account number");
+      }
       const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
-      if (!IFSC_REGEX.test(ifsc_code)) throw { status: 400, message: "Invalid IFSC code" };
+      if (!IFSC_REGEX.test(ifsc_code)) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid IFSC code");
+      }
 
       const storedAccountNumber = ENABLE_ACCOUNT_MASKING ? maskAccountNumber(account_number) : account_number;
 
-      const duplicateQuery = bank_owner_type === "employee"
-        ? `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND account_number = ? AND ifsc_code = ? AND is_deleted = 0 LIMIT 1`
-        : `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_number = ? AND ifsc_code = ? AND is_deleted = 0 LIMIT 1`;
+      const duplicateQuery = DUPLICATE_BANK_QUERY[bank_owner_type];
       const duplicateParams = bank_owner_type === "employee"
         ? [company_id, employee_id, storedAccountNumber, ifsc_code]
         : [company_id, storedAccountNumber, ifsc_code];
       const [[duplicate]] = await conn.query(duplicateQuery, duplicateParams);
-      if (duplicate) throw { status: 409, message: "Bank account already exists" };
+      if (duplicate) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "Bank account already exists");
+      }
 
       account_number = storedAccountNumber;
     }
 
     if (account_type === "upi") {
-      if (!upi_id) throw { status: 400, message: "upi_id is required" };
+      if (!upi_id) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "upi_id is required");
+      }
       const UPI_REGEX = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!UPI_REGEX.test(upi_id)) throw { status: 400, message: "Invalid UPI ID" };
+      if (!UPI_REGEX.test(upi_id)) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid UPI ID");
+      }
 
-      const upiQuery = bank_owner_type === "employee"
-        ? `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND upi_id = ? AND is_deleted = 0 LIMIT 1`
-        : `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND upi_id = ? AND is_deleted = 0 LIMIT 1`;
+      const upiQuery = DUPLICATE_UPI_QUERY[bank_owner_type] + " LIMIT 1";
       const upiParams = bank_owner_type === "employee"
         ? [company_id, employee_id, upi_id]
         : [company_id, upi_id];
       const [[existingUpi]] = await conn.query(upiQuery, upiParams);
-      if (existingUpi) throw { status: 409, message: "UPI already exists" };
-    }
-
-    const [[existingPrimary]] = await conn.query(
-      `SELECT id FROM bank_accounts WHERE company_id = ? AND ((? = 'employee' AND employee_id = ?) OR (? = 'company' AND employee_id IS NULL)) AND is_primary = 1 AND is_deleted = 0 LIMIT 1`,
-      [company_id, bank_owner_type, employee_id, bank_owner_type]
-    );
-    if (!existingPrimary) is_primary = true;
-
-    if (is_primary) {
-      if (bank_owner_type === "employee") {
-        await conn.query(`UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE employee_id = ? AND is_deleted = 0`, [user_id, employee_id]);
-      } else {
-        await conn.query(`UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE company_id = ? AND employee_id IS NULL AND is_deleted = 0`, [user_id, company_id]);
+      if (existingUpi) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "UPI already exists");
       }
     }
 
-    const [insertResult] = await conn.query(
-      `INSERT INTO bank_accounts (company_id, employee_id, account_type, bank_name, account_holder_name, account_number, ifsc_code, branch_name, upi_id, is_primary, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [company_id, employee_id, account_type, bank_name, account_holder_name, account_number, ifsc_code, branch_name, upi_id, is_primary ? 1 : 0, user_id, user_id]
-    );
+    const [[existingPrimary]] = await conn.query(PRIMARY_EXISTS_QUERY, [company_id, bank_owner_type, employee_id, bank_owner_type]);
+    if (!existingPrimary) is_primary = true;
 
-    const [[createdAccount]] = await conn.query(
-      `SELECT ${BANK_ACCOUNT_BASE_FIELDS} FROM bank_accounts ba WHERE ba.id = ? LIMIT 1`,
-      [insertResult.insertId]
-    );
+    if (is_primary) {
+      const updateQuery = UPDATE_PRIMARY_TO_ZERO_QUERY[bank_owner_type];
+      const updateParams = bank_owner_type === "employee"
+        ? [user_id, employee_id]
+        : [user_id, company_id];
+      await conn.query(updateQuery, updateParams);
+    }
+
+    const [insertResult] = await conn.query(INSERT_BANK_QUERY, [
+      company_id, employee_id, account_type, bank_name, account_holder_name, account_number, ifsc_code, branch_name, upi_id, is_primary ? 1 : 0, user_id, user_id,
+    ]);
+
+    const [[createdAccount]] = await conn.query(BANK_SELECT_BY_ID, [insertResult.insertId]);
 
     await conn.commit();
-    transactionStarted = false;
+    responseSent = true;
 
-    const formatted = {
-      id: createdAccount.id,
-      company_id: createdAccount.company_id,
-      employee_id: createdAccount.employee_id,
-      account_type: createdAccount.account_type,
-      bank_name: createdAccount.bank_name,
-      account_holder_name: createdAccount.account_holder_name,
-      account_number: createdAccount.account_number,
-      ifsc_code: createdAccount.ifsc_code,
-      branch_name: createdAccount.branch_name,
-      upi_id: createdAccount.upi_id,
-      is_primary: createdAccount.is_primary == 1,
-      status: createdAccount.status,
-      is_active: createdAccount.is_active == 1,
-      created_at: formatUTCToIST(createdAccount.created_at),
-      updated_at: formatUTCToIST(createdAccount.updated_at),
-    };
-
+    const formatted = formatBankAccount(createdAccount, { idKey: "id" });
     return sendSuccess(res, 201, "Bank account created successfully", formatted);
   } catch (error) {
-    if (conn && transactionStarted) await conn.rollback();
-    console.error("Create bank account error:", error);
-    return sendError(res, error.status || 500, error.message || "Internal server error", {
-      missing_permissions: error.missing_permissions || undefined,
-    });
+    if (!responseSent) {
+      if (conn && transactionStarted) await conn.rollback();
+      console.error("Create bank account error:", error);
+      return sendError(res, 500, "Internal server error");
+    }
   } finally {
     if (conn) conn.release();
   }
 });
 
-// Update bank account
 router.put("/update", auth(BANK.ALL), async (req, res) => {
   let conn;
   let transactionStarted = false;
+  let responseSent = false;
   const ENABLE_ACCOUNT_MASKING = false;
 
   const sanitizeString = (value, { lower = false, upper = false } = {}) => {
@@ -319,57 +465,63 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
     const user_id = Number(req.user?.id);
     const company_id = Number(req.company?.id);
-    if (!user_id || !company_id) throw { status: 401, message: "Unauthorized" };
-
-    let {
-      bank_id,
-      account_type,
-      bank_name,
-      account_holder_name,
-      account_number,
-      ifsc_code,
-      branch_name,
-      upi_id,
-      is_primary,
-      status,
-    } = req.body;
-
-    bank_id = Number(bank_id);
-    account_type = sanitizeString(account_type, { lower: true });
-    bank_name = sanitizeString(bank_name);
-    account_holder_name = sanitizeString(account_holder_name);
-    account_number = sanitizeString(account_number);
-    ifsc_code = sanitizeString(ifsc_code, { upper: true });
-    branch_name = sanitizeString(branch_name);
-    upi_id = sanitizeString(upi_id, { lower: true });
-    status = sanitizeString(status, { lower: true });
-
-    if (is_primary !== undefined) is_primary = parseBoolean(is_primary);
-
-    if (!bank_id) throw { status: 400, message: "bank_id is required" };
-
-    const allowedStatuses = ["active", "inactive"];
-    if (status !== undefined && status !== null && !allowedStatuses.includes(status)) {
-      throw { status: 400, message: `status must be one of: ${allowedStatuses.join(", ")}` };
+    if (!user_id || !company_id) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 401, "Unauthorized");
     }
 
+    // bank_id is always required
+    let bank_id = safeNumber(req.body.bank_id);
+    if (!bank_id) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, "bank_id is required");
+    }
+
+    // No longer sanitize all fields here – we'll handle with patch semantics
+
+    const allowedStatuses = ["active", "inactive"];
     const companyAccountTypes = ["cash", "current", "savings", "loan", "upi"];
     const employeeAccountTypes = ["current", "savings", "upi"];
 
-    const [[user]] = await conn.query(`SELECT id, is_active, is_deleted FROM users WHERE id = ? LIMIT 1`, [user_id]);
-    if (!user || user.is_deleted) throw { status: 404, message: "User not found" };
-    if (!user.is_active) throw { status: 403, message: "User inactive" };
+    // User & company validation
+    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
+    if (!user || user.is_deleted) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 404, "User not found");
+    }
+    if (!user.is_active) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 403, "User inactive");
+    }
 
-    const [[company]] = await conn.query(`SELECT id, owner_user_id, is_active, is_deleted FROM companies WHERE id = ? LIMIT 1`, [company_id]);
-    if (!company || company.is_deleted) throw { status: 404, message: "Company not found" };
-    if (!company.is_active) throw { status: 403, message: "Company inactive" };
+    const [[company]] = await conn.query(COMPANY_EXISTS_QUERY, [company_id]);
+    if (!company || company.is_deleted) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 404, "Company not found");
+    }
+    if (!company.is_active) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 403, "Company inactive");
+    }
 
+    // Fetch existing account for update
     const [[existingAccount]] = await conn.query(
       `SELECT * FROM bank_accounts WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
       [bank_id, company_id]
     );
-    if (!existingAccount) throw { status: 404, message: "Bank account not found" };
+    if (!existingAccount) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 404, "Bank account not found");
+    }
 
+    // Permission checks
     const permissionResult = await checkCompanyPermissions({
       conn,
       user_id,
@@ -386,49 +538,107 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
         `SELECT id, user_id, company_id, is_active, is_deleted FROM employees WHERE id = ? AND company_id = ? LIMIT 1`,
         [existingAccount.employee_id, company_id]
       );
-      if (!targetEmployee || targetEmployee.is_deleted) throw { status: 404, message: "Employee not found" };
-      if (!targetEmployee.is_active) throw { status: 403, message: "Employee inactive" };
+      if (!targetEmployee || targetEmployee.is_deleted) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 404, "Employee not found");
+      }
+      if (!targetEmployee.is_active) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 403, "Employee inactive");
+      }
 
       if (!isOwner) {
         const [[currentEmployee]] = await conn.query(
           `SELECT id, user_id, is_active, is_deleted FROM employees WHERE user_id = ? AND company_id = ? LIMIT 1`,
           [user_id, company_id]
         );
-        if (!currentEmployee || currentEmployee.is_deleted) throw { status: 403, message: "Employee not found" };
-        if (!currentEmployee.is_active) throw { status: 403, message: "Employee inactive" };
+        if (!currentEmployee || currentEmployee.is_deleted) {
+          await conn.rollback();
+          responseSent = true;
+          return sendError(res, 403, "Employee not found");
+        }
+        if (!currentEmployee.is_active) {
+          await conn.rollback();
+          responseSent = true;
+          return sendError(res, 403, "Employee inactive");
+        }
 
         const isSelfAccount = currentEmployee.id === targetEmployee.id;
         const canManageOthers = userPermissions.includes("emp_bnk_manage_others");
         if (!isSelfAccount && !canManageOthers) {
-          throw { status: 403, message: "You do not have permission to update other employee bank accounts" };
+          await conn.rollback();
+          responseSent = true;
+          return sendError(res, 403, "You do not have permission to update other employee bank accounts");
         }
       }
     } else {
-      if (!isOwner) throw { status: 403, message: "Only company owner can update company bank accounts" };
+      if (!isOwner) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 403, "Only company owner can update company bank accounts");
+      }
     }
 
-    const final = {
-      account_type: account_type ?? existingAccount.account_type,
-      bank_name: bank_name !== undefined ? bank_name : existingAccount.bank_name,
-      account_holder_name: account_holder_name !== undefined ? account_holder_name : existingAccount.account_holder_name,
-      account_number: account_number !== undefined ? account_number : existingAccount.account_number,
-      ifsc_code: ifsc_code !== undefined ? ifsc_code : existingAccount.ifsc_code,
-      branch_name: branch_name !== undefined ? branch_name : existingAccount.branch_name,
-      upi_id: upi_id !== undefined ? upi_id : existingAccount.upi_id,
-      is_primary: is_primary !== undefined ? (is_primary ? 1 : 0) : existingAccount.is_primary,
-      status: status ?? existingAccount.status,
+    // Helper for PATCH semantics: only change if key is present in req.body
+    const patchField = (fieldName, existingValue, transform = (v) => v) => {
+      if (!(fieldName in req.body)) return existingValue; // not provided → keep old
+      const raw = req.body[fieldName];
+      if (raw === null) return null; // explicit clear
+      if (typeof raw === 'string') {
+        const sanitized = sanitizeString(raw);
+        // empty string after trim → clear (null)
+        return sanitized !== null ? transform(sanitized) : null;
+      }
+      return transform(raw); // for booleans/numbers
     };
 
+    // Build final object using PATCH semantics
+    const final = {
+      account_type:        patchField('account_type', existingAccount.account_type, (v) => v.toLowerCase()),
+      bank_name:           patchField('bank_name', existingAccount.bank_name),
+      account_holder_name: patchField('account_holder_name', existingAccount.account_holder_name),
+      account_number:      patchField('account_number', existingAccount.account_number),
+      ifsc_code:           patchField('ifsc_code', existingAccount.ifsc_code, (v) => v.toUpperCase()),
+      branch_name:         patchField('branch_name', existingAccount.branch_name),
+      upi_id:              patchField('upi_id', existingAccount.upi_id, (v) => v.toLowerCase()),
+      is_primary:          patchField('is_primary', existingAccount.is_primary, (v) => parseBoolean(v) ? 1 : 0),
+      status:              patchField('status', existingAccount.status, (v) => v.toLowerCase()),
+    };
+
+    // Validate status if provided
+    if ('status' in req.body && final.status && !allowedStatuses.includes(final.status)) {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, `status must be one of: ${allowedStatuses.join(", ")}`);
+    }
+
+    // Check allowed account types for owner type
     if (bank_owner_type === "employee" && !employeeAccountTypes.includes(final.account_type)) {
-      throw { status: 400, message: `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}` };
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}`);
     }
     if (bank_owner_type === "company" && !companyAccountTypes.includes(final.account_type)) {
-      throw { status: 400, message: `Company account_type must be one of: ${companyAccountTypes.join(", ")}` };
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, `Company account_type must be one of: ${companyAccountTypes.join(", ")}`);
     }
 
-    if (final.is_primary == 1 && final.status === "inactive") throw { status: 400, message: "Inactive account cannot be primary" };
-    if (existingAccount.is_primary == 1 && final.status === "inactive") throw { status: 400, message: "Cannot deactivate primary account" };
+    // Prevent primary becoming inactive
+    if (final.is_primary == 1 && final.status === "inactive") {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, "Primary account cannot be inactive");
+    }
+    if (existingAccount.is_primary == 1 && final.status === "inactive") {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(res, 400, "Cannot deactivate primary account");
+    }
 
+    // Cash account logic
     if (final.account_type === "cash") {
       final.bank_name = null;
       final.account_holder_name = null;
@@ -436,118 +646,133 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       final.ifsc_code = null;
       final.branch_name = null;
       final.upi_id = null;
-      const [[existingCash]] = await conn.query(
-        `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_type = 'cash' AND id != ? AND is_deleted = 0 LIMIT 1`,
-        [company_id, bank_id]
-      );
-      if (existingCash) throw { status: 409, message: "Cash account already exists" };
+      const [[existingCash]] = await conn.query(CASH_EXISTS_QUERY + " AND id != ? LIMIT 1", [company_id, bank_id]);
+      if (existingCash) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "Cash account already exists");
+      }
     }
 
+    // Bank account validation (current/savings/loan)
     if (["current", "savings", "loan"].includes(final.account_type)) {
       if (!final.bank_name || !final.account_holder_name || !final.account_number || !final.ifsc_code) {
-        throw { status: 400, message: "bank_name, account_holder_name, account_number and ifsc_code are required" };
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "bank_name, account_holder_name, account_number and ifsc_code are required");
       }
-      final.upi_id = null;
-      if (final.account_number.length < 6 || final.account_number.length > 50) throw { status: 400, message: "Invalid account number" };
+      final.upi_id = null; // UPI not relevant for bank accounts
+      if (final.account_number.length < 6 || final.account_number.length > 50) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid account number");
+      }
       const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
-      if (!IFSC_REGEX.test(final.ifsc_code)) throw { status: 400, message: "Invalid IFSC code" };
+      if (!IFSC_REGEX.test(final.ifsc_code)) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid IFSC code");
+      }
 
       final.account_number = ENABLE_ACCOUNT_MASKING ? maskAccountNumber(final.account_number) : final.account_number;
 
-      const duplicateQuery = bank_owner_type === "employee"
-        ? `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND account_number = ? AND ifsc_code = ? AND id != ? AND is_deleted = 0 LIMIT 1`
-        : `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND account_number = ? AND ifsc_code = ? AND id != ? AND is_deleted = 0 LIMIT 1`;
+      const duplicateQuery = DUPLICATE_BANK_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const duplicateParams = bank_owner_type === "employee"
         ? [company_id, existingAccount.employee_id, final.account_number, final.ifsc_code, bank_id]
         : [company_id, final.account_number, final.ifsc_code, bank_id];
       const [[duplicate]] = await conn.query(duplicateQuery, duplicateParams);
-      if (duplicate) throw { status: 409, message: "Bank account already exists" };
+      if (duplicate) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "Bank account already exists");
+      }
     }
 
+    // UPI account validation
     if (final.account_type === "upi") {
-      if (!final.upi_id) throw { status: 400, message: "upi_id is required" };
+      if (!final.upi_id) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "upi_id is required");
+      }
       final.bank_name = null;
-      final.account_holder_name = null;
       final.account_number = null;
       final.ifsc_code = null;
       final.branch_name = null;
       const UPI_REGEX = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-      if (!UPI_REGEX.test(final.upi_id)) throw { status: 400, message: "Invalid UPI ID" };
+      if (!UPI_REGEX.test(final.upi_id)) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "Invalid UPI ID");
+      }
 
-      const upiQuery = bank_owner_type === "employee"
-        ? `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id = ? AND upi_id = ? AND id != ? AND is_deleted = 0 LIMIT 1`
-        : `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND upi_id = ? AND id != ? AND is_deleted = 0 LIMIT 1`;
+      const upiQuery = DUPLICATE_UPI_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const upiParams = bank_owner_type === "employee"
         ? [company_id, existingAccount.employee_id, final.upi_id, bank_id]
         : [company_id, final.upi_id, bank_id];
       const [[existingUpi]] = await conn.query(upiQuery, upiParams);
-      if (existingUpi) throw { status: 409, message: "UPI already exists" };
-    }
-
-    if (final.is_primary == 1) {
-      if (bank_owner_type === "employee") {
-        await conn.query(`UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE employee_id = ? AND id != ? AND is_deleted = 0`, [user_id, existingAccount.employee_id, bank_id]);
-      } else {
-        await conn.query(`UPDATE bank_accounts SET is_primary = 0, updated_by = ? WHERE company_id = ? AND employee_id IS NULL AND id != ? AND is_deleted = 0`, [user_id, company_id, bank_id]);
+      if (existingUpi) {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 409, "UPI already exists");
       }
     }
 
+    // Handle primary switching
+    if (final.is_primary == 1) {
+      const updateQuery = UPDATE_PRIMARY_TO_ZERO_QUERY[bank_owner_type] + " AND id != ?";
+      const updateParams = bank_owner_type === "employee"
+        ? [user_id, existingAccount.employee_id, bank_id]
+        : [user_id, company_id, bank_id];
+      await conn.query(updateQuery, updateParams);
+    }
+
+    // Update the record
     await conn.query(
       `UPDATE bank_accounts SET account_type = ?, bank_name = ?, account_holder_name = ?, account_number = ?, ifsc_code = ?, branch_name = ?, upi_id = ?, is_primary = ?, status = ?, is_active = ?, updated_by = ? WHERE id = ?`,
       [final.account_type, final.bank_name, final.account_holder_name, final.account_number, final.ifsc_code, final.branch_name, final.upi_id, final.is_primary, final.status, final.status === "active" ? 1 : 0, user_id, bank_id]
     );
 
-    const [[updatedAccount]] = await conn.query(
-      `SELECT ${BANK_ACCOUNT_BASE_FIELDS} FROM bank_accounts ba WHERE ba.id = ? LIMIT 1`,
-      [bank_id]
-    );
+    const [[updatedAccount]] = await conn.query(BANK_SELECT_BY_ID, [bank_id]);
 
     await conn.commit();
-    transactionStarted = false;
+    responseSent = true;
 
-    const formatted = {
-      id: updatedAccount.id,
-      company_id: updatedAccount.company_id,
-      employee_id: updatedAccount.employee_id,
-      account_type: updatedAccount.account_type,
-      bank_name: updatedAccount.bank_name,
-      account_holder_name: updatedAccount.account_holder_name,
-      account_number: updatedAccount.account_number,
-      ifsc_code: updatedAccount.ifsc_code,
-      branch_name: updatedAccount.branch_name,
-      upi_id: updatedAccount.upi_id,
-      is_primary: updatedAccount.is_primary == 1,
-      status: updatedAccount.status,
-      is_active: updatedAccount.is_active == 1,
-      created_at: formatUTCToIST(updatedAccount.created_at),
-      updated_at: formatUTCToIST(updatedAccount.updated_at),
-    };
-
+    const formatted = formatBankAccount(updatedAccount, { idKey: "id" });
     return sendSuccess(res, 200, "Bank account updated successfully", formatted);
   } catch (error) {
-    if (conn && transactionStarted) await conn.rollback();
-    console.error("Update bank account error:", error);
-    return sendError(res, error.status || 500, error.message || "Internal server error", {
-      missing_permissions: error.missing_permissions || undefined,
-    });
+    if (!responseSent) {
+      if (conn && transactionStarted) await conn.rollback();
+      console.error("Update bank account error:", error);
+      return sendError(res, 500, "Internal server error");
+    }
   } finally {
     if (conn) conn.release();
   }
 });
 
-// Delete bank account
 router.delete("/delete", auth(BANK.ALL), async (req, res) => {
   let conn;
+  let responseSent = false;
   try {
     conn = await db.getConnection();
     const userId = Number(req.user?.id);
     const companyId = Number(req.company?.id);
 
-    if (!userId) return sendError(res, 401, "Unauthorized");
-    if (!companyId) return sendError(res, 400, "Company context missing");
+    if (!userId) {
+      responseSent = true;
+      return sendError(res, 401, "Unauthorized");
+    }
+    if (!companyId) {
+      responseSent = true;
+      return sendError(res, 400, "Company context missing");
+    }
 
-    const { bank_id } = req.body;
-    if (!bank_id) return sendError(res, 400, "bank_id is required");
+    const bank_id = safeNumber(req.body.bank_id);
+    if (!bank_id) {
+      responseSent = true;
+      return sendError(res, 400, "bank_id is required");
+    }
 
     await conn.beginTransaction();
 
@@ -557,6 +782,7 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
     );
     if (!account) {
       await conn.rollback();
+      responseSent = true;
       return sendError(res, 404, "Bank account not found");
     }
 
@@ -566,6 +792,7 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
     );
     if (!company) {
       await conn.rollback();
+      responseSent = true;
       return sendError(res, 404, "Company not found");
     }
 
@@ -577,14 +804,17 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
       );
       if (!employee) {
         await conn.rollback();
+        responseSent = true;
         return sendError(res, 403, "Not authorized");
       }
       if (!employee.is_active) {
         await conn.rollback();
+        responseSent = true;
         return sendError(res, 403, "Employee inactive");
       }
       if (account.employee_id !== employee.id) {
         await conn.rollback();
+        responseSent = true;
         return sendError(res, 403, "Cannot delete others' accounts");
       }
     }
@@ -596,6 +826,7 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
       );
       if (count.total <= 1) {
         await conn.rollback();
+        responseSent = true;
         return sendError(res, 400, "Cannot delete last company account");
       }
     }
@@ -626,25 +857,29 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
     );
 
     await conn.commit();
+    responseSent = true;
     return sendSuccess(res, 200, "Bank account deleted successfully");
   } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete bank account error:", err);
-    return sendError(res, 500, "Internal server error");
+    if (!responseSent) {
+      if (conn) await conn.rollback();
+      console.error("Delete bank account error:", err);
+      return sendError(res, 500, "Internal server error");
+    }
   } finally {
     if (conn) conn.release();
   }
 });
 
-// My bank accounts (employee self-service)
 router.get("/my", auth(BANK.ALL), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
     const user_id = Number(req.user?.id);
     const company_id = Number(req.company?.id);
-    if (!Number.isInteger(user_id) || user_id <= 0) return sendError(res, 401, "Invalid user authentication");
-    if (!Number.isInteger(company_id) || company_id <= 0) return sendError(res, 401, "Invalid company authentication");
+    if (!Number.isInteger(user_id) || user_id <= 0)
+      return sendError(res, 401, "Invalid user authentication");
+    if (!Number.isInteger(company_id) || company_id <= 0)
+      return sendError(res, 401, "Invalid company authentication");
 
     const [[employee]] = await conn.query(
       `SELECT e.id, e.employee_code, e.designation, e.employment_type, e.status, e.is_active, e.is_deleted,
@@ -667,10 +902,11 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
 
     const employee_id = Number(employee.id);
 
-    let { page = 1, limit = 10, search = "", status, account_type, is_primary, sort_by = "created_at", sort_order = "DESC" } = req.query;
-    page = Math.max(1, parseInt(page) || 1);
-    limit = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    let { page, limit, search, status, account_type, is_primary, sort_by, sort_order } = req.query;
+    page = Math.max(1, safeNumber(page, 1));
+    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
     const offset = (page - 1) * limit;
+    search = sanitizeText(search) || "";
 
     const allowedStatuses = ["active", "inactive"];
     const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
@@ -683,9 +919,11 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
     };
     const allowedSortOrder = ["ASC", "DESC"];
 
-    if (status && !allowedStatuses.includes(status)) return sendError(res, 400, "Invalid status filter");
-    if (account_type && !allowedAccountTypes.includes(account_type)) return sendError(res, 400, "Invalid account type filter");
-    if (!allowedSortBy[sort_by]) sort_by = "created_at";
+    if (status && !allowedStatuses.includes(status))
+      return sendError(res, 400, "Invalid status filter");
+    if (account_type && !allowedAccountTypes.includes(account_type))
+      return sendError(res, 400, "Invalid account type filter");
+    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
     sort_order = String(sort_order).toUpperCase();
     if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
 
@@ -696,7 +934,8 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
     if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
     if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
       const normalized = String(is_primary).toLowerCase();
-      if (!["true", "false", "1", "0"].includes(normalized)) return sendError(res, 400, "Invalid is_primary filter");
+      if (!["true", "false", "1", "0"].includes(normalized))
+        return sendError(res, 400, "Invalid is_primary filter");
       const primaryValue = ["true", "1"].includes(normalized) ? 1 : 0;
       where.push("ba.is_primary = ?"); params.push(primaryValue);
     }
@@ -719,42 +958,25 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
       [...params, limit, offset]
     );
 
-    const data = rows.map(row => ({
-      bank_account_id: row.id,
-      company_id: row.company_id,
-      employee_id: row.employee_id,
-      employee: {
-        employee_code: row.employee_code,
-        designation: getEnumObject(DESIGNATIONS, row.designation),
-        employment_type: getEnumObject(EMPLOYMENT_TYPES, row.employment_type),
-      },
-      account_type: row.account_type,
-      bank_name: row.bank_name,
-      account_holder_name: row.account_holder_name,
-      account_number: row.account_number,
-      masked_account_number: maskAccountNumber(row.account_number),
-      ifsc_code: row.ifsc_code,
-      branch_name: row.branch_name,
-      upi_id: row.upi_id,
-      masked_upi_id: maskUpiId(row.upi_id),
-      is_primary: row.is_primary == 1,
-      status: row.status,
-      is_active: row.is_active == 1,
-      created_at: formatUTCToIST(row.created_at),
-      updated_at: formatUTCToIST(row.updated_at),
-      created_by: row.created_by,
-      updated_by: row.updated_by,
-    }));
+    const data = rows.map((row) =>
+      formatBankAccount(row, {
+        idKey: "bank_account_id",
+        includeMasked: true,
+        includeEmployee: true,
+        includeCreatedBy: true,
+      })
+    );
 
+    const baseMeta = buildMeta(page, limit, total, data.length);
     const meta = {
-      page,
-      limit,
-      total,
-      total_pages: total > 0 ? Math.ceil(total / limit) : 0,
+      page: baseMeta.page,
+      limit: baseMeta.limit,
+      total: baseMeta.total,
+      total_pages: baseMeta.total_pages,
       current_page_count: data.length,
-      has_next_page: offset + data.length < total,
-      has_previous_page: page > 1,
-      is_last_page: offset + data.length >= total,
+      has_next_page: baseMeta.has_next,
+      has_previous_page: baseMeta.has_prev,
+      is_last_page: baseMeta.is_last_page,
       filters: { search, status: status || null, account_type: account_type || null, is_primary: is_primary ?? null },
       sorting: { sort_by, sort_order },
     };
@@ -768,7 +990,6 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
   }
 });
 
-// Management: employee bank accounts
 router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
   let conn;
   try {
@@ -791,12 +1012,14 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
     if (companyUser.company_is_deleted) return sendError(res, 403, "Company deleted");
     if (!companyUser.company_is_active) return sendError(res, 403, "Company inactive");
 
-    let { page = 1, limit = 10, search = "", employee_id, status, account_type, is_primary, sort_by = "created_at", sort_order = "DESC" } = req.query;
-    page = Math.max(1, parseInt(page) || 1);
-    limit = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    let { page, limit, search, employee_id, status, account_type, is_primary, sort_by, sort_order } = req.query;
+    page = Math.max(1, safeNumber(page, 1));
+    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
     const offset = (page - 1) * limit;
-    employee_id = employee_id !== undefined ? parseInt(employee_id) : null;
-    if (employee_id !== null && (isNaN(employee_id) || employee_id <= 0)) return sendError(res, 400, "Invalid employee_id filter");
+    employee_id = employee_id !== undefined ? safeNumber(employee_id) : null;
+    if (employee_id !== null && (!Number.isInteger(employee_id) || employee_id <= 0))
+      return sendError(res, 400, "Invalid employee_id filter");
+    search = sanitizeText(search) || "";
 
     const allowedStatuses = ["active", "inactive"];
     const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
@@ -811,7 +1034,7 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
 
     if (status && !allowedStatuses.includes(status)) return sendError(res, 400, "Invalid status filter");
     if (account_type && !allowedAccountTypes.includes(account_type)) return sendError(res, 400, "Invalid account type filter");
-    if (!allowedSortBy[sort_by]) sort_by = "created_at";
+    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
     sort_order = String(sort_order).toUpperCase();
     if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
 
@@ -851,52 +1074,25 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
       [...params, limit, offset]
     );
 
-    const data = rows.map(row => ({
-      bank_account_id: row.id,
-      company_id: row.company_id,
-      employee_id: row.employee_id,
-      owner_type: "employee",
-      account_type: row.account_type,
-      bank_name: row.bank_name,
-      account_holder_name: row.account_holder_name,
-      account_number: row.account_number,
-      masked_account_number: maskAccountNumber(row.account_number),
-      ifsc_code: row.ifsc_code,
-      branch_name: row.branch_name,
-      upi_id: row.upi_id,
-      masked_upi_id: maskUpiId(row.upi_id),
-      is_primary: row.is_primary == 1,
-      status: row.status,
-      is_active: row.is_active == 1,
-      created_at: formatUTCToIST(row.created_at),
-      updated_at: formatUTCToIST(row.updated_at),
-      created_by: row.created_by,
-      updated_by: row.updated_by,
-      employee: {
-        id: row.emp_id,
-        employee_code: row.employee_code,
-        designation: getEnumObject(DESIGNATIONS, row.designation),
-        employment_type: getEnumObject(EMPLOYMENT_TYPES, row.employment_type),
-        joining_date: row.joining_date,
-        status: row.employee_status,
-        user: {
-          id: row.linked_user_id,
-          name: row.linked_user_name,
-          email: row.linked_user_email,
-          phone: row.linked_user_phone,
-          profile_picture: buildFileUrl(row.profile_picture),
-        },
-      },
-    }));
+    const data = rows.map((row) =>
+      formatBankAccount(row, {
+        idKey: "bank_account_id",
+        includeMasked: true,
+        includeEmployee: true,
+        includeCreatedBy: true,
+        ownerType: "employee",
+      })
+    );
 
+    const baseMeta = buildMeta(page, limit, total, rows.length);
     const meta = {
-      total,
-      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
-      page,
-      limit,
-      is_last_page: offset + rows.length >= total,
-      has_next_page: offset + rows.length < total,
-      has_previous_page: page > 1,
+      total: baseMeta.total,
+      totalPages: baseMeta.total_pages,
+      page: baseMeta.page,
+      limit: baseMeta.limit,
+      is_last_page: baseMeta.is_last_page,
+      has_next_page: baseMeta.has_next,
+      has_previous_page: baseMeta.has_prev,
       current_page_count: rows.length,
       filters: { search, employee_id: employee_id || null, status: status || null, account_type: account_type || null, is_primary: is_primary ?? null },
       sorting: { sort_by, sort_order },
@@ -905,15 +1101,12 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
     return sendSuccess(res, 200, "Company employee bank accounts fetched successfully", data, meta);
   } catch (error) {
     console.error("Company employee bank account list error:", error);
-    return sendError(res, error.status || 500, error.message || "Internal server error", {
-      missing_permissions: error.missing_permissions || undefined,
-    });
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
 });
 
-// Management: company bank accounts
 router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
   let conn;
   try {
@@ -922,7 +1115,7 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
     const company_id = Number(req.company?.id);
     if (!user_id || !company_id) return sendError(res, 401, "Unauthorized");
 
-    const [[user]] = await conn.query(`SELECT id, is_active FROM users WHERE id = ? AND is_deleted = 0 LIMIT 1`, [user_id]);
+    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
     if (!user) return sendError(res, 404, "User not found");
     if (!user.is_active) return sendError(res, 403, "User inactive");
 
@@ -932,10 +1125,11 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
 
     await checkCompanyPermissions({ conn, user_id, company_id, permissions: ["emp_bnk_view"] });
 
-    let { page = 1, limit = 10, search = "", status, account_type, is_primary, sort_by = "created_at", sort_order = "DESC" } = req.query;
-    page = Math.max(1, parseInt(page) || 1);
-    limit = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    let { page, limit, search, status, account_type, is_primary, sort_by, sort_order } = req.query;
+    page = Math.max(1, safeNumber(page, 1));
+    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
     const offset = (page - 1) * limit;
+    search = sanitizeText(search) || "";
 
     const allowedStatuses = ["active", "inactive"];
     const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
@@ -950,7 +1144,7 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
 
     if (status && !allowedStatuses.includes(status)) return sendError(res, 400, "Invalid status filter");
     if (account_type && !allowedAccountTypes.includes(account_type)) return sendError(res, 400, "Invalid account type filter");
-    if (!allowedSortBy[sort_by]) sort_by = "created_at";
+    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
     sort_order = String(sort_order).toUpperCase();
     if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
 
@@ -980,36 +1174,25 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
       [...params, limit, offset]
     );
 
-    const data = rows.map(row => ({
-      bank_id: row.id,
-      company_id: row.company_id,
-      owner_type: "company",
-      account_type: row.account_type,
-      bank_name: row.account_type === "cash" ? "Cash Account" : row.bank_name,
-      account_holder_name: row.account_holder_name,
-      account_number: row.account_number,
-      masked_account_number: maskAccountNumber(row.account_number),
-      ifsc_code: row.ifsc_code,
-      branch_name: row.branch_name,
-      upi_id: row.upi_id,
-      masked_upi_id: maskUpiId(row.upi_id),
-      is_primary: row.is_primary == 1,
-      status: row.status,
-      is_active: row.is_active == 1,
-      created_at: formatUTCToIST(row.created_at),
-      updated_at: formatUTCToIST(row.updated_at),
-      created_by: row.created_by,
-      updated_by: row.updated_by,
-    }));
+    const data = rows.map((row) =>
+      formatBankAccount(row, {
+        idKey: "bank_id",
+        includeMasked: true,
+        includeCreatedBy: true,
+        ownerType: "company",
+        overrideBankNameForCash: true,
+      })
+    );
 
+    const baseMeta = buildMeta(page, limit, total, rows.length);
     const meta = {
-      total,
-      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
-      page,
-      limit,
-      is_last_page: offset + rows.length >= total,
-      has_next_page: offset + rows.length < total,
-      has_previous_page: page > 1,
+      total: baseMeta.total,
+      totalPages: baseMeta.total_pages,
+      page: baseMeta.page,
+      limit: baseMeta.limit,
+      is_last_page: baseMeta.is_last_page,
+      has_next_page: baseMeta.has_next,
+      has_previous_page: baseMeta.has_prev,
       current_page_count: rows.length,
       filters: { search, status: status || null, account_type: account_type || null, is_primary: is_primary ?? null },
       sorting: { sort_by, sort_order },
@@ -1018,9 +1201,7 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
     return sendSuccess(res, 200, "Company banks fetched successfully", data, meta);
   } catch (error) {
     console.error("Company banks error:", error);
-    return sendError(res, error.status || 500, error.message || "Internal server error", {
-      missing_permissions: error.missing_permissions || undefined,
-    });
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-03T05:04:30.698Z",
+  "generated_at": "2026-08-03T07:10:44.857Z",
   "database": "u278432002_oneattendance",
   "table_count": 35,
   "tables": {
@@ -456,7 +456,7 @@
     "bank_accounts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -1447,7 +1447,7 @@
     "company_subscriptions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -1733,7 +1733,7 @@
     "custom_subscription_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
