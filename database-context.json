@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-04T13:41:45.627Z",
+  "generated_at": "2026-08-04T18:30:57.782Z",
   "database": "u278432002_oneattendance",
   "table_count": 35,
   "tables": {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 4,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -456,7 +456,7 @@
     "bank_accounts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 5,
       "comment": null,
       "columns": [
         {
@@ -3473,7 +3473,7 @@
     "holidays": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -4368,7 +4368,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -6420,7 +6420,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 20,
+      "estimated_rows": 23,
       "comment": null,
       "columns": [
         {
