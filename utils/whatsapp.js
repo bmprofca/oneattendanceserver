@@ -1,17 +1,11 @@
 import axios from 'axios';
-
-import {
-  ONECHATTING_SEND_TOKEN,
-  ONECHATTING_SEND_URL,
-} from '../config/config.js';
-import { formatIndianMobileForSend } from './mobile.js';
+import { ONECHATTING_SEND_TOKEN, ONECHATTING_SEND_URL, } from '../config/config.js';
+import { normalizeIndianMobile } from './mobile.js';
 
 const TEMPLATES = Object.freeze({
   login_otp: () => import('../whatsappTemplates/otpTemplate.js'),
-  oa_subscription_expire_alert: () =>
-    import('../whatsappTemplates/subscriptionAlertTemplate.js'),
-  oa_subscription_expired_notice: () =>
-    import('../whatsappTemplates/subscriptionRenewalTemplate.js'),
+  oa_subscription_expire_alert: () => import('../whatsappTemplates/subscriptionAlertTemplate.js'),
+  oa_subscription_expired_notice: () => import('../whatsappTemplates/subscriptionRenewalTemplate.js'),
 });
 
 const loadTemplate = async (templateName) => {
@@ -85,7 +79,7 @@ const buildComponents = (template, values = [], headerMedia = {}, otp = null) =>
     }
   }
 
-  
+
   const body = templateComponents.find((c) => c.type === 'BODY');
   if (body) {
     const placeholderMatches = body.text?.match(/\{\{\d+\}\}/g) ?? [];
@@ -99,6 +93,24 @@ const buildComponents = (template, values = [], headerMedia = {}, otp = null) =>
           text: String(value ?? ''),
         })),
       });
+    } else if (otp) {
+      components.push({
+        type: 'body',
+        parameters: [
+          {
+            type: 'text',
+            text: String(otp),
+          },
+        ],
+      });
+    } else if (values.length > 0) {
+      components.push({
+        type: 'body',
+        parameters: values.map((value) => ({
+          type: 'text',
+          text: String(value ?? ''),
+        })),
+      });
     }
   }
 
@@ -108,12 +120,12 @@ const buildComponents = (template, values = [], headerMedia = {}, otp = null) =>
       if (button.type === 'OTP' && otp) {
         components.push({
           type: 'button',
-          sub_type: 'otp',
+          sub_type: button.otp_type === 'COPY_CODE' ? 'url' : 'otp',
           index: String(index),
           parameters: [
             {
               type: 'text',
-              text: otp,
+              text: String(otp),
             },
           ],
         });
@@ -132,7 +144,7 @@ const postTemplateMessage = (payload, token) =>
     },
   });
 
-export const formatWhatsAppMobile = formatIndianMobileForSend;
+export const formatWhatsAppMobile = normalizeIndianMobile;
 
 
 export const sendTemplateMessage = async ({
@@ -148,16 +160,19 @@ export const sendTemplateMessage = async ({
   }
 
   const template = await loadTemplate(templateName);
-  const normalizedMobile = formatIndianMobileForSend(mobile);
+  const normalizedMobile = normalizeIndianMobile(mobile);
 
   const templateParams = normalizeParams(params);
+  const builtComponents = buildComponents(template, templateParams, headerMedia, otp);
   const payload = {
     number: normalizedMobile,
     template_id: template.template_id,
-    component: buildComponents(template, templateParams, headerMedia, otp),
+    components: builtComponents,
+    component: builtComponents,
   };
 
   try {
+    console.dir(payload, { depth: null });
     const response = await postTemplateMessage(payload, token);
     return response.data;
   } catch (error) {
@@ -175,7 +190,7 @@ export const sendOtpWhatsApp = async (mobile, otp) => {
     templateName: 'login_otp',
     mobile,
     params: [],
-    otp,           
+    otp,
   });
 };
 
@@ -184,7 +199,7 @@ export const sendSubscriptionAlertWhatsApp = async (mobile, params) => {
   return sendTemplateMessage({
     templateName: 'oa_subscription_expire_alert',
     mobile,
-    params,              
+    params,
   });
 };
 
@@ -193,7 +208,7 @@ export const sendSubscriptionRenewalWhatsApp = async (mobile, params) => {
   return sendTemplateMessage({
     templateName: 'oa_subscription_expired_notice',
     mobile,
-    params, 
+    params,
   });
 };
 

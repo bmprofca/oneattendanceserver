@@ -7,7 +7,6 @@ import {
   sendError,
   buildMeta,
 } from "../utils/sendResponse.js";
-import { normalizeTenDigitMobile } from "../utils/mobile.js";
 
 const router = express.Router();
 

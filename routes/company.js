@@ -10,6 +10,7 @@ import { createDefaultPackages } from "../utils/defaultPackages.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 import { formatPhoneByCountry } from "../utils/getClientCountry.js";
 import { lookup } from "useragent";
+import {normalizeIndianMobile} from "../utils/mobile.js";
 
 const router = express.Router();
 
@@ -92,22 +93,6 @@ const formatCompany = (row, { includeAudit = false } = {}) => {
   }
 
   return company;
-};
-
-const normalizePhone = (value) => {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  const trimmed = String(value).trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  const digits = trimmed.replace(/\D/g, "");
-
-  return digits.length >= 10 ? digits : null;
 };
 
 const maskPhone = (phone) => {
@@ -821,7 +806,7 @@ router.get("/users/available", auth([], { owner_only: true }), async (req, res) 
 
       lookupType = "email";
     } else {
-      mobile = formatPhoneByCountry(req, normalizePhone(identifierRaw));
+      mobile = formatPhoneByCountry(req, normalizeIndianMobile(identifierRaw));
 
       if (!mobile) {
         return sendError(res, 400, "The mobile number format is invalid. Please check and try again.");

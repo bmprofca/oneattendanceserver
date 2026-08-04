@@ -29,8 +29,9 @@ import {
   isSameDate, isBeforeJoining, isDateTimeBefore, isDateTimeAfter, isDateTimeSame,
   getDateTimeDiffDays, getISTNow, toIST, compareDates, compareDateTimes, formatUTCToIST,
 } from "../utils/time.js";
-
 import { FRONTEND_URL, FACE_SERVICE_URL as configFaceServiceUrl } from "../config/config.js";
+import { normalizeIndianMobile } from "../utils/mobile.js";
+
 
 const FACE_SERVICE_URL = (configFaceServiceUrl || "http://localhost:8000").replace(/\/$/, "");
 
@@ -126,14 +127,6 @@ const normalizeSignupType = (value) => {
 const hasNonEmptyString = (value) =>
   typeof value === "string" && value.trim() !== "";
 
-const normalizePhone = (value) => {
-  if (value === undefined || value === null) return null;
-  const trimmed = String(value).trim();
-  if (!trimmed) return null;
-  const digits = trimmed.replace(/\D/g, "");
-  return digits.length >= 10 ? digits : null;
-};
-
 const resolveSignupRequestPayload = (body) => {
   const { signup_type, email, phone } = body || {};
   const signupType = normalizeSignupType(signup_type);
@@ -148,7 +141,7 @@ const resolveSignupRequestPayload = (body) => {
     if (hasNonEmptyString(phone)) {
       return { error: { status: 400, message: "Phone is not allowed for email signup" } };
     }
-    const normalizedEmail = email.trim().toLowerCase().replace(/[^\w@.+_-]/g, '').replace(/^,+|,+$/g, '');    
+    const normalizedEmail = email.trim().toLowerCase().replace(/[^\w@.+_-]/g, '').replace(/^,+|,+$/g, '');
     if (!emailRegex.test(normalizedEmail)) {
       return { error: { status: 400, message: "Invalid email format" } };
     }
@@ -160,7 +153,7 @@ const resolveSignupRequestPayload = (body) => {
   if (hasNonEmptyString(email)) {
     return { error: { status: 400, message: "Email is not allowed for phone signup" } };
   }
-  const normalizedPhone = normalizePhone(phone);
+  const normalizedPhone = normalizeIndianMobile(phone);
   if (!normalizedPhone) {
     return { error: { status: 400, message: "Invalid phone number" } };
   }
@@ -196,7 +189,7 @@ const resolveSignupPayload = (body) => {
   if (hasNonEmptyString(email)) {
     return { error: { status: 400, message: "Email is not allowed for phone signup" } };
   }
-  const normalizedPhone = normalizePhone(phone);
+  const normalizedPhone = normalizeIndianMobile(phone);
   if (!normalizedPhone) {
     return { error: { status: 400, message: "Invalid phone number" } };
   }

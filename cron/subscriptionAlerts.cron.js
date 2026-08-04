@@ -1,6 +1,6 @@
 import db from "../config/db.js";
 import { sendTemplateMessage } from "../utils/whatsapp.js";
-import { formatIndianMobileForSend } from "../utils/mobile.js";
+import { normalizeIndianMobile } from "../utils/mobile.js";
 
 // ─────────────────────────────────────────────────────────────
 // Supported variable source keys and their resolver functions.
@@ -167,7 +167,7 @@ const logAlert = async (conn, { subscriptionId, alertType, daysBefore, mobile, t
 const processSubscription = async (conn, sub, templateName, templateVarKeys, alertType) => {
   let mobile;
   try {
-    mobile = formatIndianMobileForSend(sub.owner_mobile);
+    mobile = normalizeIndianMobile(sub.owner_mobile);
   } catch {
     mobile = sub.owner_mobile;
   }

@@ -17,14 +17,10 @@ import {
 import { sendOtpSms } from "../utils/sms.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
 import {
-  WEB_GOOGLE_CLIENT_ID,
-  APP_GOOGLE_CLIENT_ID,
-  NODE_ENV,
-  FACEBOOK_APP_ID,
-  FACEBOOK_APP_SECRET,
-  FRONTEND_URL,
-  TRUECALLER_CLIENT_ID
+  WEB_GOOGLE_CLIENT_ID, APP_GOOGLE_CLIENT_ID, NODE_ENV, FACEBOOK_APP_ID,
+  FACEBOOK_APP_SECRET, FRONTEND_URL, TRUECALLER_CLIENT_ID
 } from "../config/config.js";
+import { normalizeIndianMobile } from "../utils/mobile.js";
 
 const router = express.Router();
 
@@ -86,12 +82,6 @@ const normalizeForgotType = (value) => {
   if (!value || typeof value !== "string") return null;
   const t = value.toLowerCase().trim();
   return t === "email" ? "email" : (t === "phone" || t === "mobile" ? "phone" : null);
-};
-
-const normalizePhone = (value) => {
-  if (value === undefined || value === null) return null;
-  const digits = String(value).trim().replace(/\D/g, "");
-  return digits.length >= 10 ? digits : null;
 };
 
 const hasNonEmptyString = (value) => typeof value === "string" && value.trim() !== "";
@@ -181,7 +171,7 @@ const resolveLoginPayload = (body, { requirePassword = false, requireOtp = false
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return { error: { status: 400, message: "Invalid email format" } };
   } else {
     if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required" } };
-    identifier = normalizePhone(phone);
+    identifier = normalizeIndianMobile(phone);
     if (!identifier) return { error: { status: 400, message: "Invalid phone number" } };
   }
   return { loginType, identifier, password, otp };
@@ -200,7 +190,7 @@ const resolveSignupRequestPayload = (body) => {
   }
   if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required for phone signup" } };
   if (hasNonEmptyString(email)) return { error: { status: 400, message: "Email is not allowed for phone signup. Use email signup instead." } };
-  const normalizedPhone = normalizePhone(phone);
+  const normalizedPhone = normalizeIndianMobile(phone);
   if (!normalizedPhone) return { error: { status: 400, message: "Invalid phone number" } };
   return { signupType, normalizedEmail: "", normalizedPhone, otpEmail: "" };
 };
@@ -221,7 +211,7 @@ const resolveSignupPayload = (body) => {
   }
   if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required for phone signup" } };
   if (hasNonEmptyString(email)) return { error: { status: 400, message: "Email is not allowed for phone signup. Use email signup instead." } };
-  const normalizedPhone = normalizePhone(phone);
+  const normalizedPhone = normalizeIndianMobile(phone);
   if (!normalizedPhone) return { error: { status: 400, message: "Invalid phone number" } };
   return { signupType, normalizedEmail: "", normalizedPhone, password, otp, name: name?.trim() || null };
 };
@@ -239,7 +229,7 @@ const resolveForgotPasswordPayload = (body, { requireOtp = false, requirePasswor
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return { error: { status: 400, message: "Invalid email format" } };
   } else {
     if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required" } };
-    identifier = normalizePhone(phone);
+    identifier = normalizeIndianMobile(phone);
     if (!identifier) return { error: { status: 400, message: "Invalid phone number" } };
   }
   if (requirePassword && (typeof new_password !== "string" || new_password.length < 6))
@@ -276,7 +266,7 @@ const fetchTruecallerProfile = async (accessToken) => {
 };
 
 const mapTruecallerProfile = (profile) => {
-  const phone = normalizePhone(profile?.phone_number) || profile?.phone_number?.trim() || null;
+  const phone = normalizeIndianMobile(profile?.phone_number) || profile?.phone_number?.trim() || null;
   const email = profile?.email?.toLowerCase()?.trim() || null;
   const name = [profile?.given_name, profile?.family_name].filter(Boolean).join(" ").trim() || null;
   return {

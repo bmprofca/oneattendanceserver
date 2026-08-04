@@ -1,43 +1,30 @@
-const TEN_DIGIT_REGEX = /^\d{10}$/;
-
-/**
- * Normalize input to a 10-digit local mobile number.
- * Payload is expected as 10 digits; legacy values with a 91 prefix are also accepted.
- */
-export const normalizeTenDigitMobile = (mobile) => {
-  const digits = String(mobile ?? '').replace(/\D/g, '');
-
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return digits.slice(2);
+export function normalizeIndianMobile(input) {
+  if (input == null) {
+    throw new Error("Mobile number is required");
   }
 
-  return digits;
-};
+  // Keep only digits
+  let mobile = String(input).replace(/\D/g, "");
 
-/**
- * Validate and return a 10-digit Indian mobile number.
- * Any starting digit is allowed.
- */
-export const validateTenDigitMobile = (mobile) => {
-  const local = normalizeTenDigitMobile(mobile);
-  return TEN_DIGIT_REGEX.test(local) ? local : null;
-};
-
-/**
- * Format a validated mobile for outbound SMS/WhatsApp (91 + 10 digits).
- */
-export const formatIndianMobileForSend = (mobile) => {
-  const local = validateTenDigitMobile(mobile);
-
-  if (!local) {
-    throw new Error('Invalid mobile number');
+  // Remove leading international prefix
+  while (mobile.startsWith("00")) {
+    mobile = mobile.slice(2);
   }
 
-  return `91${local}`;
-};
+  // Remove leading zeros
+  while (mobile.startsWith("0")) {
+    mobile = mobile.slice(1);
+  }
 
-export default {
-  normalizeTenDigitMobile,
-  validateTenDigitMobile,
-  formatIndianMobileForSend,
-};
+  // Keep only the last 10 digits if country code exists
+  if (mobile.length > 10) {
+    mobile = mobile.slice(-10);
+  }
+
+  // Must be exactly 10 digits
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    throw new Error("Invalid Indian mobile number");
+  }
+
+  return "91" + mobile;
+}

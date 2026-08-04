@@ -6,7 +6,7 @@ import {
   FAST2SMS_URL,
   FAST2SMS_OTP_TEMPLATE,
 } from '../config/config.js';
-import { formatIndianMobileForSend } from './mobile.js';
+import { normalizeIndianMobile } from './mobile.js';
 
 export function isSmsConfigured() {
   return Boolean(FAST2SMS_API_KEY && FAST2SMS_URL && FAST2SMS_OTP_TEMPLATE);
@@ -30,7 +30,7 @@ export async function sendOtpSms(mobile, otp) {
       sender_id: FAST2SMS_SENDER_ID,
       message: FAST2SMS_OTP_TEMPLATE,
       variables_values: `${otp}|`,
-      numbers: formatIndianMobileForSend(mobile),
+      numbers: normalizeIndianMobile(mobile),
     },
     {
       headers: {

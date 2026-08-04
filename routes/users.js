@@ -11,6 +11,7 @@ import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
 import { NODE_ENV } from "../config/config.js";
+import { normalizeIndianMobile } from "../utils/mobile.js";
 
 
 const router = express.Router();
@@ -25,22 +26,6 @@ const rollbackTransaction = async (conn, transactionStarted) => {
     await conn.rollback();
   } catch (_) {
   }
-};
-
-const normalizePhone = (value) => {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  const trimmed = String(value).trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  const digits = trimmed.replace(/\D/g, "");
-
-  return digits.length >= 10 ? digits : null;
 };
 
 const getDeliverableEmail = (email) => {
@@ -79,7 +64,7 @@ const validatePhoneUpdate = async (conn, userId, normalizedPhone) => {
     };
   }
 
-  const currentPhone = normalizePhone(user.phone);
+  const currentPhone = normalizeIndianMobile(user.phone);
 
   if (currentPhone && currentPhone === normalizedPhone) {
     return {
@@ -132,7 +117,7 @@ const normalizeEmail = (value) => {
   return normalized;
 };
 
-const getDeliverablePhone = (phone) => normalizePhone(phone);
+const getDeliverablePhone = (phone) => normalizeIndianMobile(phone);
 
 const validateEmailUpdate = async (conn, userId, normalizedEmail) => {
   if (!normalizedEmail) {
@@ -1295,7 +1280,7 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
     }
 
     const { phone } = req.body || {};
-    const normalizedPhone = normalizePhone(phone);
+    const normalizedPhone = normalizeIndianMobile(phone);
 
     conn = await db.getConnection();
 
@@ -1446,7 +1431,7 @@ router.put("/verify-update-phone-otp", auth(), async (req, res) => {
       return sendError(res, 400, "OTP is required");
     }
 
-    const normalizedPhone = normalizePhone(phone);
+    const normalizedPhone = normalizeIndianMobile(phone);
 
     conn = await db.getConnection();
 
