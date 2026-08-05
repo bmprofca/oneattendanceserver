@@ -1,30 +1,16 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import {
-  LEAVE_TYPES,
-  LEAVE_STATUSES,
-  DESIGNATIONS,
-} from "../constants/constants_values.js";
+import { LEAVE_TYPES, LEAVE_STATUSES, DESIGNATIONS, } from "../constants/constants_values.js";
 import { saveMediaFromUrl, buildFileUrl } from "../utils/fileService.js";
 import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
 import {
-  parseDate,
-  isDateAfter,
-  isSameDate,
-  eachDateBetween,
-  getISTNow,
-  formatIST,
-  formatUTCToIST,
-  weekendInfo,
-  isBeforeJoining,
-  getYearFromDate,
-  normalizeHalfDayType,
+  parseDate, isDateAfter, isSameDate, eachDateBetween, getISTNow, formatIST,
+  formatUTCToIST, weekendInfo, isBeforeJoining, getYearFromDate, normalizeHalfDayType,
 } from "../utils/time.js";
 import {
   queueLeaveRequestEmail,
-  queueLeaveAcceptanceEmail,
-  queueLeaveRejectionEmail,
+  queueLeaveAcceptanceEmail, queueLeaveRejectionEmail,
 } from "../email/services/email.processor.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { LEAVE, LEAVE_BAL, LEAVE_CFG } from "../constants/permissions.js";
@@ -33,7 +19,6 @@ import { EMAIL_USER } from "../config/config.js";
 
 const router = express.Router();
 
-// --------------------- SQL FIELD CONSTANTS ---------------------
 const LEAVE_CONFIG_FIELDS = `
   lc.id,
   lc.code,
@@ -92,7 +77,6 @@ const LEAVE_APPLICATION_JOIN_FIELDS = `
   u.email AS employee_email
 `;
 
-// --------------------- FORMAT HELPERS ---------------------
 function formatLeaveConfig(row) {
   return {
     id: row.id,
@@ -154,9 +138,8 @@ function formatLeaveApplication(row) {
   };
 }
 
-// --------------------- ROUTES ---------------------
+// ============= Leave Config Routes ==============
 
-// 1. Create Leave Config
 router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
   try {
@@ -203,7 +186,6 @@ router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-// 2. Get all company leave configs
 router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
   try {
@@ -274,7 +256,6 @@ router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-// 3. Update Leave Config
 router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
   try {
@@ -292,7 +273,6 @@ router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
     const isBooleanLike = (v) => [true, false, 1, 0, "1", "0", "true", "false"].includes(v);
     const toBooleanNumber = (v) => (v === true || v === 1 || v === "1" || v === "true" ? 1 : 0);
 
-    // validate
     for (const [field, val] of Object.entries({ is_paid, allow_half_day, exclude_weekends, is_active })) {
       if (val !== undefined && !isBooleanLike(val)) return sendError(res, 400, `${field} must be true/false or 0/1`);
     }
@@ -363,7 +343,6 @@ router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-// 4. Delete Leave Config
 router.delete("/delete", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
   try {
@@ -393,7 +372,8 @@ router.delete("/delete", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-// 5. Get my leave balance
+//============= Leave Balance Mangement Routes ===============
+
 router.get("/my-balance", auth(LEAVE_BAL.EMP), async (req, res) => {
   let conn;
   try {
@@ -448,192 +428,392 @@ router.get("/my-balance", auth(LEAVE_BAL.EMP), async (req, res) => {
   }
 });
 
-// 6. Assign leave balance
-router.post("/assign-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
+router.put("/upsert-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
   let conn;
+
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
+
     const company_id = req.company?.id;
     const user_id = req.user?.id;
     const { employee_id, leaves } = req.body;
     const year = new Date().getFullYear();
-    if (!company_id || !user_id) return sendError(res, 400, "Invalid company or user");
-    if (!employee_id || !Array.isArray(leaves) || leaves.length === 0) return sendError(res, 400, "employee_id and leaves are required");
 
-    const seen = new Set();
-    for (const l of leaves) {
-      if (seen.has(l.leave_config_id)) return sendError(res, 400, `Duplicate leave_config_id: ${l.leave_config_id}`);
-      seen.add(l.leave_config_id);
+    if (!company_id || !user_id) {
+      return sendError(res, 400, "Invalid company or user");
     }
 
-    const [emp] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1`, [employee_id, company_id]);
-    if (emp.length === 0) return sendError(res, 404, "Employee not found");
+    if (!employee_id || !Array.isArray(leaves) || leaves.length === 0) {
+      return sendError(res, 400, "employee_id and leaves are required");
+    }
 
-    const leaveConfigIds = leaves.map(l => l.leave_config_id);
-    const [configs] = await conn.query(`SELECT id, max_balance FROM leave_configs WHERE id IN (?) AND company_id = ? AND is_deleted = 0 AND is_active = 1`, [leaveConfigIds, company_id]);
-    const configMap = Object.fromEntries(configs.map(c => [c.id, c]));
+    // Prevent duplicate leave_config_id
+    const seen = new Set();
+    for (const leave of leaves) {
+      if (!leave.leave_config_id) {
+        return sendError(res, 400, "leave_config_id is required");
+      }
+
+      if (seen.has(leave.leave_config_id)) {
+        return sendError(
+          res,
+          400,
+          `Duplicate leave_config_id: ${leave.leave_config_id}`
+        );
+      }
+
+      seen.add(leave.leave_config_id);
+    }
+
+    // Validate employee
+    const [employee] = await conn.query(
+      `SELECT id
+       FROM employees
+       WHERE id = ?
+         AND company_id = ?
+         AND is_deleted = 0
+         AND is_active = 1`,
+      [employee_id, company_id]
+    );
+
+    if (employee.length === 0) {
+      return sendError(res, 404, "Employee not found");
+    }
+
+    const leaveIds = leaves.map((x) => x.leave_config_id);
+
+    // Fetch leave configs
+    const [configs] = await conn.query(
+      `SELECT
+          id,
+          max_balance
+       FROM leave_configs
+       WHERE company_id = ?
+         AND id IN (?)
+         AND is_deleted = 0
+         AND is_active = 1`,
+      [company_id, leaveIds]
+    );
+
+    if (configs.length !== leaveIds.length) {
+      return sendError(
+        res,
+        400,
+        "Some leave configurations are invalid or inactive"
+      );
+    }
+
+    const configMap = Object.fromEntries(
+      configs.map((x) => [x.id, x])
+    );
+
+    // Existing balances
+    const [balances] = await conn.query(
+      `SELECT
+          leave_config_id,
+          used
+       FROM employee_leave_balances
+       WHERE company_id = ?
+         AND employee_id = ?
+         AND year = ?
+         AND leave_config_id IN (?)
+         AND is_deleted = 0`,
+      [company_id, employee_id, year, leaveIds]
+    );
+
+    const balanceMap = Object.fromEntries(
+      balances.map((x) => [x.leave_config_id, x])
+    );
 
     const values = [];
+
     for (const leave of leaves) {
       const config = configMap[leave.leave_config_id];
-      if (!config) return sendError(res, 400, `Invalid leave_config_id: ${leave.leave_config_id}`);
+
       let allocated = Number(leave.total_allocated);
-      if (isNaN(allocated) || allocated < 0) return sendError(res, 400, `Invalid total_allocated for ${leave.leave_config_id}`);
-      if (config.max_balance !== null && allocated > config.max_balance) allocated = Number(config.max_balance);
-      allocated = parseFloat(allocated.toFixed(2));
-      values.push([company_id, employee_id, leave.leave_config_id, year, allocated, 0, allocated, user_id, user_id, 0]);
+
+      if (isNaN(allocated) || allocated < 0) {
+        return sendError(
+          res,
+          400,
+          `Invalid total_allocated for leave_config_id: ${leave.leave_config_id}`
+        );
+      }
+
+      if (
+        config.max_balance !== null &&
+        allocated > Number(config.max_balance)
+      ) {
+        allocated = Number(config.max_balance);
+      }
+
+      allocated = Number(allocated.toFixed(2));
+
+      const existing = balanceMap[leave.leave_config_id];
+      const used = existing ? Number(existing.used) : 0;
+
+      if (allocated < used) {
+        return sendError(
+          res,
+          400,
+          `Allocated leave cannot be less than used leave for leave_config_id: ${leave.leave_config_id}`
+        );
+      }
+
+      values.push([
+        company_id,
+        employee_id,
+        leave.leave_config_id,
+        year,
+        allocated,
+        used,
+        Number((allocated - used).toFixed(2)),
+        user_id,
+        user_id,
+        0,
+      ]);
     }
 
+    // Insert or Update
     await conn.query(
-      `INSERT INTO employee_leave_balances (company_id, employee_id, leave_config_id, year, total_allocated, used, remaining, created_by, updated_by, is_deleted)
-       VALUES ? ON DUPLICATE KEY UPDATE total_allocated = VALUES(total_allocated), remaining = GREATEST(VALUES(total_allocated) - used, 0), is_deleted = 0, updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
+      `
+      INSERT INTO employee_leave_balances
+      (
+        company_id,
+        employee_id,
+        leave_config_id,
+        year,
+        total_allocated,
+        used,
+        remaining,
+        created_by,
+        updated_by,
+        is_deleted
+      )
+      VALUES ?
+      ON DUPLICATE KEY UPDATE
+        total_allocated = VALUES(total_allocated),
+        remaining = GREATEST(VALUES(total_allocated) - used, 0),
+        updated_by = VALUES(updated_by),
+        updated_at = CURRENT_TIMESTAMP,
+        is_deleted = 0
+      `,
       [values]
     );
 
+    // Return latest balances
     const [result] = await conn.query(
-      `SELECT ${LEAVE_BALANCE_FIELDS}, lc.code, lc.name, lc.is_paid, lc.allow_half_day, lc.max_balance, lc.carry_forward_limit, lc.exclude_weekends
-       FROM employee_leave_balances elb JOIN leave_configs lc ON lc.id = elb.leave_config_id
-       WHERE elb.company_id = ? AND elb.employee_id = ? AND elb.year = ? AND elb.leave_config_id IN (?) AND elb.is_deleted = 0 AND lc.is_deleted = 0 AND lc.is_active = 1
-       ORDER BY lc.name ASC`,
-      [company_id, employee_id, year, leaveConfigIds]
-    );
-
-    await conn.commit();
-
-    const formatted = result.map(row => ({
-      ...formatLeaveBalance(row),
-      code: row.code, name: row.name,
-      is_paid: row.is_paid == 1, allow_half_day: row.allow_half_day == 1,
-      max_balance: row.max_balance, carry_forward_limit: row.carry_forward_limit, exclude_weekends: row.exclude_weekends == 1
-    }));
-
-    return sendSuccess(res, 200, "Leave balances assigned successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Assign Leave Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-// 7. Update leave balance
-router.put("/update-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    const { employee_id, leaves } = req.body;
-    const year = new Date().getFullYear();
-    if (!company_id || !user_id) return sendError(res, 400, "Invalid company or user");
-    if (!employee_id || !Array.isArray(leaves) || leaves.length === 0) return sendError(res, 400, "employee_id and leaves are required");
-
-    const seen = new Set();
-    for (const l of leaves) {
-      if (seen.has(l.leave_config_id)) return sendError(res, 400, `Duplicate leave_config_id: ${l.leave_config_id}`);
-      seen.add(l.leave_config_id);
-    }
-    const leaveIds = leaves.map(l => l.leave_config_id);
-
-    const [balances] = await conn.query(
-      `SELECT leave_config_id, used, total_allocated FROM employee_leave_balances
-       WHERE company_id = ? AND employee_id = ? AND year = ? AND leave_config_id IN (?) AND is_deleted = 0`,
-      [company_id, employee_id, year, leaveIds]
-    );
-    if (balances.length !== leaves.length) return sendError(res, 400, "Some leave balances are not assigned");
-    const balanceMap = Object.fromEntries(balances.map(b => [b.leave_config_id, b]));
-
-    const [configs] = await conn.query(
-      `SELECT id, max_balance FROM leave_configs WHERE id IN (?) AND company_id = ? AND is_deleted = 0 AND is_active = 1`,
-      [leaveIds, company_id]
-    );
-    if (configs.length !== leaves.length) return sendError(res, 400, "Some leave configs are invalid or inactive");
-    const configMap = Object.fromEntries(configs.map(c => [c.id, c]));
-
-    const casesAlloc = [], casesRem = [], ids = [];
-    for (const leave of leaves) {
-      const config = configMap[leave.leave_config_id];
-      const balance = balanceMap[leave.leave_config_id];
-      let newAlloc = Number(leave.total_allocated);
-      if (isNaN(newAlloc) || newAlloc < 0) return sendError(res, 400, `Invalid total_allocated for ${leave.leave_config_id}`);
-      if (newAlloc < balance.used) return sendError(res, 400, `Allocated < used for leave_config_id: ${leave.leave_config_id}`);
-      if (config.max_balance !== null && newAlloc > config.max_balance) newAlloc = Number(config.max_balance);
-      newAlloc = parseFloat(newAlloc.toFixed(2));
-      const newRem = parseFloat((newAlloc - balance.used).toFixed(2));
-      casesAlloc.push(`WHEN ${leave.leave_config_id} THEN ${newAlloc}`);
-      casesRem.push(`WHEN ${leave.leave_config_id} THEN ${newRem}`);
-      ids.push(leave.leave_config_id);
-    }
-
-    await conn.query(
-      `UPDATE employee_leave_balances SET total_allocated = CASE leave_config_id ${casesAlloc.join(" ")} END, remaining = CASE leave_config_id ${casesRem.join(" ")} END, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE company_id = ? AND employee_id = ? AND year = ? AND leave_config_id IN (?) AND is_deleted = 0`,
-      [user_id, company_id, employee_id, year, ids]
-    );
-
-    const [result] = await conn.query(
-      `SELECT ${LEAVE_BALANCE_FIELDS}, lc.code, lc.name, lc.is_paid, lc.allow_half_day, lc.max_balance, lc.carry_forward_limit, lc.exclude_weekends
-       FROM employee_leave_balances elb JOIN leave_configs lc ON lc.id = elb.leave_config_id
-       WHERE elb.company_id = ? AND elb.employee_id = ? AND elb.year = ? AND elb.leave_config_id IN (?) AND elb.is_deleted = 0 AND lc.is_deleted = 0 AND lc.is_active = 1
-       ORDER BY lc.name ASC`,
+      `
+      SELECT
+        ${LEAVE_BALANCE_FIELDS},
+        lc.code,
+        lc.name,
+        lc.is_paid,
+        lc.allow_half_day,
+        lc.max_balance,
+        lc.carry_forward_limit,
+        lc.exclude_weekends
+      FROM employee_leave_balances elb
+      INNER JOIN leave_configs lc
+        ON lc.id = elb.leave_config_id
+      WHERE elb.company_id = ?
+        AND elb.employee_id = ?
+        AND elb.year = ?
+        AND elb.leave_config_id IN (?)
+        AND elb.is_deleted = 0
+        AND lc.is_deleted = 0
+        AND lc.is_active = 1
+      ORDER BY lc.name ASC
+      `,
       [company_id, employee_id, year, leaveIds]
     );
 
     await conn.commit();
-    const formatted = result.map(row => ({
-      ...formatLeaveBalance(row),
-      code: row.code, name: row.name,
-      is_paid: row.is_paid == 1, allow_half_day: row.allow_half_day == 1,
-      max_balance: row.max_balance, carry_forward_limit: row.carry_forward_limit, exclude_weekends: row.exclude_weekends == 1
-    }));
-    return sendSuccess(res, 200, "Leave balance updated successfully");
+
+    return sendSuccess(
+      res,
+      200,
+      "Leave balance saved successfully",
+      result
+    );
   } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Update Leave Balance Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Upsert Leave Balance Error:", err);
+
+    return sendError(
+      res,
+      err.status || 500,
+      err.message || "Internal server error"
+    );
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      conn.release();
+    }
   }
 });
 
-// 8. Delete leave balance
 router.delete("/delete-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
   let conn;
+
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
+
     const company_id = req.company?.id;
     const user_id = req.user?.id;
-    const { employee_id, leave_config_id } = req.body;
-    const year = new Date().getFullYear();
-    if (!company_id || !user_id) return sendError(res, 400, "Invalid company or user");
-    if (!employee_id || !leave_config_id) return sendError(res, 400, "employee_id and leave_config_id are required");
+    const employee_id = Number(req.body.employee_id);
+    const year = getISTNow().year();
 
-    const [emp] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1`, [employee_id, company_id]);
-    if (emp.length === 0) return sendError(res, 404, "Employee not found");
+    let { leave_config_ids } = req.body;
 
-    const [balanceRows] = await conn.query(
-      `SELECT id, used FROM employee_leave_balances WHERE company_id = ? AND employee_id = ? AND leave_config_id = ? AND year = ? AND is_deleted = 0 FOR UPDATE`,
-      [company_id, employee_id, leave_config_id, year]
+    if (!company_id || !user_id) {
+      return sendError(res, 400, "Invalid company or user.");
+    }
+
+    if (!Number.isInteger(employee_id) || employee_id <= 0) {
+      return sendError(res, 400, "Valid employee_id is required.");
+    }
+
+    if (!Array.isArray(leave_config_ids) || leave_config_ids.length === 0) {
+      return sendError(
+        res,
+        400,
+        "leave_config_ids must be a non-empty array."
+      );
+    }
+
+    // Remove duplicates & validate
+    leave_config_ids = [
+      ...new Set(
+        leave_config_ids
+          .map(Number)
+          .filter((id) => Number.isInteger(id) && id > 0)
+      ),
+    ];
+
+    if (leave_config_ids.length === 0) {
+      return sendError(res, 400, "Invalid leave_config_ids.");
+    }
+
+    // Verify employee
+    const [[employee]] = await conn.query(
+      `
+        SELECT id
+        FROM employees
+        WHERE id = ?
+          AND company_id = ?
+          AND is_active = 1
+          AND is_deleted = 0
+        `,
+      [employee_id, company_id]
     );
-    if (balanceRows.length === 0) return sendError(res, 404, "Leave balance not found");
-    if (balanceRows[0].used > 0) return sendError(res, 400, "Cannot delete: leave days already used.");
 
-    await conn.query(`UPDATE employee_leave_balances SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, deleted_by = ? WHERE id = ?`, [user_id, balanceRows[0].id]);
+    if (!employee) {
+      return sendError(res, 404, "Employee not found.");
+    }
+
+    const placeholders = leave_config_ids.map(() => "?").join(",");
+
+    // Lock balances
+    const [balances] = await conn.query(
+      `
+        SELECT id, leave_config_id
+        FROM employee_leave_balances
+        WHERE company_id = ?
+          AND employee_id = ?
+          AND year = ?
+          AND is_deleted = 0
+          AND leave_config_id IN (${placeholders})
+        FOR UPDATE
+        `,
+      [company_id, employee_id, year, ...leave_config_ids]
+    );
+
+    if (balances.length !== leave_config_ids.length) {
+      return sendError(
+        res,
+        404,
+        "One or more leave balances were not found."
+      );
+    }
+
+    // Check if any leave has been applied/used
+    const [usedLeaves] = await conn.query(
+      `
+        SELECT DISTINCT
+          lc.id,
+          lc.code,
+          lc.name
+        FROM employee_leaves el
+        INNER JOIN leave_configs lc
+          ON lc.id = el.leave_config_id
+        WHERE el.company_id = ?
+          AND el.employee_id = ?
+          AND el.is_deleted = 0
+          AND YEAR(el.start_date) = ?
+          AND el.leave_config_id IN (${placeholders})
+        `,
+      [company_id, employee_id, year, ...leave_config_ids]
+    );
+
+    if (usedLeaves.length > 0) {
+      await conn.rollback();
+
+      return sendError(
+        res,
+        400,
+        `Cannot delete leave balance. Employee has already used: ${usedLeaves
+          .map((leave) => leave.name)
+          .join(", ")}.`
+      );
+    }
+
+    const balanceIds = balances.map((b) => b.id);
+    const deletePlaceholders = balanceIds.map(() => "?").join(",");
+
+    await conn.query(
+      `
+        UPDATE employee_leave_balances
+        SET
+          is_deleted = 1,
+          deleted_at = CURRENT_TIMESTAMP,
+          deleted_by = ?
+        WHERE id IN (${deletePlaceholders})
+        `,
+      [user_id, ...balanceIds]
+    );
+
     await conn.commit();
-    return sendSuccess(res, 200, "Leave balance deleted successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete Leave Balance Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
 
-// 9. Get all employee leave balances
+    return sendSuccess(
+      res,
+      200,
+      "Leave balances deleted successfully."
+    );
+  } catch (err) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Bulk Delete Leave Balance Error:", err);
+
+    return sendError(
+      res,
+      err.status || 500,
+      err.message || "Internal server error"
+    );
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+}
+);
+
 router.get("/emp-balances", auth(LEAVE_BAL.MNG), async (req, res) => {
   let conn;
   try {
@@ -712,7 +892,130 @@ router.get("/emp-balances", auth(LEAVE_BAL.MNG), async (req, res) => {
   }
 });
 
-// 10. Management create leave (immediate approval)
+router.get("/employee/:employee_id/", auth(LEAVE_BAL.MNG), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const companyId = req.company?.id;
+    if (!companyId) return sendError(res, 400, "Invalid company");
+
+    const employeeId = Number(req.params.employee_id);
+    if (!employeeId) return sendError(res, 400, "Invalid employee");
+
+    const year = Number(req.query.year) || new Date().getFullYear();
+
+    // Verify employee belongs to company
+    const [[employee]] = await conn.query(
+      `
+      SELECT id
+      FROM employees
+      WHERE
+        id = ?
+        AND company_id = ?
+        AND is_active = 1
+        AND is_deleted = 0
+      `,
+      [employeeId, companyId]
+    );
+
+    if (!employee) {
+      return sendError(res, 404, "Employee not found");
+    }
+
+    const [rows] = await conn.query(
+      `
+      SELECT
+        lc.id AS leave_config_id,
+        lc.code,
+        lc.name,
+        lc.is_paid,
+        lc.allow_half_day,
+        lc.max_balance,
+        lc.carry_forward_limit,
+        lc.exclude_weekends,
+        lc.is_active,
+
+        elb.id AS balance_id,
+        elb.year,
+        elb.total_allocated,
+        elb.used,
+        elb.remaining,
+        elb.is_active AS balance_active,
+        elb.created_at AS allocated_at,
+        elb.updated_at AS last_updated
+
+      FROM leave_configs lc
+
+      LEFT JOIN employee_leave_balances elb
+        ON elb.leave_config_id = lc.id
+      AND elb.employee_id = ?
+      AND elb.year = ?
+      AND elb.is_deleted = 0
+
+      WHERE
+        lc.company_id = ?
+        AND lc.is_deleted = 0
+        AND lc.is_paid = 1
+        AND lc.is_active = 1
+
+      ORDER BY
+        CASE WHEN elb.id IS NULL THEN 1 ELSE 0 END,
+        lc.created_at DESC
+      `,
+      [employeeId, year, companyId]
+    );
+
+    const data = rows.map((row) => ({
+      leave_config_id: row.leave_config_id,
+      code: row.code,
+      name: row.name,
+
+      is_paid: row.is_paid == 1,
+      allow_half_day: row.allow_half_day == 1,
+      max_balance: Number(row.max_balance),
+      carry_forward_limit: Number(row.carry_forward_limit),
+      exclude_weekends: row.exclude_weekends == 1,
+      is_active: row.is_active == 1,
+
+      allocated: !!row.balance_id,
+
+      balance: row.balance_id
+        ? {
+          id: row.balance_id,
+          year: row.year,
+          total_allocated: Number(row.total_allocated),
+          used: Number(row.used),
+          remaining: Number(row.remaining),
+          is_active: row.balance_active == 1,
+          allocated_at: row.allocated_at,
+          updated_at: row.last_updated,
+        }
+        : null,
+    }));
+
+    return sendSuccess(
+      res,
+      200,
+      "Available leave configs fetched successfully",
+      data
+    );
+  } catch (err) {
+    console.error("Available Leave Configs Error:", err);
+    return sendError(
+      res,
+      err.status || 500,
+      err.message || "Internal server error"
+    );
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+// ================ leave Management Routes =================
+
 router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
   let conn;
   try {
@@ -737,7 +1040,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     remarks = typeof remarks === "string" ? remarks.trim() : null;
     attachments = Array.isArray(attachments) ? attachments : [];
 
-    // validations
     if (!Number.isInteger(employee_id) || employee_id <= 0) return sendError(res, 400, "Valid employee_id required");
     if (!Number.isInteger(leave_config_id) || leave_config_id <= 0) return sendError(res, 400, "Valid leave_config_id required");
     if (!start_date || !end_date) return sendError(res, 400, "start_date and end_date are required");
@@ -749,7 +1051,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     if (attachments.length > 10) return sendError(res, 400, "Max 10 attachments");
     for (const url of attachments) if (typeof url !== "string" || !url.trim()) return sendError(res, 400, "Invalid attachment URL");
 
-    // fetch employee
     const [[employee]] = await conn.query(
       `SELECT e.id, e.user_id, e.employee_code, e.designation, e.joining_date, e.weekends, e.status, e.is_active, u.name, u.email
        FROM employees e INNER JOIN users u ON u.id = e.user_id AND u.is_deleted = 0 AND u.is_active = 1
@@ -760,11 +1061,9 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     if (employee.is_active !== 1 || employee.status !== "active") return sendError(res, 400, "Employee is not active");
     if (isBeforeJoining(start_date, employee.joining_date)) return sendError(res, 400, "Leave cannot be applied before joining date");
 
-    // fetch company
     const [[company]] = await conn.query(`SELECT id, name FROM companies WHERE id = ? AND is_active = 1 AND is_deleted = 0 LIMIT 1`, [company_id]);
     if (!company) return sendError(res, 404, "Company not found");
 
-    // fetch leave config
     const [[config]] = await conn.query(
       `SELECT id, code, name, is_paid, allow_half_day, exclude_weekends FROM leave_configs WHERE id = ? AND company_id = ? AND is_active = 1 AND is_deleted = 0 LIMIT 1`,
       [leave_config_id, company_id]
@@ -772,14 +1071,12 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     if (!config) return sendError(res, 404, "Leave configuration not found");
     if (is_half_day && Number(config.allow_half_day) !== 1) return sendError(res, 400, "Half day leave not allowed");
 
-    // holidays
     const [holidayRows] = await conn.query(
       `SELECT date FROM holidays WHERE company_id = ? AND is_optional = 0 AND is_active = 1 AND is_deleted = 0 AND date BETWEEN ? AND ?`,
       [company_id, start_date, end_date]
     );
     const holidaySet = new Set(holidayRows.map(h => formatIST(h.date, "YYYY-MM-DD")));
 
-    // calculate days and ranges
     const leaveRows = [];
     let total_days = 0;
     let currentRange = null;
@@ -807,7 +1104,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     if (currentRange) leaveRows.push(currentRange);
     if (!leaveRows.length) return sendError(res, 400, "No valid leave days found");
 
-    // overlap check
     for (const row of leaveRows) {
       const [existingLeaves] = await conn.query(
         `SELECT id, start_date, end_date, is_half_day, half_day_type FROM employee_leaves
@@ -824,7 +1120,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
       }
     }
 
-    // balance check (optional for management, but still adjust)
     const leaveYear = getYearFromDate(start_date);
     const [[balance]] = await conn.query(
       `SELECT id, total_allocated, used, remaining FROM employee_leave_balances WHERE company_id=? AND employee_id=? AND leave_config_id=? AND year=? AND is_deleted=0 LIMIT 1 FOR UPDATE`,
@@ -842,7 +1137,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
       insertedLeaveIds.push(result.insertId);
     }
 
-    // attachments
     const insertedAttachments = [];
     for (const leaveId of insertedLeaveIds) {
       for (const url of attachments) {
@@ -858,7 +1152,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
       }
     }
 
-    // adjust balance if paid
     if (Number(config.is_paid) === 1) {
       await adjustEmployeeLeaveBalance({ conn, company_id, employee_id, leave_config_id, year: leaveYear, days: total_days, mode: "deduct", user_id: admin_user_id });
     }
@@ -892,7 +1185,6 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-// 11. Employee apply leave
 router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
   let conn;
   try {
@@ -977,7 +1269,6 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
     if (currentRange) leaveRows.push(currentRange);
     if (!leaveRows.length) return sendError(res, 400, "No valid leave days found");
 
-    // overlap check
     for (const row of leaveRows) {
       const [existing] = await conn.query(
         `SELECT id, start_date, end_date, is_half_day, half_day_type FROM employee_leaves
@@ -990,7 +1281,7 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
         if (row.is_half_day && existing.length === 1 && Number(existing[0].is_half_day) === 1 &&
           existing[0].half_day_type !== row.half_day_type &&
           formatIST(existing[0].start_date, "YYYY-MM-DD") === row.start_date) {
-          conflict = false; // opposite halves on same day allowed
+          conflict = false;
         }
         if (conflict) return sendError(res, 409, "Leave overlap detected");
       }
@@ -1017,7 +1308,6 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
       insertedLeaveIds.push(result.insertId);
     }
 
-    // attachments
     const insertedAttachments = [];
     for (const leaveId of insertedLeaveIds) {
       for (const url of attachments) {
@@ -1033,14 +1323,12 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
       }
     }
 
-    // deduct balance if paid
     let updatedBalance = balance ? { total_allocated: Number(balance.total_allocated), used: Number(balance.used), remaining: Number(balance.remaining) } : null;
     if (Number(config.is_paid) === 1 && total_days > 0) {
       const balRes = await adjustEmployeeLeaveBalance({ conn, company_id, employee_id: employee.id, leave_config_id, year: leaveYear, days: total_days, mode: "deduct", user_id });
       updatedBalance = balRes.balance;
     }
 
-    // fetch reviewers (same as original)
     const [reviewers] = await conn.query(
       `SELECT DISTINCT u.id AS user_id, u.name, LOWER(TRIM(u.email)) AS email
        FROM employees e INNER JOIN users u ON u.id = e.user_id AND u.is_active = 1 AND u.is_deleted = 0
@@ -1067,7 +1355,6 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
 
     await conn.commit();
 
-    // email queueing (same as original)
     const emailJobs = [];
     const emailPayload = {
       subject: `New Leave Request - ${employee.name}`,
@@ -1101,7 +1388,6 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-// 12. Management approve-edit pending leave
 router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
   let conn;
   try {
@@ -1175,7 +1461,6 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
     total_days = Number(total_days.toFixed(2));
     if (!total_days) return sendError(res, 400, "No valid leave days");
 
-    // overlap check (excluding current leave)
     const [overlaps] = await conn.query(
       `SELECT id, start_date, end_date, is_half_day, half_day_type FROM employee_leaves
        WHERE employee_id = ? AND company_id = ? AND id != ? AND is_deleted = 0 AND LOWER(TRIM(status)) IN ('pending','approved')
@@ -1194,13 +1479,11 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
     const approvedAt = getISTNow().format("YYYY-MM-DD HH:mm:ss");
     const newLeaveYear = getYearFromDate(start_date);
 
-    // update leave
     await conn.query(
       `UPDATE employee_leaves SET start_date=?, end_date=?, total_days=?, is_half_day=?, half_day_type=?, status='approved', approved_by=?, approved_at=?, approval_remarks=NULL, updated_by=? WHERE id=?`,
       [start_date, end_date, total_days, is_half_day, is_half_day ? half_day_type : null, approver_id, approvedAt, approver_id, id]
     );
 
-    // adjust balance if paid
     if (Number(config.is_paid) === 1) {
       const oldDays = Number(leave.total_days);
       if (total_days > oldDays) {
@@ -1227,7 +1510,6 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
 
     await conn.commit();
 
-    // email
     if (employee.email) {
       try {
         await queueLeaveAcceptanceEmail({
@@ -1258,7 +1540,6 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-// 13. Bulk approve/reject
 router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) => {
   let conn;
   try {
@@ -1284,7 +1565,6 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
     remarks = typeof remarks === "string" ? remarks.trim() : null;
     if (remarks && remarks.length > 255) return sendError(res, 400, "Remarks too long");
 
-    // fetch leaves with necessary joins
     let leavesQuery;
     if (isAll) {
       leavesQuery = `
@@ -1327,7 +1607,6 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
       return sendError(res, 404, `Leaves not found: ${ids.filter(id => !found.has(id)).join(", ")}`);
     }
 
-    // holiday set if approving
     let holidaySet = new Set();
     if (action === "approve") {
       let minDate = null, maxDate = null;
@@ -1381,14 +1660,12 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
         continue;
       }
 
-      // approve
       if (Number(leave.employee_active) !== 1 || Number(leave.employee_deleted) === 1) return sendError(res, 400, `Employee inactive for leave ${leave.id}`);
       if (Number(leave.config_active) !== 1 || Number(leave.config_deleted) === 1) return sendError(res, 400, `Leave config inactive for leave ${leave.id}`);
 
       const actualDays = calculateActualDays({ leave, weekends: leave.weekends, exclude_weekends: leave.exclude_weekends });
       if (actualDays <= 0) return sendError(res, 400, `No valid days for leave ${leave.id}`);
 
-      // overlap check (similar to approve-edit)
       const [overlaps] = await conn.query(
         `SELECT id, start_date, end_date, is_half_day, half_day_type FROM employee_leaves WHERE employee_id = ? AND company_id = ? AND id != ? AND is_deleted = 0 AND LOWER(TRIM(status)) IN ('pending','approved') AND NOT (end_date < ? OR start_date > ?)`,
         [leave.employee_id, company_id, leave.id, formatIST(leave.start_date, "YYYY-MM-DD"), formatIST(leave.end_date, "YYYY-MM-DD")]
@@ -1450,7 +1727,6 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
   }
 });
 
-// 14. Reject leave
 router.put("/reject", auth(LEAVE.MNG), async (req, res) => {
   let conn;
   try {
@@ -1548,7 +1824,6 @@ router.put("/reject", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-// 15. Cancel leave (employee)
 router.put("/cancel", auth(LEAVE.EMP), async (req, res) => {
   let conn;
   try {
@@ -1592,7 +1867,6 @@ router.put("/cancel", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-// 16. Update leave application (employee)
 router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
   let conn;
   try {
@@ -1685,7 +1959,6 @@ router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-// 17. My leave applications
 router.get("/my-applications", auth(LEAVE.EMP), async (req, res) => {
   let conn;
   try {
@@ -1773,7 +2046,6 @@ router.get("/my-applications", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-// 18. Get all employee leaves (manager)
 router.get("/emp-leaves", auth(LEAVE.MNG), async (req, res) => {
   let conn;
   try {
