@@ -2,7 +2,7 @@ import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import { hashPassword, comparePassword, generateOTP, verifyOtpHash, } from "../utils/auth.js";
-import { queuePhoneUpdateOTPEmail, sendDeleteAccountOTPEmail, } from "../email/services/email.processor.js";
+import { queuePhoneUpdateOTPEmail, queueDeleteAccountOTPEmail, sendDeleteAccountOTPEmail } from "../email/services/email.processor.js";
 import { sendEmailUpdateOTP, sendOtpSms } from "../utils/sendSMS.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
 import { saveMediaFromUrl, buildFileUrl } from "../utils/fileService.js";
@@ -10,7 +10,7 @@ import getClientMeta from "../utils/ipHelper.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
-import { NODE_ENV } from "../config/config.js";
+import { NODE_ENV, EMAIL_USER } from "../config/config.js";
 import { normalizeIndianMobile } from "../utils/mobile.js";
 
 
@@ -533,10 +533,13 @@ router.post("/delete/request-otp", auth(), async (req, res) => {
       [email, otpHash, expiry]
     );
 
-    sendDeleteAccountOTPEmail({
+    queueDeleteAccountOTPEmail({
       to: email,
       otp,
-      userName: "User",
+      userName: user?.name || "User",
+      fromEmail: EMAIL_USER,
+      fromName: "OneAttendance Security",
+      replyTo: email
     })
       .then(() => {
         if (NODE_ENV !== "production") {
@@ -1380,6 +1383,9 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
         otp,
         userName: user?.name || "User",
         phone: normalizedPhone,
+        fromEmail: EMAIL_USER,
+        fromName: "OneAttendance Security",
+        replyTo: userEmail
       });
     } catch (emailErr) {
       console.error("UPDATE PHONE OTP EMAIL QUEUE ERROR:", emailErr.message);

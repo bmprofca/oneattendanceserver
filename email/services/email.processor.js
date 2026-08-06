@@ -179,12 +179,38 @@ export async function queuePayrollEmail({
   });
 }
 
+export async function queueDeleteAccountOTPEmail({
+  to,
+  userName,
+  otp,
+  subject,
+  fromEmail,
+  fromName,
+  replyTo,
+  maxAttempts = 3,
+}) {
+  return queueEmail({
+    type: "delete_account_otp",
+    maxAttempts,
+    payload: {
+      to,
+      userName,
+      otp,
+      subject,
+      fromEmail,
+      fromName,
+      replyTo,
+    },
+  });
+}
+
 export async function queueLoginAlertEmail({
   to,
   userName,
   session,
   loginTime,
   dashboardUrl,
+  subject,
   fromEmail,
   fromName,
   replyTo,
@@ -200,6 +226,7 @@ export async function queueLoginAlertEmail({
       session,
       loginTime,
       dashboardUrl,
+      subject,
       fromEmail,
       fromName,
       replyTo
@@ -396,6 +423,7 @@ export const EMAIL_SENDERS = Object.freeze({
   login_otp: sendLoginOTPEmail,
   forgot_password_otp: sendForgotPasswordOTPEmail,
   phone_update_otp: sendPhoneUpdateOTPEmail,
+  delete_account_otp: sendDeleteAccountOTPEmail,
 
   welcome: sendWelcomeEmail,
   login_alert: sendLoginAlertEmail,

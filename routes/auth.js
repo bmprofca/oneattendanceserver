@@ -18,7 +18,7 @@ import { sendOtpSms } from "../utils/sms.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
 import {
   WEB_GOOGLE_CLIENT_ID, APP_GOOGLE_CLIENT_ID, NODE_ENV, FACEBOOK_APP_ID,
-  FACEBOOK_APP_SECRET, FRONTEND_URL, TRUECALLER_CLIENT_ID
+  FACEBOOK_APP_SECRET, FRONTEND_URL, TRUECALLER_CLIENT_ID, EMAIL_USER
 } from "../config/config.js";
 import { normalizeIndianMobile } from "../utils/mobile.js";
 
@@ -152,6 +152,9 @@ const sendLoginAlert = async (user, session, req, normalizedPlatform) => {
       userName: user.name || user.email || "User",
       session: enrichedSession,
       dashboardUrl: FRONTEND_URL + "/settings?tab=security",
+      fromEmail: EMAIL_USER,
+      fromName: "OneAttendance Security",
+      replyTo: user.email
     });
   } catch (e) {
     console.error("LOGIN ALERT EMAIL ERROR:", e.message);
@@ -318,7 +321,14 @@ router.post("/signup/request-otp", async (req, res) => {
 
     if (signupType === "email" && normalizedEmail) {
       try {
-        await queueSignupOTPEmail({ to: normalizedEmail, userName: normalizedEmail || "User", otp });
+        await queueSignupOTPEmail({
+          to: normalizedEmail,
+          userName: normalizedEmail || "User",
+          otp,
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
+        });
       } catch (emailErr) {
         console.error("SIGNUP OTP EMAIL QUEUE ERROR:", emailErr.message);
         return sendError(res, 500, "Failed to send signup OTP email");
@@ -398,6 +408,9 @@ router.post("/signup/verify-otp", async (req, res) => {
           to: normalizedEmail,
           userName: name || normalizedEmail || "User",
           dashboardUrl: FRONTEND_URL + "/home",
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
         });
       } catch (emailErr) {
         console.error("WELCOME EMAIL QUEUE ERROR:", emailErr.message);
@@ -453,7 +466,14 @@ router.post("/login/request-otp", async (req, res) => {
     const otpEmailTo = loginType === "email" ? identifier : user.email?.toLowerCase()?.trim() || null;
     if (otpEmailTo) {
       try {
-        await queueLoginOTPEmail({ to: otpEmailTo, otp, userName: user.name || otpEmailTo || "User" });
+        await queueLoginOTPEmail({
+          to: otpEmailTo,
+          otp,
+          userName: user.name || otpEmailTo || "User",
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
+        });
       } catch (emailErr) {
         console.error("LOGIN OTP EMAIL QUEUE ERROR:", emailErr.message);
       }
@@ -575,7 +595,14 @@ router.post("/forgot-password/request-otp", async (req, res) => {
     console.log("Forget Password OTP:", otp);
     if (forgotType === "email" && identifier) {
       try {
-        await queueForgotPasswordOTPEmail({ to: identifier, userName: "User", otp });
+        await queueForgotPasswordOTPEmail({
+          to: identifier,
+          userName: "User",
+          otp,
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
+        });
       } catch (emailErr) {
         console.error("FORGOT PASSWORD OTP EMAIL QUEUE ERROR:", emailErr.message);
         return sendError(res, 500, "Failed to send forgot password OTP email");
@@ -838,6 +865,9 @@ router.post("/continue/google", async (req, res) => {
           userName: user.name || email || "User",
           password: randomPassword,
           dashboardUrl: FRONTEND_URL + "/home",
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
         });
       } catch (emailErr) {
         console.error("WELCOME EMAIL QUEUE ERROR:", emailErr.message);

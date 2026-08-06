@@ -1,3 +1,44 @@
+import { getEnumObject } from "../../utils/constantsValidator.js";
+import {
+  DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES, HALF_DAY_TYPES,
+  ATTENDANCE_METHODS, LEAVE_TYPES, LEAVE_STATUSES
+} from "../../constants/constants_values.js";
+
+const ALL_ENUM_MAPS = [
+  DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES, HALF_DAY_TYPES,
+  ATTENDANCE_METHODS, LEAVE_TYPES, LEAVE_STATUSES
+];
+
+export const formatEnumValue = (value) => {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "object") {
+    if (value.label) return value.label;
+    if (value.name) return value.name;
+    if (value.title) return value.title;
+    if (value.value) return formatEnumValue(value.value);
+  }
+  const str = String(value).trim();
+  if (!str) return "-";
+
+  for (const enumMap of ALL_ENUM_MAPS) {
+    const enumObj = getEnumObject(enumMap, str);
+    if (enumObj && enumObj.label && enumObj.label !== str) {
+      return enumObj.label;
+    }
+  }
+
+  if (str.includes("_") || str === str.toLowerCase()) {
+    return str
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  return str;
+};
+
+export const valueOrDash = (value) => formatEnumValue(value);
+
 export const getBaseEmailTemplate = ({
     title = "OneAttendance",
     headerColor = "#2563eb",

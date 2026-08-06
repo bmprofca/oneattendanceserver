@@ -14,6 +14,8 @@ export const sendWelcomeEmail = async ({
 }) => {
     if (!to) throw new Error("Welcome email requires a recipient email address.");
 
+    const senderEmail = fromEmail || EMAIL_USER;
+    const senderName = fromName || "OneAttendance";
     const finalSubject = subject || `Welcome to OneAttendance, ${userName}!`;
  
     const passwordHtml = password
@@ -79,8 +81,8 @@ export const sendWelcomeEmail = async ({
     const text = `Hi ${userName},\n\nWelcome to OneAttendance! Your account has been created successfully.\n${password ? `Your temporary password is: ${password}\nPlease change it after your first login.\n` : ""}\nYou can now track your attendance, manage shifts, and more.\n\nGet started: ${dashboardUrl}\n\nBest regards,\nThe OneAttendance Team`;
 
     await transporter.sendMail({
-        from: getSender(fromName, fromEmail),
-        replyTo: replyTo || fromEmail,
+        from: getSender(senderName, senderEmail),
+        replyTo: replyTo || senderEmail,
         to,
         subject: finalSubject,
         text,

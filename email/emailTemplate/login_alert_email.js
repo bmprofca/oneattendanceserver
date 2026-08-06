@@ -19,17 +19,22 @@ export const sendLoginAlertEmail = async ({
     session = {},
     loginTime = new Date(),
     dashboardUrl = "#",
+    subject,
     fromEmail = EMAIL_USER,
     fromName = "OneAttendance Security",
     replyTo,
 }) => {
     if (!to) throw new Error("Login alert requires a recipient email address.");
 
-    const ip = session.ip_v4 || session.ip_v6 || session.ip || "Unknown IP";
-    const device = session.device_name || session.deviceName || "Unknown device";
-    const userAgent = session.user_agent || session.userAgent || "";
-    const latitude = session.latitude;
-    const longitude = session.longitude;
+    const senderEmail = fromEmail || EMAIL_USER;
+    const senderName = fromName || "OneAttendance Security";
+    const finalSubject = subject || "New sign-in to your OneAttendance account";
+    const sess = session || {};
+    const ip = sess.ip_v4 || sess.ip_v6 || sess.ip || "Unknown IP";
+    const device = sess.device_name || sess.deviceName || "Unknown device";
+    const userAgent = sess.user_agent || sess.userAgent || "";
+    const latitude = sess.latitude;
+    const longitude = sess.longitude;
     const locationLink = getLocationLink(latitude, longitude);
     const locationDisplay = locationLink
         ? `<a href="${locationLink}" style="color: #2563eb; text-decoration: none;">View on map (${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)})</a>`
@@ -39,8 +44,6 @@ export const sendLoginAlertEmail = async ({
         dateStyle: "full",
         timeStyle: "long",
     }).format(new Date(loginTime));
-
-    const subject = "New sign-in to your OneAttendance account";
 
     const html = getBaseEmailTemplate({
         title: "Login Alert",
@@ -97,10 +100,10 @@ export const sendLoginAlertEmail = async ({
     const text = `New sign-in to your OneAttendance account\n\nTime: ${formattedTime}\nIP: ${ip}\nDevice: ${device}\nLocation: ${latitude && longitude ? `https://maps.google.com/?q=${latitude},${longitude}` : "Not available"}\n\nIf this was you, no action is needed. If not, please secure your account: ${dashboardUrl}`;
 
     await transporter.sendMail({
-        from: getSender(fromName, fromEmail),
-        replyTo: replyTo || fromEmail,
+        from: getSender(senderName, senderEmail),
+        replyTo: replyTo || senderEmail,
         to,
-        subject,
+        subject: finalSubject,
         text,
         html,
     });

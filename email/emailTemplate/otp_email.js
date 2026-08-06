@@ -49,11 +49,12 @@ const sendOTPEmail = async ({
         `,
     });
 
-    const text = `Your OTP is: ${otp}. It is valid for 5 minutes. Do not share this code with anyone.`;
+    const senderEmail = fromEmail || EMAIL_USER;
+    const senderName = fromName || "OneAttendance";
 
     await getTransporter().sendMail({
-        from: getSender(fromName, fromEmail),
-        replyTo: replyTo || fromEmail,
+        from: getSender(senderName, senderEmail),
+        replyTo: replyTo || senderEmail,
         to,
         subject,
         text,

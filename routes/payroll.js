@@ -27,6 +27,7 @@ import { sendError, sendSuccess, buildMeta } from "../utils/sendResponse.js";
 import { queuePayrollEmail } from "../email/services/email.processor.js";
 import { generatePayslipPdf } from "../utils/generatePayslipPdf.js";
 import { formatIST, formatUTCToIST } from "../utils/time.js";
+import { EMAIL_USER } from "../config/config.js";
 
 const router = express.Router();
 
@@ -185,7 +186,10 @@ router.post("/generate-payroll", auth(PAY.MNG), async (req, res) => {
           }
           await queuePayrollEmail({
             to: receiverEmail,
-            subject: `Salary Slip - ${payroll.company_name}`,
+            subject: `Salary Slip - ${payroll.company_name || "OneAttendance"}`,
+            fromEmail: EMAIL_USER,
+            fromName: payroll.company_name || "OneAttendance",
+            replyTo: req.user?.email || EMAIL_USER,
             payroll,
             components: payslipDetails.components,
             adjustments: payslipDetails.adjustments,
@@ -709,7 +713,18 @@ router.post("/send-email", auth(PAY.MNG), async (req, res) => {
           failed.push({ payroll_entry_id: payrollId, employee_name: payroll.employee_name, error: "Employee email not found" });
           continue;
         }
-        await queuePayrollEmail({ to: receiverEmail, subject: `Salary Slip - ${payroll.company_name}`, payroll, components, adjustments, details, type: type || "summary" });
+        await queuePayrollEmail({
+          to: receiverEmail,
+          subject: `Salary Slip - ${payroll.company_name || "OneAttendance"}`,
+          fromEmail: EMAIL_USER,
+          fromName: payroll.company_name || "OneAttendance",
+          replyTo: req.user?.email || EMAIL_USER,
+          payroll,
+          components,
+          adjustments,
+          details,
+          type: type || "summary"
+        });
         sent.push({ payroll_entry_id: payrollId, employee_name: payroll.employee_name, email: receiverEmail });
       } catch (error) {
         console.error(`PAYROLL EMAIL ERROR [${payrollId}]`, error);

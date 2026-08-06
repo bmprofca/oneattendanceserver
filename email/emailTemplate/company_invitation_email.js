@@ -1,10 +1,7 @@
 import { transporter, getSender } from "../../config/mail.config.js";
-import { getBaseEmailTemplate } from "./base_template.js";
+import { getBaseEmailTemplate, valueOrDash, formatEnumValue } from "./base_template.js";
 import { EMAIL_USER } from "../../config/config.js";
 import { formatIST, formatTime12Hour } from "../../utils/time.js";
-
-
-const valueOrDash = (value) => value ?? "-";
 
 const formatDate = (value) => {
     if (!value) return "-";
@@ -61,9 +58,10 @@ const formatAttendanceMethods = (attendanceMethods = []) => {
     if (!Array.isArray(attendanceMethods) || attendanceMethods.length === 0) return "-";
     return attendanceMethods
         .map((item) => {
-            const method = typeof item === "string" ? item : item.method;
+            const methodRaw = typeof item === "string" ? item : item?.method;
+            const methodLabel = formatEnumValue(methodRaw);
             const isAuto = typeof item === "object" && item?.is_auto ? "Auto" : "Manual";
-            return method ? `${method} (${isAuto})` : null;
+            return methodLabel !== "-" ? `${methodLabel} (${isAuto})` : null;
         })
         .filter(Boolean)
         .join(", ");
@@ -92,18 +90,20 @@ export const sendCompanyInvitationEmail = async ({
     attendanceMethods = [],
 }) => {
     if (!to) throw new Error("Company invitation email requires the employee recipient email.");
-    if (!inviteToken && !invite.invite_token) {
+    if (!inviteToken && !invite.invite_token && !invite.token) {
         throw new Error("Company invitation email requires inviteToken.");
     }
 
-    const token = inviteToken || invite.invite_token;
-    const employeeName = invitedUser.name || "Employee";
-    const companyName = company.name || company.legal_name || "the company";
-    const inviterName = invitedBy.name || "Admin";
+    const senderEmail = fromEmail || EMAIL_USER;
+    const senderName = fromName || "OneAttendance Invite Desk";
+    const token = inviteToken || invite.invite_token || invite.token;
+    const employeeName = invitedUser?.name || "Employee";
+    const companyName = company?.name || company?.legal_name || "the company";
+    const inviterName = invitedBy?.name || "Admin";
     const quickAcceptUrl = buildAcceptUrl({ acceptUrl, appUrl, inviteToken: token });
     const finalSubject = subject || `Invitation to join ${companyName} on OneAttendance`;
     const methodsText = formatAttendanceMethods(attendanceMethods);
-    const weekendsText = formatWeekends(invite.weekends);
+    const weekendsText = formatWeekends(invite?.weekends);
 
     const acceptButton = quickAcceptUrl
         ? `
@@ -132,27 +132,27 @@ export const sendCompanyInvitationEmail = async ({
             <table style="width: 100%; border-collapse: collapse; font-size: 15px; margin-bottom: 24px;">
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb; width: 45%;">Designation</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite.designation)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite?.designation)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Employment Type</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite.employment_type)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite?.employment_type)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Salary Type</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite.salary_type)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(invite?.salary_type)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Work Shift</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatTime12h(invite.shift_start)} - ${formatTime12h(invite.shift_end)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatTime12h(invite?.shift_start)} - ${formatTime12h(invite?.shift_end)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Break Duration</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatMinutes(invite.break_minutes)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatMinutes(invite?.break_minutes)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Grace Period</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatMinutes(invite.grace_minutes)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatMinutes(invite?.grace_minutes)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Weekly Offs</td>
@@ -164,7 +164,7 @@ export const sendCompanyInvitationEmail = async ({
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Expires On</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatDate(invite.expires_at)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatDate(invite?.expires_at)}</td>
                 </tr>
             </table>
 
@@ -183,11 +183,11 @@ export const sendCompanyInvitationEmail = async ({
         `,
     });
 
-    const text = `Hello ${employeeName},\n\n${inviterName} has invited you to join ${companyName} as an employee.\n\nYour invite token: ${token}\n${quickAcceptUrl ? `Accept now: ${quickAcceptUrl}\n` : "Use this token inside the app to accept.\n"}This invitation expires on ${formatDate(invite.expires_at)}.\n\nShift: ${formatTime12h(invite.shift_start)} – ${formatTime12h(invite.shift_end)}\nDesignation: ${valueOrDash(invite.designation)}`;
+    const text = `Hello ${employeeName},\n\n${inviterName} has invited you to join ${companyName} as an employee.\n\nYour invite token: ${token}\n${quickAcceptUrl ? `Accept now: ${quickAcceptUrl}\n` : "Use this token inside the app to accept.\n"}This invitation expires on ${formatDate(invite?.expires_at)}.\n\nShift: ${formatTime12h(invite?.shift_start)} – ${formatTime12h(invite?.shift_end)}\nDesignation: ${valueOrDash(invite?.designation)}`;
 
     await transporter.sendMail({
-        from: getSender(fromName, fromEmail),
-        replyTo: replyTo || invitedBy.email || fromEmail,
+        from: getSender(senderName, senderEmail),
+        replyTo: replyTo || invitedBy?.email || senderEmail,
         to,
         subject: finalSubject,
         text,

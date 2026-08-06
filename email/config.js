@@ -27,6 +27,7 @@ export const EMAIL_TEMPLATES = {
     login_otp: "email/emailTemplate/otp_email.js",
     forgot_password_otp: "email/emailTemplate/otp_email.js",
     phone_update_otp: "email/emailTemplate/otp_email.js",
+    delete_account_otp: "email/emailTemplate/otp_email.js",
 
     login_alert: "email/emailTemplate/login_alert_email.js",
     welcome:"email/emailTemplate/welcome_email.js",
@@ -44,6 +45,7 @@ export const EMAIL_PRIORITIES = {
     login_otp: "high",
     forgot_password_otp: "high",
     phone_update_otp: "high",
+    delete_account_otp: "high",
 
     welcome:"medium",
     login_alert: "medium",

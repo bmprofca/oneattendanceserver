@@ -1,5 +1,5 @@
 import { transporter, getSender } from "../../config/mail.config.js";
-import { getBaseEmailTemplate } from "./base_template.js";
+import { getBaseEmailTemplate, valueOrDash, formatEnumValue } from "./base_template.js";
 import { EMAIL_USER } from "../../config/config.js";
 
 const formatDate = (value) => {
@@ -10,8 +10,6 @@ const formatDate = (value) => {
         year: "numeric",
     }).format(new Date(value));
 };
-
-const valueOrDash = (value) => value ?? "-";
 
 export const sendLeaveRequestEmail = async ({
     to,
@@ -30,14 +28,16 @@ export const sendLeaveRequestEmail = async ({
 }) => {
     if (!to) throw new Error("Leave request email requires at least one admin recipient.");
 
+    const senderEmail = fromEmail || EMAIL_USER;
+    const senderName = fromName || "OneAttendance Leave Desk";
     const adminRecipients = Array.isArray(to) ? to.join(",") : to;
-    const employeeName = requester.name || employee.name || "Employee";
-    const employeeEmail = requester.email || employee.email || replyTo || "";
+    const employeeName = requester?.name || employee?.name || "Employee";
+    const employeeEmail = requester?.email || employee?.email || replyTo || "";
     const finalSubject =
         subject ||
-        `Leave request from ${employeeName} - ${formatDate(leave.start_date)} to ${formatDate(leave.end_date)}`;
+        `Leave request from ${employeeName} - ${formatDate(leave?.start_date)} to ${formatDate(leave?.end_date)}`;
 
-    const attachmentRows = attachments.length
+    const attachmentRows = Array.isArray(attachments) && attachments.length
         ? attachments
               .map(
                   (attachment) => `
@@ -56,7 +56,7 @@ export const sendLeaveRequestEmail = async ({
         headerColor: "#0f766e",
         headerHtml: `
             <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700;">New Leave Application</h1>
-            <p style="color: #ccfbf1; margin: 8px 0 0 0; font-size: 15px;">${valueOrDash(company.name)}</p>
+            <p style="color: #ccfbf1; margin: 8px 0 0 0; font-size: 15px;">${valueOrDash(company?.name)}</p>
         `,
         contentHtml: `
             <p style="margin: 0 0 16px; font-size: 16px; color: #1f2937;">Hello <strong>${adminName}</strong>,</p>
@@ -75,38 +75,38 @@ export const sendLeaveRequestEmail = async ({
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Employee Code</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(employee.employee_code)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(employee?.employee_code)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Designation</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(employee.designation)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(employee?.designation)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Leave Type</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${leaveConfig.name || leaveConfig.code || "-"}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${leaveConfig?.name ? leaveConfig.name : valueOrDash(leaveConfig?.code || leaveConfig)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Leave Dates</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatDate(leave.start_date)} to ${formatDate(leave.end_date)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${formatDate(leave?.start_date)} to ${formatDate(leave?.end_date)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Total Days</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(leave.total_days)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(leave?.total_days)}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Half Day</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${leave.is_half_day ? leave.half_day_type || "Yes" : "No"}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${leave?.is_half_day ? (formatEnumValue(leave?.half_day_type) !== "-" ? formatEnumValue(leave?.half_day_type) : "Half Day") : "No"}</td>
                 </tr>
                 <tr>
                     <td style="padding: 12px 0; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Available Balance</td>
-                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(leaveBalance.remaining)}</td>
+                    <td style="padding: 12px 0; text-align: right; font-weight: 500; color: #1f2937; border-bottom: 1px solid #e5e7eb;">${valueOrDash(leaveBalance?.remaining)}</td>
                 </tr>
                 ${attachmentRows}
             </table>
 
             <div style="background-color: #f8fafc; border-left: 4px solid #0f766e; padding: 16px; border-radius: 4px;">
                 <p style="margin: 0 0 4px; font-size: 13px; color: #475569; font-weight: 600;">Reason</p>
-                <p style="margin: 0; font-size: 14px; color: #1f2937; line-height: 1.5;">${valueOrDash(leave.reason)}</p>
+                <p style="margin: 0; font-size: 14px; color: #1f2937; line-height: 1.5;">${valueOrDash(leave?.reason)}</p>
             </div>
         `,
         footerHtml: `
@@ -119,13 +119,13 @@ export const sendLeaveRequestEmail = async ({
         `,
     });
 
-    const text = `${employeeName} requested ${leave.total_days || "-"} day(s) leave from ${formatDate(
-        leave.start_date
-    )} to ${formatDate(leave.end_date)}. Reason: ${leave.reason || "-"}`;
+    const text = `${employeeName} requested ${leave?.total_days || "-"} day(s) leave from ${formatDate(
+        leave?.start_date
+    )} to ${formatDate(leave?.end_date)}. Reason: ${leave?.reason || "-"}`;
 
     await transporter.sendMail({
-        from: getSender(fromName, fromEmail),
-        replyTo: replyTo || employeeEmail || fromEmail,
+        from: getSender(senderName, senderEmail),
+        replyTo: replyTo || employeeEmail || senderEmail,
         to: adminRecipients,
         subject: finalSubject,
         text,

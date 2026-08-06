@@ -29,7 +29,7 @@ import {
   isSameDate, isBeforeJoining, isDateTimeBefore, isDateTimeAfter, isDateTimeSame,
   getDateTimeDiffDays, getISTNow, toIST, compareDates, compareDateTimes, formatUTCToIST,
 } from "../utils/time.js";
-import { FRONTEND_URL, FACE_SERVICE_URL as configFaceServiceUrl } from "../config/config.js";
+import { FRONTEND_URL, FACE_SERVICE_URL as configFaceServiceUrl, EMAIL_USER } from "../config/config.js";
 import { normalizeIndianMobile } from "../utils/mobile.js";
 
 
@@ -344,7 +344,14 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
 
     if (signupType === "email" && normalizedEmail) {
       try {
-        await queueSignupOTPEmail({ to: normalizedEmail, userName: normalizedEmail, otp });
+        await queueSignupOTPEmail({
+          to: normalizedEmail,
+          userName: normalizedEmail,
+          otp,
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
+        });
       } catch (err) {
         console.error("EMPLOYEE OTP EMAIL ERROR:", err);
         return sendError(res, 500, "Failed to send OTP email");
@@ -627,7 +634,10 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
           to: normalizedEmail,
           userName: normalizedName,
           password: generatedPassword,
-          dashboardUrl: FRONTEND_URL + "/home"
+          dashboardUrl: FRONTEND_URL + "/home",
+          fromEmail: EMAIL_USER,
+          fromName: "OneAttendance",
+          replyTo: EMAIL_USER
         });
       } catch (err) {
         console.error("WELCOME EMAIL ERROR:", err);

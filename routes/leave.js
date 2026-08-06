@@ -1,7 +1,7 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import { LEAVE_TYPES, LEAVE_STATUSES, DESIGNATIONS, } from "../constants/constants_values.js";
+import { LEAVE_TYPES, LEAVE_STATUSES, DESIGNATIONS, HALF_DAY_TYPES, } from "../constants/constants_values.js";
 import { saveMediaFromUrl, buildFileUrl } from "../utils/fileService.js";
 import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
 import {
@@ -1052,11 +1052,13 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
     const leaveRows = [];
     let total_days = 0;
     let currentRange = null;
+    const skippedDates = [];
     eachDateBetween(start_date, end_date, (dateStr) => {
       const isHoliday = holidaySet.has(dateStr);
       const { is_weekend } = weekendInfo(dateStr, employee.weekends);
       const excludeWeekend = Number(config.exclude_weekends) === 1 && is_weekend;
       if (isHoliday || excludeWeekend) {
+        skippedDates.push(`${dateStr} (${isHoliday ? "holiday" : "weekend"})`);
         if (currentRange) { leaveRows.push(currentRange); currentRange = null; }
         return;
       }
@@ -1074,7 +1076,12 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
       }
     });
     if (currentRange) leaveRows.push(currentRange);
-    if (!leaveRows.length) return sendError(res, 400, "No valid leave days found");
+    if (!leaveRows.length) {
+      const reason = skippedDates.length
+        ? `All dates between ${start_date} and ${end_date} fall on weekends or holidays: ${skippedDates.slice(0, 5).join(", ")}${skippedDates.length > 5 ? ` and ${skippedDates.length - 5} more` : ""}`
+        : `No working days found between ${start_date} and ${end_date}`;
+      return sendError(res, 400, reason);
+    }
 
     for (const row of leaveRows) {
       const [existingLeaves] = await conn.query(
@@ -1157,7 +1164,7 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
     const company_id = Number(req.company?.id);
     if (!Number.isInteger(approver_id) || approver_id <= 0 || !Number.isInteger(company_id) || company_id <= 0) return sendError(res, 401, "Unauthorized access");
 
-    let { id, start_date = null, end_date = null, is_half_day = null, half_day_type = null } = req.body;
+    let { id, start_date = null, end_date = null, is_half_day = null, half_day_type = null, remarks = null } = req.body;
     id = Number(id);
     if (is_half_day !== null) is_half_day = (is_half_day === true || is_half_day === 1 || is_half_day === "1" || is_half_day === "true") ? 1 : 0;
     half_day_type = typeof half_day_type === "string" ? half_day_type.trim().toLowerCase() : null;
@@ -1218,7 +1225,7 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
       if (!isHoliday && !excludeWeekend) total_days += is_half_day ? 0.5 : 1;
     });
     total_days = Number(total_days.toFixed(2));
-    if (!total_days) return sendError(res, 400, "No valid leave days");
+    if (!total_days) return sendError(res, 400, `No valid leave days between ${start_date} and ${end_date} — all dates fall on weekends or holidays (exclude_weekends: ${config.exclude_weekends ? "yes" : "no"}, holidays found: ${holidaySet.size})`);
 
     const [overlaps] = await conn.query(
       `SELECT id, start_date, end_date, is_half_day, half_day_type FROM employee_leaves
@@ -1239,8 +1246,8 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
     const newLeaveYear = getYearFromDate(start_date);
 
     await conn.query(
-      `UPDATE employee_leaves SET start_date=?, end_date=?, total_days=?, is_half_day=?, half_day_type=?, status='approved', approved_by=?, approved_at=?, approval_remarks=NULL, updated_by=? WHERE id=?`,
-      [start_date, end_date, total_days, is_half_day, is_half_day ? half_day_type : null, approver_id, approvedAt, approver_id, id]
+      `UPDATE employee_leaves SET start_date=?, end_date=?, total_days=?, is_half_day=?, half_day_type=?, status='approved', approved_by=?, approved_at=?, approval_remarks=?, updated_by=? WHERE id=?`,
+      [start_date, end_date, total_days, is_half_day, is_half_day ? half_day_type : null, approver_id, approvedAt, remarks, approver_id, id]
     );
 
     const oldDays = Number(leave.total_days);
@@ -1273,12 +1280,12 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
           to: employee.email,
           subject: `Leave Approved - ${config.name}`,
           fromEmail: EMAIL_USER,
-          fromName: company.name || "OneAttendance",
+          fromName: company?.name ? `${company.name} Leave Desk` : "OneAttendance",
           replyTo: approver?.email || null,
           requester: { id: employee.user_id, name: employee.name, email: employee.email },
           employee: { id: employee.id, employee_code: employee.employee_code, designation: getEnumObject(DESIGNATIONS, employee.designation), name: employee.name, email: employee.email },
           company: { id: company.id, name: company.name },
-          leave: { start_date, end_date, total_days, is_half_day, half_day_type, reason: leave.reason, approval_remarks: null, approved_at: approvedAt },
+          leave: { start_date, end_date, total_days, is_half_day, half_day_type, reason: leave.reason, approval_remarks: remarks, approved_at: approvedAt },
           leaveConfig: { id: config.id, name: config.name, code: config.code },
           approver: { id: approver?.id, name: approver?.name || "Approver", email: approver?.email },
           leaveBalance: balance ? { total_allocated: Number(balance.total_allocated), used: Number(balance.used), remaining: Number(balance.remaining) } : {},
@@ -1400,16 +1407,25 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
         const leaveYear = getYearFromDate(formatIST(leave.start_date, "YYYY-MM-DD"));
         await adjustEmployeeLeaveBalance({ conn, company_id, employee_id: leave.employee_id, leave_config_id: leave.leave_config_id, year: leaveYear, days: Number(leave.total_days), mode: "restore", user_id: approver_id });
         await conn.query(`UPDATE employee_leaves SET status='rejected', approved_by=?, approved_at=NOW(), approval_remarks=?, updated_by=? WHERE id=?`, [approver_id, remarks, approver_id, leave.id]);
+        const [[rejleave]] = await conn.query(`SELECT approved_at FROM employee_leaves WHERE id = ?`, [leave.id]);
         processedIds.push(leave.id);
         if (leave.employee_email) {
+          let rejBalance = null;
+          const [[rejBal]] = await conn.query(`SELECT total_allocated, used, remaining FROM employee_leave_balances WHERE company_id=? AND employee_id=? AND leave_config_id=? AND year=? AND is_deleted=0 LIMIT 1`, [company_id, leave.employee_id, leave.leave_config_id, leaveYear]);
+          rejBalance = rejBal ? { total_allocated: Number(rejBal.total_allocated), used: Number(rejBal.used), remaining: Number(rejBal.remaining) } : null;
           emailJobs.push(queueLeaveRejectionEmail({
-            to: leave.employee_email, replyTo: leave.approver_email || null,
+            to: leave.employee_email,
+            subject: `Leave Rejected - ${leave.leave_name || "Leave"}`,
+            fromEmail: EMAIL_USER,
+            fromName: leave.company_name ? `${leave.company_name} Leave Desk` : "OneAttendance",
+            replyTo: leave.approver_email || req.user?.email || EMAIL_USER,
             requester: { id: leave.user_id, name: leave.employee_name, email: leave.employee_email },
             employee: { id: leave.employee_id, employee_code: leave.employee_code, designation: getEnumObject(DESIGNATIONS, leave.designation) },
             company: { id: leave.company_id, name: leave.company_name },
-            leave: { id: leave.id, start_date: formatIST(leave.start_date, "YYYY-MM-DD"), end_date: formatIST(leave.end_date, "YYYY-MM-DD"), total_days: Number(leave.total_days), reason: leave.reason, approval_remarks: remarks },
+            leave: { id: leave.id, start_date: formatIST(leave.start_date, "YYYY-MM-DD"), end_date: formatIST(leave.end_date, "YYYY-MM-DD"), total_days: Number(leave.total_days), reason: leave.reason, approval_remarks: remarks, approved_at: rejleave.approved_at },
             leaveConfig: { id: leave.leave_config_id, name: leave.leave_name, code: leave.leave_code },
             approver: { id: approver_id, name: leave.approver_name || "Approver", email: leave.approver_email },
+            leaveBalance: rejBalance
           }));
         }
         continue;
@@ -1444,7 +1460,11 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
 
       if (leave.employee_email) {
         emailJobs.push(queueLeaveAcceptanceEmail({
-          to: leave.employee_email, replyTo: leave.approver_email || null,
+          to: leave.employee_email,
+          subject: `Leave Approved - ${leave.leave_name || "Leave"}`,
+          fromEmail: EMAIL_USER,
+          fromName: leave.company_name ? `${leave.company_name} Leave Desk` : "OneAttendance",
+          replyTo: leave.approver_email || req.user?.email || EMAIL_USER,
           requester: { id: leave.user_id, name: leave.employee_name, email: leave.employee_email },
           employee: { id: leave.employee_id, employee_code: leave.employee_code, designation: getEnumObject(DESIGNATIONS, leave.designation) },
           company: { id: leave.company_id, name: leave.company_name },
@@ -1640,11 +1660,13 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
     const leaveRows = [];
     let total_days = 0;
     let currentRange = null;
+    const skippedDates = [];
     eachDateBetween(start_date, end_date, (dateStr) => {
       const isHoliday = holidaySet.has(dateStr);
       const { is_weekend } = weekendInfo(dateStr, employee.weekends);
       const excludeWeekend = Number(config.exclude_weekends) === 1 && is_weekend;
       if (isHoliday || excludeWeekend) {
+        skippedDates.push(`${dateStr} (${isHoliday ? "holiday" : "weekend"})`);
         if (currentRange) { leaveRows.push(currentRange); currentRange = null; }
         return;
       }
@@ -1662,7 +1684,12 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
       }
     });
     if (currentRange) leaveRows.push(currentRange);
-    if (!leaveRows.length) return sendError(res, 400, "No valid leave days found");
+    if (!leaveRows.length) {
+      const reason = skippedDates.length
+        ? `All dates between ${start_date} and ${end_date} fall on weekends or holidays: ${skippedDates.slice(0, 5).join(", ")}${skippedDates.length > 5 ? ` and ${skippedDates.length - 5} more` : ""}`
+        : `No working days found between ${start_date} and ${end_date}`;
+      return sendError(res, 400, reason);
+    }
 
     for (const row of leaveRows) {
       const [existing] = await conn.query(
@@ -1760,11 +1787,11 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
     const emailPayload = {
       subject: `New Leave Request - ${employee.name}`,
       fromEmail: EMAIL_USER,
-      fromName: company.name || "OneAttendance",
+      fromName: company?.name ? `${company.name} Leave Desk` : "OneAttendance",
       requester: { id: employee.user_id, name: employee.name, email: employee.email },
       employee: { id: employee.id, employee_code: employee.employee_code, designation: getEnumObject(DESIGNATIONS, employee.designation), name: employee.name, email: employee.email },
       company: { id: company.id, name: company.name },
-      leave: { start_date, end_date, total_days, is_half_day, half_day_type, reason },
+      leave: { start_date, end_date, total_days, is_half_day, half_day_type: getEnumObject(HALF_DAY_TYPES, half_day_type), reason },
       leaveConfig: { id: config.id, code: config.code, name: config.name, is_paid: config.is_paid },
       leaveBalance: updatedBalance || {},
       attachments: insertedAttachments
