@@ -2,6 +2,26 @@ import db from "../config/db.js";
 import { sendError } from "../utils/sendResponse.js";
 import { checkCompanyPermissions } from "../utils/checkPermissions.js";
 
+/**
+ * Fire-and-forget session touch update.
+ * Uses pool.query (no connection hold) and swallows errors
+ * so it never blocks the request.
+ */
+function touchSession(sessionId, renewExpiry) {
+  const sql = renewExpiry
+    ? `UPDATE sessions
+       SET expires_at = DATE_ADD(NOW(), INTERVAL 30 DAY),
+           last_used_at = NOW()
+       WHERE id = ?`
+    : `UPDATE sessions
+       SET last_used_at = NOW()
+       WHERE id = ?`;
+
+  db.query(sql, [sessionId]).catch((err) => {
+    console.error("SESSION TOUCH ERROR (non-blocking):", err.message);
+  });
+}
+
 const auth = (permissions = [], { allow_owner = true, owner_only = false, employee_only = false } = {}) => {
 
   return async (req, res, next) => {
@@ -60,6 +80,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       );
 
       if (!sessionData) {
+        conn.release();
+        conn = null;
         return sendError(
           res,
           401,
@@ -69,6 +91,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       }
 
       if (!sessionData.is_active || sessionData.forced_logged_out) {
+        conn.release();
+        conn = null;
         return sendError(
           res,
           401,
@@ -81,6 +105,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       const expiresAt = new Date(sessionData.expires_at).getTime();
 
       if (!expiresAt || expiresAt <= now) {
+        conn.release();
+        conn = null;
         return sendError(
           res,
           401,
@@ -89,6 +115,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       }
 
       if (!sessionData.user_active || sessionData.is_deleted) {
+        conn.release();
+        conn = null;
         return sendError(
           res,
           403,
@@ -97,7 +125,7 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       }
 
       const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-
+      const FIFTEEN_DAYS_MS = 15 * 24 * 60 * 60 * 1000;
       const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
       const lastUsedAt = sessionData.last_used_at
@@ -105,37 +133,15 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
 
       let updatedExpiresAt = sessionData.expires_at;
 
-      if (expiresAt <= now + THIRTY_DAYS_MS) {
-
-        await conn.query(
-          `
-          UPDATE sessions
-          SET
-            expires_at = DATE_ADD(
-              NOW(),
-              INTERVAL 30 DAY
-            ),
-            last_used_at = NOW()
-          WHERE id = ?
-          `,
-          [sessionData.session_id]
-        );
-
+      // Only renew when less than half the window remains (< 15 days left)
+      if (expiresAt - now < FIFTEEN_DAYS_MS) {
+        // Fire-and-forget — don't await, don't hold connection
+        touchSession(sessionData.session_id, true);
         updatedExpiresAt = new Date(now + THIRTY_DAYS_MS);
-
       }
-
+      // Throttle last_used_at to once every 5 minutes
       else if (now - lastUsedAt > FIVE_MINUTES_MS) {
-
-        await conn.query(
-          `
-          UPDATE sessions
-          SET last_used_at = NOW()
-          WHERE id = ?
-          `,
-          [sessionData.session_id]
-        );
-
+        touchSession(sessionData.session_id, false);
       }
 
       req.user = {
@@ -162,6 +168,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
 
         company_id = Number(rawCompanyId);
         if (!Number.isInteger(company_id) || company_id <= 0) {
+          conn.release();
+          conn = null;
           return sendError(
             res,
             400,
@@ -181,6 +189,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
         employee_only;
 
       if (!needsCompanyCheck) {
+        conn.release();
+        conn = null;
         return next();
       }
 
@@ -203,6 +213,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
       }
       else {
         if (!owner_only) {
+          conn.release();
+          conn = null;
           return sendError(
             res,
             400,
@@ -239,7 +251,8 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
           );
 
         if (!employeeData) {
-
+          conn.release();
+          conn = null;
           return sendError(
             res,
             403,
@@ -251,6 +264,11 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
         employee = employeeData;
 
       }
+
+      // Release the connection BEFORE calling next()
+      // so route handlers don't compete for this connection
+      conn.release();
+      conn = null;
 
       req.employee = employee;
 
