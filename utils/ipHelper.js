@@ -1,50 +1,82 @@
 import useragent from "useragent";
 
+const LOOPBACK_IPS = new Set([
+  "127.0.0.1",
+  "::1",
+  "::ffff:127.0.0.1",
+]);
+
+const normalizeIp = (ip) => {
+  if (!ip) return null;
+
+  ip = ip.trim();
+
+  if (ip.startsWith("::ffff:")) {
+    ip = ip.substring(7);
+  }
+
+  if (ip === "::1") {
+    ip = "127.0.0.1";
+  }
+
+  return ip;
+};
+
 const getClientMeta = (req) => {
   try {
-
     const headersx = req.headers;
-    const xForwardedFor = req.headers["x-forwarded-for"];
-    const xRealIp = req.headers["x-real-ip"];
-    const cfConnectingIp = req.headers["cf-connecting-ip"];
 
-    let ipList = [];
+    const ipList = [];
 
-    if (cfConnectingIp) ipList.push(cfConnectingIp);
-
-    if (xForwardedFor) {
-      ipList.push(...xForwardedFor.split(",").map(ip => ip.trim()));
-    }
-
-    if (xRealIp) ipList.push(xRealIp);
-
-    if (req.socket?.remoteAddress) ipList.push(req.socket.remoteAddress);
-
+    // Highest priority
     if (req.ip) ipList.push(req.ip);
 
-    ipList = [...new Set(ipList.filter(Boolean))];
+    // Reverse proxy headers
+    if (req.headers["cf-connecting-ip"]) {
+      ipList.push(req.headers["cf-connecting-ip"]);
+    }
+
+    if (req.headers["x-real-ip"]) {
+      ipList.push(req.headers["x-real-ip"]);
+    }
+
+    if (req.headers["x-forwarded-for"]) {
+      ipList.push(
+        ...req.headers["x-forwarded-for"]
+          .split(",")
+          .map((ip) => ip.trim())
+      );
+    }
+
+    // Lowest priority (connection between proxy and Node)
+    if (req.socket?.remoteAddress) {
+      ipList.push(req.socket.remoteAddress);
+    }
+
+    const uniqueIps = [...new Set(ipList.map(normalizeIp).filter(Boolean))];
 
     let ip_v4 = null;
     let ip_v6 = null;
 
-    for (let ip of ipList) {
-      if (!ip) continue;
-
-      if (ip.startsWith("::ffff:")) {
-        ip = ip.replace("::ffff:", "");
-      }
-
-      if (ip === "::1") {
-        ip = "127.0.0.1";
-      }
+    for (const ip of uniqueIps) {
+      if (LOOPBACK_IPS.has(ip)) continue;
 
       if (ip.includes(":")) {
-        if (!ip_v6) ip_v6 = ip;
+        ip_v6 ??= ip;
       } else {
-        if (!ip_v4) ip_v4 = ip;
+        ip_v4 ??= ip;
       }
+    }
 
-      if (ip_v4 && ip_v6) break;
+    // Only use loopback if absolutely nothing else exists
+    if (!ip_v4 && !ip_v6) {
+      for (const ip of uniqueIps) {
+        if (ip.includes(":")) {
+          ip_v6 ??= ip;
+        } else {
+          ip_v4 ??= ip;
+        }
+      }
     }
 
     const uaString = req.headers["user-agent"] || null;
@@ -64,18 +96,21 @@ const getClientMeta = (req) => {
     }
 
     return {
-      headersx,
       ip_v4,
       ip_v6,
       user_agent: uaString,
       device_name,
-      remoteAddress: req.socket.remoteAddress,
-      reqIp: req.ip,
-      ips: req.ips
-    };
 
+      // Debug (remove in production if desired)
+      headersx,
+      remoteAddress: req.socket?.remoteAddress,
+      reqIp: req.ip,
+      ips: req.ips,
+      ipList: uniqueIps,
+    };
   } catch (err) {
     console.error("Client meta extraction error:", err);
+
     return {
       ip_v4: null,
       ip_v6: null,
