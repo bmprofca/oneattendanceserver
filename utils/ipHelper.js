@@ -3,13 +3,13 @@ import useragent from "useragent";
 const getClientMeta = (req) => {
   try {
 
-    const headersx=req.headers;
+    const headersx = req.headers;
     const xForwardedFor = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
     const cfConnectingIp = req.headers["cf-connecting-ip"];
 
     let ipList = [];
- 
+
     if (cfConnectingIp) ipList.push(cfConnectingIp);
 
     if (xForwardedFor) {
@@ -26,7 +26,7 @@ const getClientMeta = (req) => {
 
     let ip_v4 = null;
     let ip_v6 = null;
-  
+
     for (let ip of ipList) {
       if (!ip) continue;
 
@@ -46,7 +46,7 @@ const getClientMeta = (req) => {
 
       if (ip_v4 && ip_v6) break;
     }
-  
+
     const uaString = req.headers["user-agent"] || null;
 
     let device_name = "Unknown Device";
@@ -69,6 +69,9 @@ const getClientMeta = (req) => {
       ip_v6,
       user_agent: uaString,
       device_name,
+      remoteAddress: req.socket.remoteAddress,
+      reqIp: req.ip,
+      ips: req.ips
     };
 
   } catch (err) {
