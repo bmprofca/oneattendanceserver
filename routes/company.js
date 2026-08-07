@@ -546,7 +546,6 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
     let {
       id,
       company_ips,
-      clear_ips,
       attendance_methods,
       max_distance
     } = req.body || {};
@@ -589,11 +588,7 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
 
     if (attendance_methods !== undefined) {
       try {
-        const parsed =
-          typeof attendance_methods === "string"
-            ? JSON.parse(attendance_methods)
-            : attendance_methods;
-
+        const parsed = typeof attendance_methods === "string" ? JSON.parse(attendance_methods) : attendance_methods;
         if (!Array.isArray(parsed)) {
           await conn.rollback();
           return sendError(res, 400, "attendance_methods must be an array");
@@ -610,96 +605,67 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
               )
             ];
 
-        if (parsedAttendanceMethods.includes("ip") &&company_ips === undefined) {
+        if (parsedAttendanceMethods.includes("ip") && company_ips === undefined) {
           await conn.rollback();
-          return sendError(
-            res,
-            400,
-            "company_ips is required when IP attendance is enabled"
-          );
+          return sendError(res, 400, "company_ips is required when IP attendance is enabled");
         }
 
-        if (
-          parsedAttendanceMethods.includes("gps") &&
-          (max_distance === undefined ||
-            max_distance === "" ||
-            isNaN(Number(max_distance)))
-        ) {
+        if (parsedAttendanceMethods.includes("gps") &&
+          (max_distance === undefined || max_distance === "" ||
+            isNaN(Number(max_distance)))) {
           await conn.rollback();
-          return sendError(
-            res,
-            400,
-            "max_distance is required when GPS attendance is enabled"
-          );
+          return sendError(res, 400, "max_distance is required when GPS attendance is enabled");
         }
 
-        addField(
-          "attendance_methods",
-          JSON.stringify(parsedAttendanceMethods)
-        );
+        addField("attendance_methods", JSON.stringify(parsedAttendanceMethods));
       } catch {
         await conn.rollback();
-        return sendError(
-          res,
-          400,
-          "Invalid JSON format for attendance_methods"
-        );
+        return sendError(res, 400, "Invalid JSON format for attendance_methods");
       }
     }
 
-    let shouldUpdateIps = false;
-    let finalIps = null;
+    if (parsedAttendanceMethods) {
+      if (parsedAttendanceMethods.includes("ip")) {
+        let finalIps = null;
 
-    if (clear_ips === true) {
-      finalIps = null;
-      shouldUpdateIps = true;
-    } else if (company_ips !== undefined) {
-      try {
-        const parsed =
-          typeof company_ips === "string"
-            ? JSON.parse(company_ips)
-            : company_ips;
+        try {
+          const ipsArray =
+            typeof company_ips === "string"
+              ? JSON.parse(company_ips)
+              : company_ips;
 
-        if (!Array.isArray(parsed)) {
-          await conn.rollback();
-          return sendError(res, 400, "company_ips must be an array");
-        }
-
-        if (parsed.length === 0) {
-          const clientIp = getClientMeta(req).ip_v4;
-
-          if (clientIp && isValidIPv4(clientIp)) {
-            finalIps = JSON.stringify([clientIp]);
-          } else {
-            finalIps = null;
+          if (!Array.isArray(ipsArray)) {
+            await conn.rollback();
+            return sendError(res, 400, "company_ips must be an array");
           }
-        } else {
-          for (const ip of parsed) {
-            if (!isValidIPv4(String(ip).trim())) {
-              await conn.rollback();
-              return sendError(
-                res,
-                400,
-                `Invalid IPv4 address: ${ip}`
-              );
+
+          if (ipsArray.length === 0) {
+            const clientIp = getClientMeta(req).ip_v4;
+            if (clientIp && isValidIPv4(clientIp)) {
+              finalIps = JSON.stringify([clientIp]);
+            } else {
+              finalIps = null;
             }
+          } else {
+            for (const ip of ipsArray) {
+              if (!isValidIPv4(String(ip).trim())) {
+                await conn.rollback();
+                return sendError(res, 400, `Invalid IPv4 address: ${ip}`);
+              }
+            }
+            const cleanIps = [
+              ...new Set(ipsArray.map(ip => String(ip).trim()))
+            ];
+            finalIps = JSON.stringify(cleanIps);
           }
-
-          const cleanIps = [
-            ...new Set(parsed.map(ip => String(ip).trim()))
-          ];
-
-          finalIps = JSON.stringify(cleanIps);
+        } catch {
+          await conn.rollback();
+          return sendError(res, 400, "Invalid JSON format for company_ips");
         }
 
-        shouldUpdateIps = true;
-      } catch {
-        await conn.rollback();
-        return sendError(
-          res,
-          400,
-          "Invalid JSON format for company_ips"
-        );
+        addField("company_ips", finalIps);
+      } else {
+        addField("company_ips", null);
       }
     }
 
@@ -709,19 +675,7 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
       } else {
         addField("max_distance", "NULL", true);
       }
-    } else if (max_distance !== undefined) {
-      if (max_distance === "" || isNaN(Number(max_distance))) {
-        await conn.rollback();
-        return sendError(res, 400, "Max Distance must be Numeric Value");
-      }
-
-      addField("max_distance", Number(max_distance));
     }
-
-    if (shouldUpdateIps) {
-      addField("company_ips", finalIps);
-    }
-
     addField("updated_by", modifiedBy);
     addField("updated_at", "NOW()", true);
 
@@ -740,21 +694,14 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
     );
 
     await conn.query(SQL_COMPANY_BY_ID, [id]);
-
     await conn.commit();
 
-    return sendSuccess(
-      res,
-      200,
-      "Attendance settings updated successfully"
-    );
+    return sendSuccess(res, 200, "Attendance settings updated successfully");
   } catch (error) {
     if (conn) {
       await conn.rollback();
     }
-
     console.error(error);
-
     return sendError(res, 500, error.message);
   } finally {
     if (conn) {
