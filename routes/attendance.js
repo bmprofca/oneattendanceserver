@@ -99,8 +99,8 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
       SELECT
         e.id,
         e.weekends,
-        eam.method,
-        eam.is_auto
+        e.attendance_methods,
+        e.is_auto
 
       FROM employees e
 
@@ -109,22 +109,13 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
         AND c.is_active = 1
         AND c.is_deleted = 0
 
-      INNER JOIN employee_attendance_methods eam
-        ON eam.employee_id = e.id
-        AND eam.is_deleted = 0
-        AND eam.is_active = 1
-
-        AND JSON_CONTAINS(
-          c.attendance_methods,
-          JSON_QUOTE(eam.method)
-        )
-
       WHERE
         e.user_id = ?
         AND e.company_id = ?
 
         AND e.is_deleted = 0
         AND e.is_active = 1
+      LIMIT 1
       `,
       [user_id, company_id],
     );
@@ -137,13 +128,13 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     const employee_id = Number(employee.id);
 
-    const employeeMethod = employeeRows.find((item) => String(item.method).trim().toLowerCase() === parsedMethod);
+    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
 
-    if (!employeeMethod) {
+    if (!empMethods.includes(parsedMethod)) {
       throw new Error("Attendance method not allowed");
     }
 
-    const is_verified = Number(employeeMethod.is_auto) === 1 ? 1 : 0;
+    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
 
     const verified_by = is_verified === 1 ? user_id : null;
 
@@ -409,8 +400,8 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
           e.expected_work_minutes,
           e.break_minutes,
           e.grace_minutes,
-          eam.method,
-          eam.is_auto,
+          e.attendance_methods AS emp_attendance_methods,
+          e.is_auto,
           c.company_ips,
           c.latitude AS company_latitude,
           c.longitude AS company_longitude,
@@ -424,19 +415,11 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
           AND c.is_active = 1
           AND c.is_deleted = 0
 
-        INNER JOIN employee_attendance_methods eam
-          ON eam.employee_id = e.id
-          AND eam.is_active = 1
-          AND eam.is_deleted = 0
-          AND JSON_CONTAINS(
-            c.attendance_methods,
-            JSON_QUOTE(eam.method)
-          )
-
         WHERE e.user_id = ?
           AND e.company_id = ?
           AND e.is_active = 1
           AND e.is_deleted = 0
+        LIMIT 1
         `,
       [user_id, company_id],
     );
@@ -445,17 +428,17 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
       throw new Error("Employee not found");
     }
 
-    const employeeMethod = employeeRows.find((item) => String(item.method).trim().toLowerCase() === parsedMethod);
-
-    if (!employeeMethod) {
-      throw new Error("Attendance method not allowed");
-    }
-
     const employee = employeeRows[0];
 
     const employee_id = Number(employee.id);
 
-    const is_verified = Number(employeeMethod.is_auto) === 1 ? 1 : 0;
+    const empMethods = JSON.parse(employee.emp_attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
+
+    if (!empMethods.includes(parsedMethod)) {
+      throw new Error("Attendance method not allowed");
+    }
+
+    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
 
     const verified_by = is_verified === 1 ? user_id : null;
 
@@ -738,8 +721,8 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
       `
         SELECT
           e.id,
-          eam.method,
-          eam.is_auto,
+          e.attendance_methods,
+          e.is_auto,
           c.company_ips,
           c.latitude,
           c.longitude,
@@ -752,19 +735,11 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
           AND c.is_active = 1
           AND c.is_deleted = 0
 
-        INNER JOIN employee_attendance_methods eam
-          ON eam.employee_id = e.id
-          AND eam.is_active = 1
-          AND eam.is_deleted = 0
-          AND JSON_CONTAINS(
-            c.attendance_methods,
-            JSON_QUOTE(eam.method)
-          )
-
         WHERE e.user_id = ?
           AND e.company_id = ?
           AND e.is_deleted = 0
           AND e.is_active = 1
+        LIMIT 1
         `,
       [user_id, company_id],
     );
@@ -777,9 +752,9 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     const employee_id = Number(employee.id);
 
-    const employeeMethod = employeeRows.find((item) => String(item.method).trim().toLowerCase() === parsedMethod);
+    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
 
-    if (!employeeMethod) {
+    if (!empMethods.includes(parsedMethod)) {
       throw new Error("Attendance method not allowed");
     }
 
@@ -1013,8 +988,8 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
       `
         SELECT
           e.id,
-          eam.method,
-          eam.is_auto,
+          e.attendance_methods,
+          e.is_auto,
           c.company_ips,
           c.latitude,
           c.longitude,
@@ -1027,19 +1002,11 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
           AND c.is_active = 1
           AND c.is_deleted = 0
 
-        INNER JOIN employee_attendance_methods eam
-          ON eam.employee_id = e.id
-          AND eam.is_active = 1
-          AND eam.is_deleted = 0
-          AND JSON_CONTAINS(
-            c.attendance_methods,
-            JSON_QUOTE(eam.method)
-          )
-
         WHERE e.user_id = ?
           AND e.company_id = ?
           AND e.is_deleted = 0
           AND e.is_active = 1
+        LIMIT 1
         `,
       [user_id, company_id],
     );
@@ -1052,9 +1019,9 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
 
     const employee_id = Number(employee.id);
 
-    const employeeMethod = employeeRows.find((item) => String(item.method).trim().toLowerCase() === parsedMethod);
+    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
 
-    if (!employeeMethod) {
+    if (!empMethods.includes(parsedMethod)) {
       throw new Error("Attendance method not allowed");
     }
 
@@ -3070,6 +3037,8 @@ router.get("/current-status", auth(), async (req, res) => {
             e.grace_minutes,
             e.designation,
             e.employee_code,
+            e.attendance_methods AS emp_attendance_methods,
+            e.is_auto,
             c.name AS company_name,
             c.attendance_methods
 
@@ -3097,53 +3066,22 @@ router.get("/current-status", auth(), async (req, res) => {
 
     const employee_id = employee.id;
 
-    const [attendanceMethodRows] = await conn.query(
-      `
-        SELECT
-          eam.method,
-          eam.is_auto
-
-        FROM employee_attendance_methods eam
-
-        INNER JOIN employees e
-          ON e.id = eam.employee_id
-          AND e.is_active = 1
-          AND e.is_deleted = 0
-
-        INNER JOIN companies c
-          ON c.id = e.company_id
-          AND c.is_active = 1
-          AND c.is_deleted = 0
-
-        WHERE
-          eam.employee_id = ?
-          AND eam.is_active = 1
-          AND eam.is_deleted = 0
-
-          AND JSON_CONTAINS(
-            c.attendance_methods,
-            JSON_QUOTE(eam.method)
-          )
-      `,
-      [employee_id],
-    );
+    const empMethodsRaw = JSON.parse(employee.emp_attendance_methods || '[]');
+    const companyMethodsRaw = JSON.parse(employee.attendance_methods || '[]');
+    const companyMethodsSet = new Set(companyMethodsRaw.map(m => String(m).trim().toLowerCase()));
 
     let allowed_methods = [];
-    let auto_approved = false;
+    let auto_approved = Number(employee.is_auto) === 1;
 
-    for (const row of attendanceMethodRows) {
-      const method = String(row.method || "").trim().toLowerCase();
+    for (const m of empMethodsRaw) {
+      const method = String(m || "").trim().toLowerCase();
 
       if (!method) {
         continue;
       }
 
-      if (!allowed_methods.includes(method)) {
+      if (companyMethodsSet.has(method) && !allowed_methods.includes(method)) {
         allowed_methods.push(method);
-      }
-
-      if (Number(row.is_auto) === 1) {
-        auto_approved = true;
       }
     }
 

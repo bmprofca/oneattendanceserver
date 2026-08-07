@@ -254,11 +254,7 @@ const PERMISSIONS_SUBQUERY = `(
   WHERE ppi.package_id = pp.id AND ppi.is_active = 1 AND ppi.is_deleted = 0
 ) AS permissions`;
 
-const ATTENDANCE_METHODS_SUBQUERY = `(
-  SELECT JSON_ARRAYAGG(JSON_OBJECT('method', eam.method, 'is_auto', eam.is_auto))
-  FROM employee_attendance_methods eam
-  WHERE eam.employee_id = e.id AND eam.is_deleted = 0 AND eam.is_active = 1
-) AS attendance_methods`;
+const ATTENDANCE_METHODS_SUBQUERY = `e.attendance_methods, e.is_auto`;
 
 const LEAVE_BALANCES_SUBQUERY = `(
   SELECT JSON_ARRAYAGG(JSON_OBJECT(
@@ -722,9 +718,10 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
     const data = rows.map((row) => {
       const base = formatEmployee(row);
       const permissions = parseJSONSafe(row.permissions, []).filter(Boolean);
-      const methods = parseJSONSafe(row.attendance_methods, []).filter(Boolean).map(m => ({
-        ...m,
-        is_auto: !!m.is_auto
+      const empMethods = parseJSONSafe(row.attendance_methods, []).filter(Boolean);
+      const methods = empMethods.map(m => ({
+        method: m,
+        is_auto: !!row.is_auto
       }));
       const leaveBalances = parseJSONSafe(row.leave_balances, []).filter(Boolean).map(l => ({
         ...l,
@@ -898,44 +895,12 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
     );
 
     if (cleanedAttendance !== null) {
-      const [existingRows] = await conn.query(
-        `SELECT id, method, is_deleted FROM employee_attendance_methods WHERE employee_id = ?`,
-        [employee_id]
+      const methodNames = cleanedAttendance.map(m => m.method);
+      const isAutoValue = cleanedAttendance.some(m => m.is_auto) ? 1 : 0;
+      await conn.query(
+        `UPDATE employees SET attendance_methods = ?, is_auto = ?, updated_by = ? WHERE id = ? AND company_id = ?`,
+        [JSON.stringify(methodNames), isAutoValue, updatedBy, employee_id, companyId]
       );
-      const existingMap = new Map(existingRows.map(r => [r.method, r]));
-      const incomingMethods = cleanedAttendance.map(m => m.method);
-
-      const deleteIds = existingRows
-        .filter(r => r.is_deleted === 0 && !incomingMethods.includes(r.method))
-        .map(r => r.id);
-      if (deleteIds.length) {
-        await conn.query(
-          `UPDATE employee_attendance_methods SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id IN (?)`,
-          [updatedBy, deleteIds]
-        );
-      }
-
-      for (const m of cleanedAttendance) {
-        const existing = existingMap.get(m.method);
-        if (!existing) {
-          await conn.query(
-            `INSERT INTO employee_attendance_methods (employee_id, method, is_auto, created_by) VALUES (?, ?, ?, ?)`,
-            [employee_id, m.method, m.is_auto, updatedBy]
-          );
-        } else {
-          if (existing.is_deleted === 1) {
-            await conn.query(
-              `UPDATE employee_attendance_methods SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL, is_auto = ?, updated_by = ? WHERE id = ?`,
-              [m.is_auto, updatedBy, existing.id]
-            );
-          } else {
-            await conn.query(
-              `UPDATE employee_attendance_methods SET is_auto = ?, updated_by = ? WHERE id = ?`,
-              [m.is_auto, updatedBy, existing.id]
-            );
-          }
-        }
-      }
     }
 
     await conn.commit();
@@ -981,10 +946,7 @@ router.delete("/delete", auth(EMP.MNG), async (req, res) => {
       `UPDATE employees SET is_deleted = 1, is_active = 0, status = 'inactive', deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ?`,
       [deletedBy, id, companyId]
     );
-    await conn.query(
-      `UPDATE employee_attendance_methods SET is_deleted = 1, is_active = 0, deleted_at = NOW(), deleted_by = ? WHERE employee_id = ? AND is_deleted = 0`,
-      [deletedBy, id]
-    );
+
 
     await conn.commit();
     return sendSuccess(res, 200, "Employee deleted successfully");

@@ -663,13 +663,6 @@ router.delete("/delete/confirm", auth(), async (req, res) => {
 
     if (employeeIds.length) {
       await conn.query(
-        `UPDATE employee_attendance_methods
-         SET is_deleted=1, deleted_at=NOW(), deleted_by=?
-         WHERE employee_id IN (?)`,
-        [deletedBy, employeeIds]
-      );
-
-      await conn.query(
         `UPDATE company_employee_permissions
          SET is_active=0, deleted_at=NOW(), deleted_by=?
          WHERE employee_id IN (?)`,
@@ -881,6 +874,8 @@ router.get("/profile-role", auth(), async (req, res) => {
         e.salary_type,
         e.employment_type,
         e.permission_package_id,
+        e.attendance_methods AS emp_attendance_methods,
+        e.is_auto,
 
         c.owner_user_id,
         c.name,
@@ -896,6 +891,7 @@ router.get("/profile-role", auth(), async (req, res) => {
         c.latitude,
         c.longitude,
         c.company_ips,
+        c.attendance_methods AS company_attendance_methods,
         c.transaction_currency
 
       FROM employees e
@@ -960,58 +956,15 @@ router.get("/profile-role", auth(), async (req, res) => {
 
     let attendanceMap = {};
 
-    if (employeeIds.length) {
-
-      const [attendanceRows] = await conn.query(
-        `
-        SELECT
-          eam.employee_id,
-          eam.method,
-          eam.is_auto
-
-        FROM employee_attendance_methods eam
-
-        INNER JOIN employees e
-          ON e.id = eam.employee_id
-          AND e.is_active = 1
-          AND e.is_deleted = 0
-
-        INNER JOIN companies c
-          ON c.id = e.company_id
-          AND c.is_active = 1
-          AND c.is_deleted = 0
-
-        WHERE
-          eam.employee_id IN (?)
-          AND eam.is_active = 1
-          AND eam.is_deleted = 0
-
-          AND JSON_CONTAINS(
-            c.attendance_methods,
-            JSON_QUOTE(eam.method)
-          )
-        `,
-        [employeeIds]
-      );
-
-      attendanceMap = attendanceRows.reduce(
-        (acc, row) => {
-
-          if (!acc[row.employee_id]) {
-            acc[row.employee_id] = [];
-          }
-
-          acc[row.employee_id].push({
-            method: row.method,
-            is_auto: toBoolean(row.is_auto)
-          });
-
-          return acc;
-
-        },
-        {}
-      );
-
+    for (const emp of employees) {
+      const empMethods = safeParse(emp.emp_attendance_methods, []);
+      const compMethods = new Set(safeParse(emp.company_attendance_methods, []));
+      attendanceMap[emp.id] = empMethods
+        .filter(m => compMethods.has(m))
+        .map(m => ({
+          method: m,
+          is_auto: toBoolean(emp.is_auto)
+        }));
     }
 
     const employeeCompanies = employees.map(emp => {

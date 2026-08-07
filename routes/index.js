@@ -19,6 +19,7 @@ import transactionsRoutes from "./transactions.js";
 import financeRoutes from "./finance.js";
 import subscriptionRoutes from "./subscriptions.js";
 import webhookRoutes from "./webhook.js";
+import ipRoutes from "./iproute.js";
 
 
 const router = express.Router();
@@ -44,6 +45,8 @@ router.use('/transactions', transactionsRoutes);
 router.use('/finance', financeRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/webhook', webhookRoutes);
+router.use('/ip', ipRoutes);
+
 
 
 export default router;

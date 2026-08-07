@@ -669,8 +669,8 @@ const INSERT_EMPLOYEE = `
     designation, salary_type, employment_type, weekends,
     shift_start, shift_end, expected_work_minutes,
     break_minutes, grace_minutes, enable_overtime,
-    enable_deduction, status, joining_date, created_by, updated_by
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+    enable_deduction, attendance_methods, is_auto, status, joining_date, created_by, updated_by
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
 `;
 
 const UPDATE_EMPLOYEE = `
@@ -678,7 +678,7 @@ const UPDATE_EMPLOYEE = `
     designation=?, salary_type=?, employment_type=?, permission_package_id=?,
     weekends=?, shift_start=?, shift_end=?, break_minutes=?, grace_minutes=?,
     expected_work_minutes=?, enable_overtime=?, enable_deduction=?,
-    joining_date=?, status='active', is_active=1, is_deleted=0,
+    attendance_methods=?, is_auto=?, joining_date=?, status='active', is_active=1, is_deleted=0,
     updated_by=?, updated_at=NOW()
   WHERE id=?
 `;
@@ -698,17 +698,6 @@ const INSERT_EMPLOYEE_SALARY_COMPONENT = `
   INSERT INTO employee_salary_component (
     company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by, updated_by, is_deleted
   ) VALUES ?
-`;
-
-const RESTORE_ATTENDANCE_METHODS = `
-  UPDATE employee_attendance_methods
-  SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL
-  WHERE employee_id = ? AND is_deleted = 1
-`;
-
-const INSERT_EMPLOYEE_ATTENDANCE_METHODS = `
-  INSERT INTO employee_attendance_methods (employee_id, method, is_auto, is_active, created_by, updated_by, is_deleted)
-  VALUES ?
 `;
 
 const COMPLETE_INVITE = `
@@ -993,6 +982,20 @@ const processInviteAcceptance = async (conn, invite, userId) => {
   const inviteJoiningDateValue =
     joining_date && !isNaN(Date.parse(joining_date)) ? joining_date : null;
 
+  let finalMethods = [];
+  const autoApproveVal = Number(auto_approve || 0);
+  let finalIsAuto = autoApproveVal;
+  if (inviteAttendance.length) {
+    finalMethods = inviteAttendance
+      .map((m) => (typeof m === "string" ? m : m?.method || ""))
+      .filter(Boolean);
+    const anyAuto = inviteAttendance.some((m) =>
+      typeof m === "string" ? autoApproveVal === 1 : m?.is_auto == 1 || autoApproveVal === 1
+    );
+    finalIsAuto = anyAuto ? 1 : 0;
+  }
+  const attendanceMethodsJsonVal = JSON.stringify(finalMethods);
+
   if (existingEmployee) {
     employeeId = existingEmployee.id;
     employeeCode = existingEmployee.employee_code;
@@ -1010,6 +1013,8 @@ const processInviteAcceptance = async (conn, invite, userId) => {
       expectedWorkMinutes,
       inviteEnableOvertimeValue,
       inviteEnableDeductionValue,
+      attendanceMethodsJsonVal,
+      finalIsAuto,
       inviteJoiningDateValue,
       userId,
       employeeId,
@@ -1038,6 +1043,8 @@ const processInviteAcceptance = async (conn, invite, userId) => {
       graceMinutes || null,
       inviteEnableOvertimeValue,
       inviteEnableDeductionValue,
+      attendanceMethodsJsonVal,
+      finalIsAuto,
       inviteJoiningDateValue ||
       new Date().toISOString().split("T")[0],
       userId,
@@ -1078,34 +1085,6 @@ const processInviteAcceptance = async (conn, invite, userId) => {
       ]);
       await conn.query(INSERT_EMPLOYEE_SALARY_COMPONENT, [compValues]);
     }
-  }
-
-  // attendance methods
-  await conn.query(RESTORE_ATTENDANCE_METHODS, [employeeId]);
-
-  if (inviteAttendance.length) {
-    const autoApproveVal = Number(auto_approve || 0);
-    const attendanceValues = inviteAttendance
-      .map((m) => {
-        const method =
-          typeof m === "string" ? m : m?.method || "";
-        const isAuto =
-          typeof m === "string"
-            ? autoApproveVal
-            : m?.is_auto || autoApproveVal;
-        return [
-          employeeId,
-          method,
-          Number(isAuto || 0),
-          1,
-          userId,
-          userId,
-          0,
-        ];
-      })
-      .filter((item) => item[1]);
-
-    await conn.query(INSERT_EMPLOYEE_ATTENDANCE_METHODS, [attendanceValues]);
   }
 
   await conn.query(COMPLETE_INVITE, [userId, inviteId]);
