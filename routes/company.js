@@ -10,7 +10,7 @@ import { createDefaultPackages } from "../utils/defaultPackages.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 import { formatPhoneByCountry } from "../utils/getClientCountry.js";
 import { lookup } from "useragent";
-import {normalizeIndianMobile} from "../utils/mobile.js";
+import { normalizeIndianMobile } from "../utils/mobile.js";
 
 const router = express.Router();
 
@@ -545,8 +545,6 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
 
     let {
       id,
-      latitude,
-      longitude,
       company_ips,
       clear_ips,
       attendance_methods,
@@ -566,31 +564,6 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
     const isValidIPv4 = ip =>
       /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(ip);
 
-    const lat =
-      latitude !== undefined && latitude !== ""
-        ? Number(latitude)
-        : undefined;
-
-    const lng =
-      longitude !== undefined && longitude !== ""
-        ? Number(longitude)
-        : undefined;
-
-    if (lat !== undefined && (isNaN(lat) || lat < -90 || lat > 90)) {
-      return sendError(res, 400, "Latitude must be between -90 and 90");
-    }
-
-    if (lng !== undefined && (isNaN(lng) || lng < -180 || lng > 180)) {
-      return sendError(res, 400, "Longitude must be between -180 and 180");
-    }
-
-    if (
-      max_distance !== undefined &&
-      (max_distance === "" || isNaN(Number(max_distance)))
-    ) {
-      return sendError(res, 400, "Max Distance must be Numeric Value");
-    }
-
     await conn.beginTransaction();
 
     const [[companyRow]] = await conn.query(SQL_COMPANY_EXISTS, [id, modifiedBy]);
@@ -600,13 +573,86 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
       return sendError(res, 404, "Company not found");
     }
 
+    const fields = [];
+    const values = [];
+
+    const addField = (key, value, raw = false) => {
+      if (raw) {
+        fields.push(`${key} = ${value}`);
+      } else {
+        fields.push(`${key} = ?`);
+        values.push(value);
+      }
+    };
+
+    let parsedAttendanceMethods = null;
+
+    if (attendance_methods !== undefined) {
+      try {
+        const parsed =
+          typeof attendance_methods === "string"
+            ? JSON.parse(attendance_methods)
+            : attendance_methods;
+
+        if (!Array.isArray(parsed)) {
+          await conn.rollback();
+          return sendError(res, 400, "attendance_methods must be an array");
+        }
+
+        parsedAttendanceMethods =
+          parsed.length === 0
+            ? ["manual"]
+            : [
+              ...new Set(
+                parsed.map(method =>
+                  String(method).trim().toLowerCase()
+                )
+              )
+            ];
+
+        if (parsedAttendanceMethods.includes("ip") &&company_ips === undefined) {
+          await conn.rollback();
+          return sendError(
+            res,
+            400,
+            "company_ips is required when IP attendance is enabled"
+          );
+        }
+
+        if (
+          parsedAttendanceMethods.includes("gps") &&
+          (max_distance === undefined ||
+            max_distance === "" ||
+            isNaN(Number(max_distance)))
+        ) {
+          await conn.rollback();
+          return sendError(
+            res,
+            400,
+            "max_distance is required when GPS attendance is enabled"
+          );
+        }
+
+        addField(
+          "attendance_methods",
+          JSON.stringify(parsedAttendanceMethods)
+        );
+      } catch {
+        await conn.rollback();
+        return sendError(
+          res,
+          400,
+          "Invalid JSON format for attendance_methods"
+        );
+      }
+    }
+
     let shouldUpdateIps = false;
     let finalIps = null;
 
     if (clear_ips === true) {
       finalIps = null;
       shouldUpdateIps = true;
-
     } else if (company_ips !== undefined) {
       try {
         const parsed =
@@ -631,57 +677,49 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
           for (const ip of parsed) {
             if (!isValidIPv4(String(ip).trim())) {
               await conn.rollback();
-              return sendError(res, 400, `Invalid IPv4 address: ${ip}`);
+              return sendError(
+                res,
+                400,
+                `Invalid IPv4 address: ${ip}`
+              );
             }
           }
 
-          const cleanIps = [...new Set(parsed.map(ip => String(ip).trim()))];
+          const cleanIps = [
+            ...new Set(parsed.map(ip => String(ip).trim()))
+          ];
+
           finalIps = JSON.stringify(cleanIps);
         }
 
         shouldUpdateIps = true;
-
       } catch {
         await conn.rollback();
-        return sendError(res, 400, "Invalid JSON format for company_ips");
+        return sendError(
+          res,
+          400,
+          "Invalid JSON format for company_ips"
+        );
       }
     }
 
-    const fields = [];
-    const values = [];
-
-    const addField = (key, value, raw = false) => {
-      if (raw) {
-        fields.push(`${key} = ${value}`);
+    if (parsedAttendanceMethods) {
+      if (parsedAttendanceMethods.includes("gps")) {
+        addField("max_distance", Number(max_distance));
       } else {
-        fields.push(`${key} = ?`);
-        values.push(value);
+        addField("max_distance", "NULL", true);
       }
-    };
+    } else if (max_distance !== undefined) {
+      if (max_distance === "" || isNaN(Number(max_distance))) {
+        await conn.rollback();
+        return sendError(res, 400, "Max Distance must be Numeric Value");
+      }
 
-    if (lat !== undefined) addField("latitude", lat);
-    if (lng !== undefined) addField("longitude", lng);
-    if (max_distance !== undefined) addField("max_distance", max_distance);
-    if (shouldUpdateIps) addField("company_ips", finalIps);
+      addField("max_distance", Number(max_distance));
+    }
 
-    if (attendance_methods !== undefined) {
-      try {
-        const parsed =
-          typeof attendance_methods === "string"
-            ? JSON.parse(attendance_methods)
-            : attendance_methods;
-
-        if (Array.isArray(parsed)) {
-          if (parsed.length === 0) {
-            addField("attendance_methods", JSON.stringify(["manual"]));
-          } else {
-            const cleanMethods = [
-              ...new Set(parsed.map(m => String(m).trim().toLowerCase()))
-            ];
-            addField("attendance_methods", JSON.stringify(cleanMethods));
-          }
-        }
-      } catch { }
+    if (shouldUpdateIps) {
+      addField("company_ips", finalIps);
     }
 
     addField("updated_by", modifiedBy);
@@ -694,10 +732,10 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
 
     await conn.query(
       `
-        UPDATE companies
-        SET ${fields.join(", ")}
-        WHERE id = ?
-        `,
+      UPDATE companies
+      SET ${fields.join(", ")}
+      WHERE id = ?
+      `,
       [...values, id]
     );
 
@@ -705,7 +743,11 @@ router.put("/update-attendance-settings", auth([], { owner_only: true }), async 
 
     await conn.commit();
 
-    return sendSuccess(res, 200, "Attendance settings updated successfully");
+    return sendSuccess(
+      res,
+      200,
+      "Attendance settings updated successfully"
+    );
   } catch (error) {
     if (conn) {
       await conn.rollback();

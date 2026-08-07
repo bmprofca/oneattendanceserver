@@ -1272,11 +1272,7 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
     }
 
     const clientMeta = getClientMeta(req);
-    const ip =
-      clientMeta?.ip_v4 ||
-      clientMeta?.ip_v6 ||
-      req.ip ||
-      "0.0.0.0";
+    const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || req.ip || "0.0.0.0";
 
     const [[recentOtp]] = await conn.query(
       `
@@ -1593,11 +1589,7 @@ router.post("/request-update-email-otp", auth(), async (req, res) => {
     }
 
     const clientMeta = getClientMeta(req);
-    const ip =
-      clientMeta?.ip_v4 ||
-      clientMeta?.ip_v6 ||
-      req.ip ||
-      "0.0.0.0";
+    const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || req.ip || "0.0.0.0";
 
     const [[recentOtp]] = await conn.query(
       `

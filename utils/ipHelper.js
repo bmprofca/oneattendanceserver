@@ -101,12 +101,12 @@ const getClientMeta = (req) => {
       user_agent: uaString,
       device_name,
 
-      // Debug (remove in production if desired)
-      headersx,
-      remoteAddress: req.socket?.remoteAddress,
-      reqIp: req.ip,
-      ips: req.ips,
-      ipList: uniqueIps,
+      // === Debug ===
+      // headersx,
+      // remoteAddress: req.socket?.remoteAddress,
+      // reqIp: req.ip,
+      // ips: req.ips,
+      // ipList: uniqueIps,
     };
   } catch (err) {
     console.error("Client meta extraction error:", err);
