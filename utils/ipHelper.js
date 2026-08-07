@@ -3,7 +3,7 @@ import useragent from "useragent";
 const getClientMeta = (req) => {
   try {
 
-    headersx=req.headers;
+    const headersx=req.headers;
     const xForwardedFor = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
     const cfConnectingIp = req.headers["cf-connecting-ip"];
