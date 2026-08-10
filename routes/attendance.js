@@ -1047,6 +1047,12 @@ async function validateAttendanceCommon(conn, {
     throw new Error("Employee is on leave today");
   }
 
+  // 4b. Weekend check
+  const weekendStatus = weekendInfo(attendance_date, employee.weekends);
+  if (weekendStatus?.is_weekend) {
+    throw new Error("Today is employee's weekend");
+  }
+
   // 5. Attendance method check (Company AND Employee must both allow it)
   const parsedMethod = String(attendance_method || "").trim().toLowerCase();
   if (!parsedMethod) {
@@ -1725,7 +1731,7 @@ async function executePunchOut(conn, {
 
   const [[leave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE, [employee_id, company_id, attendance_date]);
 
-  if (leave && leave.is_half_day===1) {
+  if (leave && leave.is_half_day === 1) {
     const leaveRes = await validateHalfDayLeave(conn, {
       leave,
       company_id,
@@ -1967,10 +1973,7 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     await conn.commit();
 
-    return res.status(201).json({
-      success: true,
-      message: "Punch-in successful",
-    });
+    return sendSuccess(res, 201, "Punch-in successful");
   } catch (error) {
     if (conn) {
       await conn.rollback();
@@ -1978,10 +1981,7 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     console.error("Punch-in Error:", error);
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Punch-in failed",
-    });
+    return sendError(res, 400, error.message || "Punch-in failed");
   } finally {
     if (conn) {
       conn.release();
@@ -2042,10 +2042,7 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
 
     await conn.commit();
 
-    return res.status(200).json({
-      success: true,
-      message: "Punch-out successful",
-    });
+    return sendSuccess(res, 200, "Punch-out successful");
   } catch (error) {
     if (conn) {
       await conn.rollback();
@@ -2053,10 +2050,7 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
 
     console.error("Punch-out Error:", error);
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Punch-out failed",
-    });
+    return sendError(res, 400, error.message || "Punch-out failed");
   } finally {
     if (conn) {
       conn.release();
@@ -2114,10 +2108,7 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     await conn.commit();
 
-    return res.status(201).json({
-      success: true,
-      message: "Break started successfully",
-    });
+    return sendSuccess(res, 201, "Break started successfully");
   } catch (error) {
     if (conn) {
       await conn.rollback();
@@ -2125,10 +2116,7 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 
     console.error("Break-in Error:", error);
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Break start failed",
-    });
+    return sendError(res, 400, error.message || "Break start failed");
   } finally {
     if (conn) {
       conn.release();
@@ -2186,10 +2174,7 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
 
     await conn.commit();
 
-    return res.status(200).json({
-      success: true,
-      message: "Break ended successfully",
-    });
+    return sendSuccess(res, 200, "Break ended successfully");
   } catch (error) {
     if (conn) {
       await conn.rollback();
@@ -2197,10 +2182,7 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
 
     console.error("Break-out Error:", error);
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Break end failed",
-    });
+    return sendError(res, 400, error.message || "Break end failed");
   } finally {
     if (conn) {
       conn.release();
@@ -2459,10 +2441,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
       employee_ids = [];
     } else {
       if (!Array.isArray(employee_ids) || employee_ids.some((id) => !Number.isInteger(Number(id)))) {
-        return res.status(400).json({
-          success: false,
-          message: "employee_ids must be an array of ids or the string 'all'",
-        });
+        return sendError(res, 400, "employee_ids must be an array of ids or the string 'all'");
       }
       employee_ids = employee_ids.map(Number);
     }
@@ -2473,32 +2452,23 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
     const systemPaidLeaveValues = ["weekend", "holiday"];
 
     if (!attendance_date) {
-      return res.status(400).json({ success: false, message: "attendance_date is required" });
+      return sendError(res, 400, "attendance_date is required");
     }
 
     if (!allowedModes.includes(mode)) {
-      return res.status(400).json({ success: false, message: "Invalid mode" });
+      return sendError(res, 400, "Invalid mode");
     }
 
     if (mode === "half_day" && !allowedHalfDayTypes.includes(half_day_type)) {
-      return res.status(400).json({
-        success: false,
-        message: "half_day_type must be first_half or second_half",
-      });
+      return sendError(res, 400, "half_day_type must be first_half or second_half");
     }
 
     if (mode === "leave") {
       if (!allowedLeaveTypes.includes(leave_type)) {
-        return res.status(400).json({
-          success: false,
-          message: "leave_type must be paid or unpaid",
-        });
+        return sendError(res, 400, "leave_type must be paid or unpaid");
       }
       if (leave_type === "paid" && !leave_type_value) {
-        return res.status(400).json({
-          success: false,
-          message: "leave_type_value is required for paid leave",
-        });
+        return sendError(res, 400, "leave_type_value is required for paid leave");
       }
     }
 
@@ -2509,7 +2479,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
       const [leaveConfigs] = await conn.query(ATTENDANCE_QUERY.GET_PAID_LEAVE_CONFIG, [company_id, leave_type_value]);
       if (!leaveConfigs.length) {
         await conn.rollback();
-        return res.status(400).json({ success: false, message: "Invalid paid leave_type_value" });
+        return sendError(res, 400, "Invalid paid leave_type_value");
       }
     }
 
@@ -2529,12 +2499,12 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
     const [employees] = await conn.query(employeeQuery, queryParams);
     if (!employees.length) {
       await conn.rollback();
-      return res.status(404).json({ success: false, message: "No employees found" });
+      return sendError(res, 404, "No employees found");
     }
 
     if (employee_ids.length > 0 && employees.length !== employee_ids.length) {
       await conn.rollback();
-      return res.status(400).json({ success: false, message: "Some employee_ids are invalid" });
+      return sendError(res, 400, "Some employee_ids are invalid");
     }
 
     const employeeIdList = employees.map((emp) => emp.id);
@@ -2567,11 +2537,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
 
     if (employeesWithoutShift.length > 0) {
       await conn.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Required employee shift_start or shift_end is missing",
-        employee_ids: employeesWithoutShift,
-      });
+      return sendError(res, 400, "Required employee shift_start or shift_end is missing", { employee_ids: employeesWithoutShift });
     }
 
     const now = getISTNow().format("YYYY-MM-DD HH:mm:ss");
@@ -2708,24 +2674,20 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
     await conn.commit();
 
     const uniqueAbsent = [...new Set(absentEmployeeIds)];
-    return res.status(200).json({
-      success: true,
-      message: "Attendance approved successfully",
-      data: {
-        attendance_type: "attendance",
-        mode,
-        attendance_date,
-        total_employees: employees.length,
-        approved: processedIds.length,
-        absent: uniqueAbsent.length,
-        ...(uniqueAbsent.length > 0 && { absent_employee_ids: uniqueAbsent }),
-        payroll_errors: errors,
-      },
+    return sendSuccess(res, 200, "Attendance approved successfully", {
+      attendance_type: "attendance",
+      mode,
+      attendance_date,
+      total_employees: employees.length,
+      approved: processedIds.length,
+      absent: uniqueAbsent.length,
+      ...(uniqueAbsent.length > 0 && { absent_employee_ids: uniqueAbsent }),
+      payroll_errors: errors,
     });
   } catch (err) {
     if (conn) await conn.rollback();
     console.error("Attendance approve error:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
   }
@@ -2860,7 +2822,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
             const [leaveConfigs] = await conn.query(ATTENDANCE_QUERY.GET_PAID_LEAVE_CONFIG, [company_id, leave_type_value]);
             if (!leaveConfigs.length) {
               await conn.rollback();
-              return res.status(400).json({ success: false, message: "Invalid paid leave_type_value" });
+              return sendError(res, 400, "Invalid paid leave_type_value");
             }
           }
           db_value2 = leave_type_value;
@@ -3068,10 +3030,7 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
     const company_id = Number(req.company?.id);
 
     if (!Number.isInteger(user_id) || user_id <= 0 || !Number.isInteger(company_id) || company_id <= 0) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized access",
-      });
+      return sendError(res, 401, "Unauthorized access");
     }
 
     const type = String(req.query.type || "").trim().toLowerCase();
@@ -3083,26 +3042,17 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
     const offset = (page - 1) * limit;
 
     if (!["attendance", "break"].includes(type)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid type. Allowed: attendance, break",
-      });
+      return sendError(res, 400, "Invalid type. Allowed: attendance, break");
     }
 
     if (date && (from_date || to_date)) {
-      return res.status(400).json({
-        success: false,
-        message: "Use either date OR from_date/to_date",
-      });
+      return sendError(res, 400, "Use either date OR from_date/to_date");
     }
 
     const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_PAST_PUNCHES, [user_id, company_id]);
 
     if (!employee) {
-      return res.status(404).json({
-        success: false,
-        message: "Employee not found",
-      });
+      return sendError(res, 404, "Employee not found");
     }
 
     let where = `
@@ -3275,11 +3225,11 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         phone: employee.phone || "",
         punch_date: r.attendance_date,
         record_type: r.type,
-        status: r.is_verified ? "approved" : "pending",
+        status: Number(r.is_verified) === 1 ? "approved" : "pending",
         day_status: r.day_status,
         remark: r.remark || "",
-        is_overtime: Number(r.is_overtime || 0),
-        is_deductible: Number(r.is_deductible || 0),
+        is_overtime: Number(r.is_overtime) === 1,
+        is_deductible: Number(r.is_deductible) === 1,
         shift: {
           start_time: employee.shift_start || null,
           end_time: employee.shift_end || null,
@@ -3301,31 +3251,20 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       return response;
     });
 
-    return res.status(200).json({
-      success: true,
-      message: type === "attendance" ? "Past attendance punches fetched successfully" : "Past break punches fetched successfully",
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        total_pages: Math.ceil(total / limit),
-        is_last_page: page >= Math.ceil(total / limit),
-        filters: {
-          type,
-          date,
-          from_date,
-          to_date,
-        },
-      },
-    });
+    const meta = {
+      ...buildMeta(page, limit, total, data.length),
+      filters: { type, date, from_date, to_date },
+    };
+
+    return sendSuccess(
+      res, 200,
+      type === "attendance" ? "Past attendance punches fetched successfully" : "Past break punches fetched successfully",
+      data, meta
+    );
   } catch (err) {
     console.error("❌ /my/past-punches:", err);
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch past punches",
-    });
+    return sendError(res, 500, "Failed to fetch past punches");
   } finally {
     if (conn) {
       conn.release();
@@ -3399,43 +3338,35 @@ router.get("/current-status", auth(), async (req, res) => {
 
     // --- Weekend check: if today is weekend, send weekend response ---
     if (isWeekend) {
-      return res.status(200).json({
-        success: true,
-        message: "Current attendance status fetched successfully",
-        data: {
-          status: "WEEKEND",
-          allowed_methods,
-          auto_approved,
-          allowed_actions: [],
-          day_info: {
-            date: today,
-            day_name: todayDayName,
-            is_weekend: true,
-            is_holiday: !!holiday,
-            ...(holiday && { holiday_name: holiday.name }),
-          },
+      return sendSuccess(res, 200, "Current attendance status fetched successfully", {
+        status: "WEEKEND",
+        allowed_methods,
+        auto_approved,
+        allowed_actions: [],
+        day_info: {
+          date: today,
+          day_name: todayDayName,
+          is_weekend: true,
+          is_holiday: !!holiday,
+          ...(holiday && { holiday_name: holiday.name }),
         },
       });
     }
-    
+
     // --- Full-day leave check (is_half_day != 1) ---
     const isFullDayLeave = approvedLeave && Number(approvedLeave.is_half_day) !== 1;
     if (isFullDayLeave && !attendanceRows.length) {
-      return res.status(200).json({
-        success: true,
-        message: "Current attendance status fetched successfully",
-        data: {
-          status: "LEAVE",
-          allowed_methods,
-          auto_approved,
-          allowed_actions: [],
-          day_info: {
-            date: today,
-            day_name: todayDayName,
-            is_weekend: false,
-            is_holiday: !!holiday,
-            ...(holiday && { holiday_name: holiday.name }),
-          },
+      return sendSuccess(res, 200, "Current attendance status fetched successfully", {
+        status: "LEAVE",
+        allowed_methods,
+        auto_approved,
+        allowed_actions: [],
+        day_info: {
+          date: today,
+          day_name: todayDayName,
+          is_weekend: false,
+          is_holiday: !!holiday,
+          ...(holiday && { holiday_name: holiday.name }),
         },
       });
     }
@@ -3710,11 +3641,7 @@ router.get("/current-status", auth(), async (req, res) => {
       responseData.today_activities = today_activities;
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "Current attendance status fetched successfully",
-      data: responseData,
-    });
+    return sendSuccess(res, 200, "Current attendance status fetched successfully", responseData);
   } catch (err) {
     console.error("❌ current-status error:", err);
     return sendError(res, 500, "Failed to fetch current attendance status");
@@ -3743,33 +3670,21 @@ router.get("/logs", auth(), async (req, res) => {
     const offset = (page - 1) * limit;
 
     if (!companyId) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized company access",
-      });
+      return sendError(res, 401, "Unauthorized company access");
     }
 
     if (!Number.isInteger(attendanceId) || attendanceId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid attendance_id",
-      });
+      return sendError(res, 400, "Invalid attendance_id");
     }
 
     if (logType && !["start", "end", "day_status"].includes(logType)) {
-      return res.status(400).json({
-        success: false,
-        message: "log_type must be start, end or day_status",
-      });
+      return sendError(res, 400, "log_type must be start, end or day_status");
     }
 
     const [[attendance]] = await conn.query(ATTENDANCE_QUERY.GET_LOG_ATTENDANCE, [attendanceId, companyId]);
 
     if (!attendance) {
-      return res.status(404).json({
-        success: false,
-        message: "Attendance not found",
-      });
+      return sendError(res, 404, "Attendance not found");
     }
 
     let where = `WHERE al.attendance_id = ?`;
@@ -3891,32 +3806,19 @@ router.get("/logs", auth(), async (req, res) => {
       return logItem;
     });
 
-    return res.status(200).json({
-      success: true,
-      message: "Attendance activity logs fetched successfully",
-      data: {
-        logs,
-        meta: {
-          total,
-          total_pages: Math.ceil(total / limit),
-          current_page: page,
-          limit,
-          is_last_page: page * limit >= total,
-        },
-        filters: {
-          attendance_id: attendanceId,
-          log_type: logType || null,
-          search: search || null,
-        },
+    const meta = {
+      ...buildMeta(page, limit, total, logs.length),
+      filters: {
+        attendance_id: attendanceId,
+        log_type: logType || null,
+        search: search || null,
       },
-    });
+    };
+
+    return sendSuccess(res, 200, "Attendance activity logs fetched successfully", { logs }, meta);
   } catch (err) {
     console.error("❌ GET /logs", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch logs",
-      error: NODE_ENV === "development" ? err.message : undefined,
-    });
+    return sendError(res, 500, "Failed to fetch logs");
   } finally {
     if (conn) conn.release();
   }
@@ -4472,10 +4374,7 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     const company_id = Number(req.company?.id);
 
     if (!Number.isInteger(company_id) || company_id <= 0) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized company",
-      });
+      return sendError(res, 401, "Unauthorized company");
     }
 
     const now = new Date();
@@ -4529,62 +4428,54 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     const totalPresent = Number(attendanceStats?.present_count || 0);
     const calculatedAbsent = Math.max(0, totalEmployees - totalPresent);
 
-    return res.status(200).json({
-      success: true,
-      message: "Dashboard summary fetched successfully",
-      data: {
-        generated_at: new Date(),
-        today,
-        current_month: {
-          start_date: monthStart,
-          end_date: monthEnd,
-        },
-        employees: {
-          total: totalEmployees,
-          active: Number(employeeStats?.active_employees || 0),
-          inactive: Number(employeeStats?.inactive_employees || 0),
-          face_enrolled: Number(employeeStats?.face_enrolled_count || 0),
-          fingerprint_mapped: Number(employeeStats?.fingerprint_mapped_count || 0),
-        },
-        attendance_today: {
-          present: totalPresent,
-          absent: calculatedAbsent,
-          half_day: Number(attendanceStats?.half_day_count || 0),
-          paid_leave: Number(attendanceStats?.paid_leave_count || 0),
-          unmarked: Number(attendanceStats?.unmarked_count || 0),
-          verified: Number(attendanceStats?.verified_attendance_count || 0),
-          unverified: Number(attendanceStats?.unverified_attendance_count || 0),
-          overtime_employees: Number(attendanceStats?.overtime_employee_count || 0),
-          attendance_entries: Number(attendanceStats?.attendance_entries || 0),
-          break_entries: Number(attendanceStats?.break_entries || 0),
-          attendance_percentage: totalEmployees > 0 ? Number(((totalPresent / totalEmployees) * 100).toFixed(2)) : 0,
-        },
-        shifts_today: {
-          total_shifts: Number(shiftStats?.total_shifts || 0),
-          total_worked_minutes: Number(shiftStats?.total_worked_minutes || 0),
-          total_break_minutes: Number(shiftStats?.total_break_minutes || 0),
-          total_extra_break_minutes: Number(shiftStats?.total_extra_break_minutes || 0),
-          total_overtime_minutes: Number(shiftStats?.total_overtime_minutes || 0),
-          total_late_minutes: Number(shiftStats?.total_late_minutes || 0),
-          total_early_leave_minutes: Number(shiftStats?.total_early_leave_minutes || 0),
-          average_worked_minutes: Number(Number(shiftStats?.avg_worked_minutes || 0).toFixed(2)),
-        },
-        leaves_this_month: leaveStats,
-        holidays: {
-          total: Number(holidayStats?.total_holidays || 0),
-          optional: Number(holidayStats?.optional_holidays || 0),
-          mandatory: Number(holidayStats?.mandatory_holidays || 0),
-        },
+    return sendSuccess(res, 200, "Dashboard summary fetched successfully", {
+      generated_at: new Date(),
+      today,
+      current_month: {
+        start_date: monthStart,
+        end_date: monthEnd,
+      },
+      employees: {
+        total: totalEmployees,
+        active: Number(employeeStats?.active_employees || 0),
+        inactive: Number(employeeStats?.inactive_employees || 0),
+        face_enrolled: Number(employeeStats?.face_enrolled_count || 0),
+        fingerprint_mapped: Number(employeeStats?.fingerprint_mapped_count || 0),
+      },
+      attendance_today: {
+        present: totalPresent,
+        absent: calculatedAbsent,
+        half_day: Number(attendanceStats?.half_day_count || 0),
+        paid_leave: Number(attendanceStats?.paid_leave_count || 0),
+        unmarked: Number(attendanceStats?.unmarked_count || 0),
+        verified: Number(attendanceStats?.verified_attendance_count || 0),
+        unverified: Number(attendanceStats?.unverified_attendance_count || 0),
+        overtime_employees: Number(attendanceStats?.overtime_employee_count || 0),
+        attendance_entries: Number(attendanceStats?.attendance_entries || 0),
+        break_entries: Number(attendanceStats?.break_entries || 0),
+        attendance_percentage: totalEmployees > 0 ? Number(((totalPresent / totalEmployees) * 100).toFixed(2)) : 0,
+      },
+      shifts_today: {
+        total_shifts: Number(shiftStats?.total_shifts || 0),
+        total_worked_minutes: Number(shiftStats?.total_worked_minutes || 0),
+        total_break_minutes: Number(shiftStats?.total_break_minutes || 0),
+        total_extra_break_minutes: Number(shiftStats?.total_extra_break_minutes || 0),
+        total_overtime_minutes: Number(shiftStats?.total_overtime_minutes || 0),
+        total_late_minutes: Number(shiftStats?.total_late_minutes || 0),
+        total_early_leave_minutes: Number(shiftStats?.total_early_leave_minutes || 0),
+        average_worked_minutes: Number(Number(shiftStats?.avg_worked_minutes || 0).toFixed(2)),
+      },
+      leaves_this_month: leaveStats,
+      holidays: {
+        total: Number(holidayStats?.total_holidays || 0),
+        optional: Number(holidayStats?.optional_holidays || 0),
+        mandatory: Number(holidayStats?.mandatory_holidays || 0),
       },
     });
   } catch (error) {
     console.error("GET /dashboard-summary ERROR:", error);
 
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: NODE_ENV === "development" ? error.message : undefined,
-    });
+    return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) {
       conn.release();
