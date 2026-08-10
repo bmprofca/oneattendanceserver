@@ -1,15 +1,12 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import { validateFields, punchTypeValidation, attendanceMethodValidation, getEnumObject } from "../utils/constantsValidator.js";
-import { PUNCH_TYPES, ATTENDANCE_METHODS, DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
+import { getEnumObject } from "../utils/constantsValidator.js";
+import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
 import getClientMeta from "../utils/ipHelper.js";
-import checkPermission from "../middleware/permissionValidationMiddleware.js";
 import {
-  isValidTimeRange,
   parseDate,
   isDateAfter,
-  isDateBefore,
   addMinutesToTime,
   getISTNow,
   getCurrentDate,
@@ -21,16 +18,11 @@ import {
   normalizeWeekends,
   diffMinutes,
   normalizeHalfDayType,
-  parseOvertimeValue,
   diffMilliseconds,
-  buildShiftAnchor,
-  alignTimeToShift,
-  shiftNextDayIfBefore,
-  diffMinutesBetween,
-  formatDatetime,
-  earliestDt,
-  latestDt,
-  parseTime
+  parseTime,
+  eachDateBetween,
+  formatIST,
+  getYearFromDate
 } from "../utils/time.js";
 import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
 import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
@@ -47,7 +39,6 @@ const FACE_ATTENDANCE_METHOD = "face";
 
 const router = express.Router();
 
-// local helper for isValidDate (not in new time.js)
 const isValidDate = (value) => !!parseDate(value);
 
 function getDistanceInMeters(lat1, lon1, lat2, lon2) {
@@ -60,1137 +51,1205 @@ function getDistanceInMeters(lat1, lon1, lat2, lon2) {
   const Δλ = toRad(lon2 - lon1);
 
   const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
-
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   return R * c;
 }
 
-router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
-  let conn;
+// =============================================================================
+// REUSABLE SQL QUERY CONSTANTS
+// =============================================================================
 
-  try {
-    conn = await db.getConnection();
+const ATTENDANCE_QUERY = {
+  // --- Employee Queries ---
+  GET_EMPLOYEE_PUNCH_IN: `
+    SELECT
+      e.id,
+      e.weekends,
+      e.attendance_methods,
+      e.is_auto
+    FROM employees e
+    INNER JOIN companies c
+      ON c.id = e.company_id
+      AND c.is_active = 1
+      AND c.is_deleted = 0
+    WHERE e.user_id = ?
+      AND e.company_id = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+    LIMIT 1
+  `,
 
-    await conn.beginTransaction();
+  GET_EMPLOYEE_PUNCH_OUT: `
+    SELECT
+      e.id,
+      e.weekends,
+      e.shift_start,
+      e.shift_end,
+      e.expected_work_minutes,
+      e.break_minutes,
+      e.grace_minutes,
+      e.attendance_methods AS emp_attendance_methods,
+      e.is_auto,
+      c.company_ips,
+      c.latitude AS company_latitude,
+      c.longitude AS company_longitude,
+      c.attendance_methods,
+      c.max_distance
+    FROM employees e
+    INNER JOIN companies c
+      ON c.id = e.company_id
+      AND c.is_active = 1
+      AND c.is_deleted = 0
+    WHERE e.user_id = ?
+      AND e.company_id = ?
+      AND e.is_active = 1
+      AND e.is_deleted = 0
+    LIMIT 1
+  `,
 
-    const { attendance_method, latitude, longitude } = req.body;
+  GET_EMPLOYEE_BREAK: `
+    SELECT
+      e.id,
+      e.attendance_methods,
+      e.is_auto,
+      c.company_ips,
+      c.latitude,
+      c.longitude,
+      c.max_distance
+    FROM employees e
+    INNER JOIN companies c
+      ON c.id = e.company_id
+      AND c.is_active = 1
+      AND c.is_deleted = 0
+    WHERE e.user_id = ?
+      AND e.company_id = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+    LIMIT 1
+  `,
 
-    const user_id = Number(req.user?.id);
+  GET_EMPLOYEE_FACE_ATTENDANCE: `
+    SELECT
+      e.id,
+      e.user_id,
+      e.weekends,
+      e.shift_start,
+      e.shift_end,
+      e.grace_minutes
+    FROM employees e
+    INNER JOIN companies c
+      ON c.id = e.company_id
+      AND c.is_active = 1
+      AND c.is_deleted = 0
+    WHERE e.company_id = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+      AND (e.user_id = ? OR e.id = ?)
+    LIMIT 1
+  `,
 
-    const company_id = Number(req.company?.id);
+  GET_EMPLOYEE_FACE_DATA: `
+    SELECT face_enrolled, face_data
+    FROM employees
+    WHERE id = ?
+      AND company_id = ?
+      AND is_deleted = 0
+    LIMIT 1
+  `,
 
-    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
+  GET_EMPLOYEE_MARK: `
+    SELECT id, company_id, shift_start, shift_end, expected_work_minutes, break_minutes, grace_minutes, weekends
+    FROM employees
+    WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+    LIMIT 1 FOR UPDATE
+  `,
 
-    const VALID_METHODS = ["gps", "ip", "manual"];
+  GET_EMPLOYEE_PAST_PUNCHES: `
+    SELECT
+      e.id,
+      e.employee_code,
+      e.designation,
+      e.shift_start,
+      e.shift_end,
+      e.expected_work_minutes,
+      e.break_minutes,
+      e.grace_minutes,
+      u.name,
+      u.email,
+      u.phone
+    FROM employees e
+    INNER JOIN users u
+      ON u.id = e.user_id
+      AND u.is_deleted = 0
+      AND u.is_active = 1
+    WHERE e.user_id = ?
+      AND e.company_id = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+    LIMIT 1
+  `,
 
-    const parsedMethod = String(attendance_method || "").trim().toLowerCase();
+  GET_EMPLOYEE_CURRENT_STATUS: `
+    SELECT
+      e.id,
+      e.weekends,
+      e.shift_start,
+      e.shift_end,
+      e.expected_work_minutes,
+      e.break_minutes,
+      e.grace_minutes,
+      e.designation,
+      e.employee_code,
+      e.attendance_methods AS emp_attendance_methods,
+      e.is_auto,
+      c.name AS company_name,
+      c.attendance_methods
+    FROM employees e
+    INNER JOIN companies c
+      ON c.id = e.company_id
+    WHERE e.user_id = ?
+      AND e.company_id = ?
+      AND e.is_active = 1
+      AND e.is_deleted = 0
+      AND c.is_active = 1
+      AND c.is_deleted = 0
+    LIMIT 1
+  `,
 
-    if (!VALID_METHODS.includes(parsedMethod)) {
-      throw new Error("Invalid attendance method");
-    }
+  // --- Company Queries ---
+  GET_COMPANY_LOCATION: `
+    SELECT
+      latitude,
+      longitude,
+      company_ips,
+      max_distance
+    FROM companies
+    WHERE id = ?
+      AND is_deleted = 0
+      AND is_active = 1
+    LIMIT 1
+  `,
 
-    const attendance_date = getCurrentDate();
+  GET_COMPANY_OWNER: `SELECT owner_user_id FROM companies WHERE id = ?`,
 
-    const start_time = getCurrentTime();
+  // --- Attendance Queries ---
+  GET_EXISTING_ATTENDANCE_LOCK: `
+    SELECT id
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'attendance'
+    LIMIT 1
+    FOR UPDATE
+  `,
 
-    const [employeeRows] = await conn.query(
-      `
+  GET_ACTIVE_BREAK_PUNCH_IN: `
+    SELECT id
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'break'
+      AND end_time IS NULL
+    LIMIT 1
+  `,
+
+  GET_ACTIVE_BREAK_LOCK: `
+    SELECT id
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'break'
+      AND end_time IS NULL
+    LIMIT 1
+    FOR UPDATE
+  `,
+
+  GET_MAIN_ATTENDANCE_PUNCH_OUT_LOCK: `
+    SELECT
+      id,
+      start_time,
+      end_time,
+      is_deductible,
+      is_overtime,
+      day_status,
+      value1,
+      value2
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'attendance'
+    LIMIT 1
+    FOR UPDATE
+  `,
+
+  GET_MAIN_ATTENDANCE_BREAK_OUT: `
+    SELECT id, start_time, end_time
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'attendance'
+    LIMIT 1
+  `,
+
+  GET_OPEN_BREAK_LOCK: `
+    SELECT id, start_time
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'break'
+      AND end_time IS NULL
+    LIMIT 1
+    FOR UPDATE
+  `,
+
+  GET_FACE_STATE_MAIN_ATTENDANCE: `
+    SELECT id, start_time, end_time
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'attendance'
+    ORDER BY id DESC
+    LIMIT 1
+  `,
+
+  GET_FACE_STATE_ACTIVE_BREAK: `
+    SELECT id, start_time, end_time
+    FROM attendance
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND attendance_date = ?
+      AND type = 'break'
+      AND start_time IS NOT NULL
+      AND end_time IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `,
+
+  INSERT_ATTENDANCE_PUNCH_IN: `
+    INSERT INTO attendance (
+      employee_id,
+      company_id,
+      attendance_date,
+      type,
+      start_time,
+      is_verified,
+      verified_by,
+      verify_date,
+      day_status,
+      created_by
+    )
+    VALUES (
+      ?, ?, ?,
+      'attendance',
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?
+    )
+  `,
+
+  INSERT_FACE_PUNCH_IN: `
+    INSERT INTO attendance (
+      employee_id,
+      company_id,
+      attendance_date,
+      type,
+      start_time,
+      is_verified,
+      verified_by,
+      verify_date,
+      day_status,
+      created_by
+    )
+    VALUES (?, ?, ?, 'attendance', ?, 0, NULL, NULL, 'present', ?)
+  `,
+
+  UPDATE_ATTENDANCE_PUNCH_OUT: `
+    UPDATE attendance
+    SET
+      end_time = ?,
+      day_status = ?,
+      value1 = ?,
+      is_verified = ?,
+      verified_by = ?,
+      verify_date = ?,
+      is_overtime = ?
+    WHERE id = ?
+      AND end_time IS NULL
+  `,
+
+  INSERT_BREAK: `
+    INSERT INTO attendance (
+      employee_id,
+      company_id,
+      attendance_date,
+      type,
+      start_time,
+      is_verified,
+      verified_by,
+      verify_date,
+      is_deductible,
+      is_overtime,
+      day_status,
+      value1,
+      value2,
+      created_by
+    )
+    VALUES (
+      ?, ?, ?,
+      'break',
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?
+    )
+  `,
+
+  UPDATE_BREAK_END: `
+    UPDATE attendance
+    SET
+      end_time = ?,
+      is_verified = ?,
+      verified_by = ?,
+      verify_date = ?
+    WHERE id = ?
+  `,
+
+  GET_ATTENDANCE_APPROVE_LOCK: `
+    SELECT * FROM attendance
+    WHERE company_id = ? AND attendance_date = ? AND employee_id IN (?)
+      AND type = 'attendance'
+    FOR UPDATE
+  `,
+
+  UPDATE_ATTENDANCE_APPROVE: `
+    UPDATE attendance
+    SET start_time = ?, end_time = ?, day_status = ?, value1 = ?, value2 = ?,
+        is_verified = 1, verified_by = ?, verify_date = ?, remark = ?
+    WHERE id = ?
+  `,
+
+  INSERT_ATTENDANCE_APPROVE: `
+    INSERT INTO attendance (
+      employee_id, company_id, attendance_date, type,
+      start_time, end_time, day_status, value1, value2,
+      is_verified, verified_by, verify_date, created_by, remark
+    ) VALUES (?, ?, ?, 'attendance', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+  `,
+
+  GET_ATTENDANCE_MARK_PARENT: `
+    SELECT id, start_time, end_time, day_status
+    FROM attendance
+    WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
+    ORDER BY id DESC LIMIT 1 FOR UPDATE
+  `,
+
+  GET_ATTENDANCE_MARK_EXISTING_BY_ID: `
+    SELECT * FROM attendance
+    WHERE id = ? AND employee_id = ? AND company_id = ? AND attendance_date = ?
+    FOR UPDATE
+  `,
+
+  GET_ATTENDANCE_MARK_EXISTING_MAIN: `
+    SELECT * FROM attendance
+    WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
+    ORDER BY id DESC LIMIT 1 FOR UPDATE
+  `,
+
+  GET_ATTENDANCE_MARK_EXISTING_BREAK_BY_START: `
+    SELECT * FROM attendance
+    WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND start_time = ?
+    ORDER BY id DESC LIMIT 1 FOR UPDATE
+  `,
+
+  GET_ATTENDANCE_MARK_EXISTING_BREAK_OPEN: `
+    SELECT * FROM attendance
+    WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND end_time IS NULL
+    ORDER BY id DESC LIMIT 1 FOR UPDATE
+  `,
+
+  GET_ATTENDANCE_MARK_OVERLAPPING_BREAK: `
+    SELECT id FROM attendance
+    WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break'
+      AND id != ?
+      AND (start_time < ? AND COALESCE(end_time, '23:59:59') > ?)
+    LIMIT 1
+  `,
+
+  INSERT_ATTENDANCE_MARK: `
+    INSERT INTO attendance (
+      employee_id, company_id, attendance_date,
+      type, start_time, end_time,
+      is_deductible, is_overtime,
+      created_by,
+      is_verified, verified_by, verify_date,
+      day_status, value1, value2, value3,
+      remark
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?)
+  `,
+
+  GET_LOG_ATTENDANCE: `
+    SELECT id, type, attendance_date
+    FROM attendance
+    WHERE id = ? AND company_id = ?
+    LIMIT 1
+  `,
+
+  GET_CURRENT_STATUS_ATTENDANCES: `
+    SELECT
+      a.id,
+      a.start_time,
+      a.end_time,
+      a.is_overtime,
+      a.is_verified,
+      a.day_status,
+      a.value1,
+      a.value2,
+      start_log.method       AS punch_in_method,
+      start_log.ip_address   AS punch_in_ip,
+      start_log.latitude     AS punch_in_latitude,
+      start_log.longitude    AS punch_in_longitude,
+      end_log.method         AS punch_out_method,
+      end_log.ip_address     AS punch_out_ip,
+      end_log.latitude       AS punch_out_latitude,
+      end_log.longitude      AS punch_out_longitude
+
+    FROM attendance a
+
+    LEFT JOIN (
       SELECT
-        e.id,
-        e.weekends,
-        e.attendance_methods,
-        e.is_auto
+        al.attendance_id,
+        al.method,
+        al.ip_address,
+        al.latitude,
+        al.longitude
 
-      FROM employees e
+      FROM attendance_logs al
 
-      INNER JOIN companies c
-        ON c.id = e.company_id
-        AND c.is_active = 1
-        AND c.is_deleted = 0
-
-      WHERE
-        e.user_id = ?
-        AND e.company_id = ?
-
-        AND e.is_deleted = 0
-        AND e.is_active = 1
-      LIMIT 1
-      `,
-      [user_id, company_id],
-    );
-
-    if (!employeeRows.length) {
-      throw new Error("Employee not found");
-    }
-
-    const employee = employeeRows[0];
-
-    const employee_id = Number(employee.id);
-
-    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
-
-    if (!empMethods.includes(parsedMethod)) {
-      throw new Error("Attendance method not allowed");
-    }
-
-    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
-
-    const verified_by = is_verified === 1 ? user_id : null;
-
-    const verify_date = is_verified === 1 ? new Date() : null;
-
-    const [[existingAttendance]] = await conn.query(
-      `
+      INNER JOIN (
         SELECT
-          id
+          attendance_id,
+          MAX(id) AS max_id
 
-        FROM attendance
+        FROM attendance_logs
 
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
+        WHERE log_type = 'start'
 
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
+        GROUP BY attendance_id
+      ) t
+        ON t.max_id = al.id
+    ) start_log
+      ON start_log.attendance_id = a.id
 
-    if (existingAttendance) {
-      throw new Error("Already punched in today");
-    }
+    LEFT JOIN (
+      SELECT
+        al.attendance_id,
+        al.method,
+        al.ip_address,
+        al.latitude,
+        al.longitude
 
-    const [[activeBreak]] = await conn.query(
-      `
+      FROM attendance_logs al
+
+      INNER JOIN (
         SELECT
-          id
+          attendance_id,
+          MAX(id) AS max_id
 
-        FROM attendance
+        FROM attendance_logs
 
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
+        WHERE log_type = 'end'
 
-        LIMIT 1
-        `,
-      [employee_id, company_id, attendance_date],
-    );
+        GROUP BY attendance_id
+      ) t
+        ON t.max_id = al.id
+    ) end_log
+      ON end_log.attendance_id = a.id
 
-    if (activeBreak) {
-      throw new Error("Cannot punch-in while break is active");
-    }
+    WHERE
+      a.employee_id = ?
+      AND a.company_id = ?
+      AND a.attendance_date = ?
+      AND a.type = 'attendance'
 
-    const [[company]] = await conn.query(
-      `
+    ORDER BY a.start_time ASC
+  `,
+
+  GET_CURRENT_STATUS_BREAKS: `
+    SELECT
+      a.id,
+      a.start_time,
+      a.end_time,
+      a.is_deductible,
+      start_log.method       AS break_start_method,
+      start_log.ip_address   AS break_start_ip,
+      start_log.latitude     AS break_start_latitude,
+      start_log.longitude    AS break_start_longitude,
+      end_log.method         AS break_end_method,
+      end_log.ip_address     AS break_end_ip,
+      end_log.latitude       AS break_end_latitude,
+      end_log.longitude      AS break_end_longitude
+
+    FROM attendance a
+
+    LEFT JOIN (
+      SELECT
+        al.attendance_id,
+        al.method,
+        al.ip_address,
+        al.latitude,
+        al.longitude
+
+      FROM attendance_logs al
+
+      INNER JOIN (
         SELECT
-          latitude,
-          longitude,
-          company_ips,
-          max_distance
+          attendance_id,
+          MAX(id) AS max_id
 
-        FROM companies
+        FROM attendance_logs
 
-        WHERE id = ?
-          AND is_deleted = 0
-          AND is_active = 1
+        WHERE log_type = 'start'
 
-        LIMIT 1
-        `,
-      [company_id],
-    );
+        GROUP BY attendance_id
+      ) t
+        ON t.max_id = al.id
+    ) start_log
+      ON start_log.attendance_id = a.id
 
-    if (!company) {
-      throw new Error("Company not found");
-    }
+    LEFT JOIN (
+      SELECT
+        al.attendance_id,
+        al.method,
+        al.ip_address,
+        al.latitude,
+        al.longitude
 
-    let parsedLatitude = null;
-    let parsedLongitude = null;
+      FROM attendance_logs al
 
-    const MAX_DISTANCE = company.max_distance;
-
-    if (parsedMethod === "gps") {
-      parsedLatitude = Number(latitude);
-
-      parsedLongitude = Number(longitude);
-
-      if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
-        throw new Error("Invalid GPS coordinates");
-      }
-
-      if (parsedLatitude < -90 || parsedLatitude > 90) {
-        throw new Error("Invalid latitude range");
-      }
-
-      if (parsedLongitude < -180 || parsedLongitude > 180) {
-        throw new Error("Invalid longitude range");
-      }
-
-      if (company.latitude === null || company.longitude === null) {
-        throw new Error("Company GPS not configured");
-      }
-
-      const distance = getDistanceInMeters(Number(company.latitude), Number(company.longitude), parsedLatitude, parsedLongitude);
-
-      if (Number.isNaN(distance)) {
-        throw new Error("Unable to validate GPS distance");
-      }
-
-      if (distance > MAX_DISTANCE) {
-        throw new Error("Outside allowed location");
-      }
-    }
-
-    if (parsedMethod === "ip") {
-      if (!ip_address) {
-        throw new Error("IP address not found");
-      }
-
-      let allowedIps = [];
-
-      try {
-        allowedIps = company.company_ips ? JSON.parse(company.company_ips) : [];
-      } catch (error) {
-        throw new Error("Invalid company IP configuration");
-      }
-
-      if (!Array.isArray(allowedIps)) {
-        throw new Error("Company IP configuration must be an array");
-      }
-
-      const normalizedIp = String(ip_address).trim();
-
-      const isAllowedIp = allowedIps.some((item) => String(item).trim() === normalizedIp);
-
-      if (!isAllowedIp) {
-        throw new Error("IP address not allowed");
-      }
-    }
-
-    let day_status = "present";
-
-    const weekendStatus = weekendInfo(attendance_date, employee.weekends);
-
-    if (weekendStatus?.isWeekend) {
-      throw new Error("Today is a weekend");
-    }
-
-    const [[holiday]] = await conn.query(
-      `
+      INNER JOIN (
         SELECT
-          id,
-          name
+          attendance_id,
+          MAX(id) AS max_id
 
-        FROM holidays
+        FROM attendance_logs
 
-        WHERE company_id = ?
-          AND date = ?
+        WHERE log_type = 'end'
 
-          AND is_optional = 0
-          AND is_deleted = 0
-          AND is_active = 1
+        GROUP BY attendance_id
+      ) t
+        ON t.max_id = al.id
+    ) end_log
+      ON end_log.attendance_id = a.id
 
-        LIMIT 1
-        `,
-      [company_id, attendance_date],
-    );
+    WHERE
+      a.employee_id = ?
+      AND a.company_id = ?
+      AND a.attendance_date = ?
+      AND a.type = 'break'
 
-    if (holiday) {
-      throw new Error("Cannot punch in on holiday");
+    ORDER BY a.start_time ASC
+  `,
+
+  // --- Day Status Check Queries ---
+  GET_CHECK_COMPANY: `
+    SELECT id
+    FROM companies
+    WHERE id = ?
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  GET_CHECK_EMPLOYEE: `
+    SELECT id
+    FROM employees
+    WHERE id = ?
+      AND company_id = ?
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  GET_CHECK_HOLIDAY: `
+    SELECT id, name
+    FROM holidays
+    WHERE company_id = ?
+      AND date = ?
+      AND is_optional = 0
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  GET_CHECK_LEAVE: `
+    SELECT id, is_half_day
+    FROM employee_leaves
+    WHERE employee_id = ?
+      AND company_id = ?
+      AND status = 'approved'
+      AND is_active = 1
+      AND is_deleted = 0
+      AND ? BETWEEN start_date AND end_date
+    LIMIT 1
+  `,
+
+  // --- Holiday Queries ---
+  GET_HOLIDAY_BY_DATE: `
+    SELECT
+      id,
+      name
+    FROM holidays
+    WHERE company_id = ?
+      AND date = ?
+      AND is_optional = 0
+      AND is_deleted = 0
+      AND is_active = 1
+    LIMIT 1
+  `,
+
+  GET_HOLIDAY_SIMPLE: `
+    SELECT id
+    FROM holidays
+    WHERE company_id = ?
+      AND date = ?
+      AND is_optional = 0
+      AND is_deleted = 0
+      AND is_active = 1
+    LIMIT 1
+  `,
+
+  GET_HOLIDAY_CURRENT_STATUS: `
+    SELECT
+      id,
+      name
+    FROM holidays
+    WHERE company_id = ?
+      AND date = ?
+      AND is_optional = 0
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  // --- Leave Queries ---
+  GET_APPROVED_LEAVE: `
+    SELECT
+      el.id,
+      el.employee_id,
+      el.company_id,
+      el.leave_config_id,
+      el.start_date,
+      el.end_date,
+      el.total_days,
+      el.is_half_day,
+      el.half_day_type,
+      lc.code,
+      lc.is_paid
+    FROM employee_leaves el
+    INNER JOIN leave_configs lc
+      ON lc.id = el.leave_config_id
+    WHERE el.employee_id = ?
+      AND el.company_id = ?
+      AND el.status = 'approved'
+      AND el.is_active = 1
+      AND el.is_deleted = 0
+      AND lc.is_deleted = 0
+      AND ? BETWEEN el.start_date AND el.end_date
+    LIMIT 1
+    FOR UPDATE
+  `,
+
+  GET_APPROVED_LEAVE_READ: `
+    SELECT
+      el.id,
+      el.employee_id,
+      el.company_id,
+      el.leave_config_id,
+      el.start_date,
+      el.end_date,
+      el.total_days,
+      el.is_half_day,
+      el.half_day_type,
+      lc.code,
+      lc.is_paid
+    FROM employee_leaves el
+    INNER JOIN leave_configs lc
+      ON lc.id = el.leave_config_id
+    WHERE el.employee_id = ?
+      AND el.company_id = ?
+      AND el.status = 'approved'
+      AND el.is_active = 1
+      AND el.is_deleted = 0
+      AND lc.is_deleted = 0
+      AND ? BETWEEN el.start_date AND el.end_date
+    LIMIT 1
+  `,
+
+  GET_PAID_LEAVE_CONFIG: `
+    SELECT id FROM leave_configs
+    WHERE company_id = ? AND code = ? AND is_paid = 1 AND is_active = 1 AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  // --- Dashboard Queries ---
+  GET_DASHBOARD_EMPLOYEE_STATS: `
+    SELECT
+      COUNT(*) AS total_employees,
+      SUM(CASE WHEN e.status = 'active' THEN 1 ELSE 0 END) AS active_employees,
+      SUM(CASE WHEN e.status != 'active' THEN 1 ELSE 0 END) AS inactive_employees,
+      SUM(CASE WHEN e.face_enrolled = 1 THEN 1 ELSE 0 END) AS face_enrolled_count,
+      SUM(CASE WHEN e.fingerprint_mapped = 1 THEN 1 ELSE 0 END) AS fingerprint_mapped_count
+    FROM employees e
+    INNER JOIN users u ON u.id = e.user_id
+    WHERE e.company_id = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+      AND e.is_active = 1
+      AND u.is_deleted = 0
+      AND u.is_active = 1
+      AND (e.joining_date IS NULL OR e.joining_date <= ?)
+  `,
+
+  GET_DASHBOARD_ATTENDANCE_STATS: `
+    SELECT
+      COUNT(DISTINCT CASE WHEN a.day_status IN ('present', 'half_day') THEN a.employee_id END) AS present_count,
+      COUNT(DISTINCT CASE WHEN a.day_status = 'absent' THEN a.employee_id END) AS absent_count,
+      COUNT(DISTINCT CASE WHEN a.day_status = 'half_day' THEN a.employee_id END) AS half_day_count,
+      COUNT(DISTINCT CASE WHEN a.day_status = 'paid_leave' THEN a.employee_id END) AS paid_leave_count,
+      COUNT(DISTINCT CASE WHEN a.day_status = 'unmarked' THEN a.employee_id END) AS unmarked_count,
+      COUNT(DISTINCT CASE WHEN a.is_verified = 1 THEN a.employee_id END) AS verified_attendance_count,
+      COUNT(DISTINCT CASE WHEN a.is_verified = 0 THEN a.employee_id END) AS unverified_attendance_count,
+      COUNT(DISTINCT CASE WHEN a.is_overtime = 1 THEN a.employee_id END) AS overtime_employee_count,
+      COUNT(DISTINCT CASE WHEN a.type = 'attendance' THEN a.id END) AS attendance_entries,
+      COUNT(DISTINCT CASE WHEN a.type = 'break' THEN a.id END) AS break_entries
+    FROM attendance a
+    INNER JOIN employees e ON e.id = a.employee_id
+    INNER JOIN users u ON u.id = e.user_id
+    WHERE a.company_id = ?
+      AND a.attendance_date = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
+      AND u.is_deleted = 0
+      AND u.is_active = 1
+  `,
+
+  GET_DASHBOARD_SHIFT_STATS: `
+    SELECT
+      COUNT(*) AS total_shifts,
+      SUM(worked_minutes) AS total_worked_minutes,
+      SUM(allowed_break_minutes) AS total_break_minutes,
+      SUM(extra_break_minutes) AS total_extra_break_minutes,
+      SUM(overtime_minutes) AS total_overtime_minutes,
+      SUM(late_minutes) AS total_late_minutes,
+      SUM(early_leave_minutes) AS total_early_leave_minutes,
+      AVG(worked_minutes) AS avg_worked_minutes
+    FROM shifts
+    WHERE company_id = ?
+      AND shift_date = ?
+      AND is_deleted = 0
+  `,
+
+  GET_DASHBOARD_LEAVE_STATS: `
+    SELECT
+      status,
+      COUNT(*) AS total_requests,
+      COUNT(DISTINCT employee_id) AS total_employees,
+      SUM(total_days) AS total_leave_days
+    FROM employee_leaves
+    WHERE company_id = ?
+      AND is_deleted = 0
+      AND is_active = 1
+      AND start_date <= ?
+      AND end_date >= ?
+    GROUP BY status
+  `,
+
+  GET_DASHBOARD_HOLIDAY_STATS: `
+    SELECT
+      COUNT(*) AS total_holidays,
+      SUM(CASE WHEN is_optional = 1 THEN 1 ELSE 0 END) AS optional_holidays,
+      SUM(CASE WHEN is_optional = 0 THEN 1 ELSE 0 END) AS mandatory_holidays
+    FROM holidays
+    WHERE company_id = ?
+      AND is_deleted = 0
+      AND is_active = 1
+      AND YEAR(date) = YEAR(?)
+  `,
+
+  // --- User Queries ---
+  GET_CHECK_USER: `
+    SELECT id
+    FROM users
+    WHERE id = ?
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  // --- Full Company Query ---
+  GET_CHECK_COMPANY_FULL: `
+    SELECT
+      id,
+      name,
+      latitude,
+      longitude,
+      company_ips,
+      attendance_methods,
+      max_distance
+    FROM companies
+    WHERE id = ?
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  // --- Full Employee Query ---
+  GET_CHECK_EMPLOYEE_FULL: `
+    SELECT
+      id,
+      company_id,
+      user_id,
+      attendance_methods,
+      is_auto,
+      shift_start,
+      shift_end,
+      expected_work_minutes,
+      break_minutes,
+      grace_minutes,
+      weekends
+    FROM employees
+    WHERE user_id = ?
+      AND company_id = ?
+      AND is_active = 1
+      AND is_deleted = 0
+    LIMIT 1
+  `,
+
+  // --- Leave Management Queries ---
+  CANCEL_EMPLOYEE_LEAVE: `
+    UPDATE employee_leaves
+    SET status = 'cancelled', is_active = 0, cancelled_at = NOW(), updated_by = ?, updated_at = NOW()
+    WHERE id = ?
+  `,
+
+  GET_EMPLOYEE_WEEKENDS: `
+    SELECT weekends FROM employees WHERE id = ? AND company_id = ? LIMIT 1
+  `,
+
+  GET_RANGE_HOLIDAYS: `
+    SELECT date FROM holidays WHERE company_id = ? AND is_optional = 0 AND is_active = 1 AND is_deleted = 0 AND date BETWEEN ? AND ?
+  `,
+
+  COPY_LEAVE_SEGMENT: `
+    INSERT INTO employee_leaves (
+      company_id, employee_id, leave_config_id, start_date, end_date, total_days,
+      is_half_day, half_day_type, reason, status, approved_by, approved_at,
+      approval_remarks, applied_at, is_active, created_at, created_by,
+      updated_at, updated_by, is_deleted
+    )
+    SELECT
+      company_id, employee_id, leave_config_id, ?, ?, ?,
+      is_half_day, half_day_type, reason, status, approved_by, approved_at,
+      approval_remarks, applied_at, 1, created_at, created_by,
+      NOW(), ?, 0
+    FROM employee_leaves
+    WHERE id = ?
+  `,
+
+  COPY_LEAVE_ATTACHMENTS: `
+    INSERT INTO employee_leave_attachments (
+      leave_id, file_url, file_type, file_size, is_active, created_at, created_by,
+      updated_at, updated_by, is_deleted
+    )
+    SELECT
+      ?, file_url, file_type, file_size, is_active, created_at, created_by,
+      NOW(), ?, 0
+    FROM employee_leave_attachments
+    WHERE leave_id = ? AND is_deleted = 0
+  `
+};
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Reusable common validation function for /punch-in, /punch-out, /break-in, /break-out routes.
+ * Performs ordered validation steps:
+ * 1. User existence & active check
+ * 2. Company existence & active check
+ * 3. Employee existence & active check
+ * 4. Day status check (Company Holiday or Full-Day Leave check)
+ * 5. Attendance Method permission check (allowed in both company & employee settings)
+ * 6. Method dependent parameter validation (GPS coordinates/distance & IP whitelist)
+ */
+async function validateAttendanceCommon(conn, {
+  user_id,
+  company_id,
+  attendance_date,
+  attendance_method,
+  latitude,
+  longitude,
+  ip_address
+}) {
+  const userId = Number(user_id);
+  const compId = Number(company_id);
+
+  // 1. Check user exist
+  if (!userId) {
+    throw new Error("User not found");
+  }
+  const [[user]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_USER, [userId]);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  // 2. Check company exist & active
+  if (!compId) {
+    throw new Error("Company not found");
+  }
+  const [[company]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_COMPANY_FULL, [compId]);
+  if (!company) {
+    throw new Error("Company not found");
+  }
+
+  // 3. Check employee exist & active
+  const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_EMPLOYEE_FULL, [userId, compId]);
+  if (!employee) {
+    throw new Error("Employee not found");
+  }
+
+  // 4. Day status check (Holiday or Leave)
+  const [[holiday]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_HOLIDAY, [compId, attendance_date]);
+  if (holiday) {
+    throw new Error("Today is a company holiday");
+  }
+
+  const [[leave]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_LEAVE, [employee.id, compId, attendance_date]);
+  if (leave && Number(leave.is_half_day) !== 1) {
+    throw new Error("Employee is on leave today");
+  }
+
+  // 5. Attendance method check (Company AND Employee must both allow it)
+  const parsedMethod = String(attendance_method || "").trim().toLowerCase();
+  if (!parsedMethod) {
+    throw new Error("Attendance method is required");
+  }
+
+  const companyMethods = JSON.parse(company.attendance_methods || "[]").map((m) => String(m).trim().toLowerCase());
+  if (!companyMethods.includes(parsedMethod)) {
+    throw new Error("Attendance method not allowed by company");
+  }
+
+  const employeeMethods = JSON.parse(employee.attendance_methods || "[]").map((m) => String(m).trim().toLowerCase());
+  if (!employeeMethods.includes(parsedMethod)) {
+    throw new Error("Attendance method not allowed for employee");
+  }
+
+  // 6. Validate dependent fields (GPS, IP, Manual)
+  const { parsedLatitude, parsedLongitude } = validateMethodAndLocation({
+    parsedMethod,
+    latitude,
+    longitude,
+    ip_address,
+    maxDistance: company.max_distance,
+    companyLatitude: company.latitude,
+    companyLongitude: company.longitude,
+    companyIps: company.company_ips,
+    ipNotDetectedMsg: "IP address not found",
+    ipNotAllowedMsg: "IP address not allowed"
+  });
+
+  return {
+    user,
+    company,
+    employee,
+    leave: leave || null,
+    parsedMethod,
+    parsedLatitude,
+    parsedLongitude
+  };
+}
+
+function validateMethodAndLocation({
+  parsedMethod,
+  latitude,
+  longitude,
+  ip_address,
+  maxDistance,
+  companyLatitude,
+  companyLongitude,
+  companyIps,
+  ipNotDetectedMsg = "IP address not found",
+  ipNotAllowedMsg = "IP address not allowed"
+}) {
+  const VALID_METHODS = ["gps", "ip", "manual"];
+
+  if (!VALID_METHODS.includes(parsedMethod)) {
+    throw new Error("Invalid attendance method");
+  }
+
+  let parsedLatitude = null;
+  let parsedLongitude = null;
+
+  if (parsedMethod === "gps") {
+    parsedLatitude = Number(latitude);
+    parsedLongitude = Number(longitude);
+
+    if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
+      throw new Error("Invalid GPS coordinates");
     }
 
-    const [attendanceResult] = await conn.query(
-      `
-        INSERT INTO attendance (
-          employee_id,
-          company_id,
-          attendance_date,
-          type,
-          start_time,
-          is_verified,
-          verified_by,
-          verify_date,
-          day_status,
-          created_by
-        )
-        VALUES (
-          ?, ?, ?,
-          'attendance',
-
-          ?,
-
-          ?,
-          ?,
-          ?,
-
-          ?,
-
-          ?
-        )
-        `,
-      [employee_id, company_id, attendance_date, start_time, is_verified, verified_by, verify_date, day_status, user_id],
-    );
-
-    const attendance_id = Number(attendanceResult.insertId);
-
-    await createAttendanceLog(conn, { attendance_id, log_type: "start", method: parsedMethod, time: start_time, ip_address: parsedMethod === "ip" ? ip_address : null, latitude: parsedMethod === "gps" ? parsedLatitude : null, longitude: parsedMethod === "gps" ? parsedLongitude : null, status: 1, created_by: user_id, updated_by: user_id });
-
-    await conn.commit();
-
-    return res.status(201).json({
-      success: true,
-      message: "Punch-in successful",
-    });
-  } catch (error) {
-    if (conn) {
-      await conn.rollback();
+    if (parsedLatitude < -90 || parsedLatitude > 90) {
+      throw new Error("Invalid latitude range");
     }
 
-    console.error("Punch-in Error:", error);
+    if (parsedLongitude < -180 || parsedLongitude > 180) {
+      throw new Error("Invalid longitude range");
+    }
 
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Punch-in failed",
-    });
-  } finally {
-    if (conn) {
-      conn.release();
+    if (companyLatitude === null || companyLongitude === null || companyLatitude == null || companyLongitude == null) {
+      throw new Error("Company GPS not configured");
+    }
+
+    const distance = getDistanceInMeters(Number(companyLatitude), Number(companyLongitude), parsedLatitude, parsedLongitude);
+
+    if (Number.isNaN(distance)) {
+      throw new Error("Unable to validate GPS distance");
+    }
+
+    if (distance > maxDistance) {
+      throw new Error("Outside allowed location");
     }
   }
-});
 
-router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    await conn.beginTransaction();
-
-    const { attendance_method, latitude, longitude } = req.body;
-
-    const user_id = Number(req.user?.id);
-
-    const company_id = Number(req.company?.id);
-
-    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
-
-    const VALID_METHODS = ["gps", "ip", "manual"];
-
-    const parsedMethod = String(attendance_method || "").trim().toLowerCase();
-
-    if (!VALID_METHODS.includes(parsedMethod)) {
-      throw new Error("Invalid attendance method");
+  if (parsedMethod === "ip") {
+    if (!ip_address) {
+      throw new Error(ipNotDetectedMsg);
     }
 
-    const attendance_date = getCurrentDate();
+    let allowedIps = [];
 
-    const end_time = getCurrentTime();
-
-    const [employeeRows] = await conn.query(
-      `
-        SELECT
-          e.id,
-          e.weekends,
-          e.shift_start,
-          e.shift_end,
-          e.expected_work_minutes,
-          e.break_minutes,
-          e.grace_minutes,
-          e.attendance_methods AS emp_attendance_methods,
-          e.is_auto,
-          c.company_ips,
-          c.latitude AS company_latitude,
-          c.longitude AS company_longitude,
-          c.attendance_methods,
-          c.max_distance
-
-        FROM employees e
-
-        INNER JOIN companies c
-          ON c.id = e.company_id
-          AND c.is_active = 1
-          AND c.is_deleted = 0
-
-        WHERE e.user_id = ?
-          AND e.company_id = ?
-          AND e.is_active = 1
-          AND e.is_deleted = 0
-        LIMIT 1
-        `,
-      [user_id, company_id],
-    );
-
-    if (!employeeRows.length) {
-      throw new Error("Employee not found");
+    try {
+      allowedIps = companyIps ? JSON.parse(companyIps) : [];
+    } catch (error) {
+      throw new Error("Invalid company IP configuration");
     }
 
-    const employee = employeeRows[0];
-
-    const employee_id = Number(employee.id);
-
-    const empMethods = JSON.parse(employee.emp_attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
-
-    if (!empMethods.includes(parsedMethod)) {
-      throw new Error("Attendance method not allowed");
+    if (!Array.isArray(allowedIps)) {
+      throw new Error("Company IP configuration must be an array");
     }
 
-    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
+    const normalizedIp = String(ip_address).trim();
+    const isAllowedIp = allowedIps.some((item) => String(item).trim() === normalizedIp);
 
-    const verified_by = is_verified === 1 ? user_id : null;
-
-    const verify_date = is_verified === 1 ? new Date() : null;
-
-    let parsedLatitude = null;
-    let parsedLongitude = null;
-
-    const MAX_DISTANCE = employee.max_distance;
-
-    if (parsedMethod === "gps") {
-      parsedLatitude = Number(latitude);
-
-      parsedLongitude = Number(longitude);
-
-      if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
-        throw new Error("Invalid GPS coordinates");
-      }
-
-      if (parsedLatitude < -90 || parsedLatitude > 90) {
-        throw new Error("Invalid latitude range");
-      }
-
-      if (parsedLongitude < -180 || parsedLongitude > 180) {
-        throw new Error("Invalid longitude range");
-      }
-
-      if (employee.company_latitude == null || employee.company_longitude == null) {
-        throw new Error("Company GPS not configured");
-      }
-
-      const distance = getDistanceInMeters(Number(employee.company_latitude), Number(employee.company_longitude), parsedLatitude, parsedLongitude);
-
-      if (Number.isNaN(distance)) {
-        throw new Error("Unable to validate GPS distance");
-      }
-
-      if (distance > MAX_DISTANCE) {
-        throw new Error("Outside allowed location");
-      }
-    }
-
-    if (parsedMethod === "ip") {
-      if (!ip_address) {
-        throw new Error("IP address not detected");
-      }
-
-      let allowedIps = [];
-
-      try {
-        allowedIps = employee.company_ips ? JSON.parse(employee.company_ips) : [];
-      } catch (error) {
-        throw new Error("Invalid company IP configuration");
-      }
-
-      if (!Array.isArray(allowedIps)) {
-        throw new Error("Company IP configuration must be an array");
-      }
-
-      const normalizedIp = String(ip_address).trim();
-
-      const isAllowedIp = allowedIps.some((item) => String(item).trim() === normalizedIp);
-
-      if (!isAllowedIp) {
-        throw new Error("Not connected to company network");
-      }
-    }
-
-    const [[attendance]] = await conn.query(
-      `
-        SELECT
-          id,
-          start_time,
-          end_time,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (!attendance) {
-      throw new Error("No attendance found");
-    }
-
-    if (attendance.end_time) {
-      throw new Error("Already punched out");
-    }
-
-    if (String(end_time) <= String(attendance.start_time)) {
-      throw new Error("Punch-out time must be after punch-in");
-    }
-
-    const [[activeBreak]] = await conn.query(
-      `
-        SELECT
-          id
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (activeBreak) {
-      throw new Error("Break session still active");
-    }
-
-    let day_status = "present";
-
-    let value1 = null;
-
-    const [[leave]] = await conn.query(
-      `
-        SELECT
-          el.id,
-          el.is_half_day,
-          el.half_day_type,
-          lc.code,
-          lc.is_paid
-
-        FROM employee_leaves el
-
-        INNER JOIN leave_configs lc
-          ON lc.id = el.leave_config_id
-
-        WHERE el.employee_id = ?
-          AND el.company_id = ?
-
-          AND el.status = 'approved'
-
-          AND el.is_active = 1
-          AND el.is_deleted = 0
-
-          AND lc.is_deleted = 0
-
-          AND ? BETWEEN el.start_date
-          AND el.end_date
-
-        LIMIT 1
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (leave) {
-      if (Number(leave.is_half_day) !== 1) {
-        await conn.query(
-          `
-          UPDATE employee_leaves
-
-          SET
-            status = 'cancelled',
-            cancelled_at = NOW(),
-            updated_by = ?,
-            updated_at = NOW()
-
-          WHERE id = ?
-          `,
-          [user_id, leave.id],
-        );
-
-        day_status = "present";
-      } else {
-        day_status = "half_day";
-
-        value1 = leave.half_day_type || null;
-      }
-    }
-
-    const [updateResult] = await conn.query(
-      `
-        UPDATE attendance
-
-        SET
-          end_time = ?,
-          day_status = ?,
-          value1 = ?,
-          is_verified = ?,
-          verified_by = ?,
-          verify_date = ?,
-          is_overtime = ?
-
-        WHERE id = ?
-          AND end_time IS NULL
-        `,
-      [end_time, day_status, value1, is_verified, verified_by, verify_date, 1, attendance.id],
-    );
-
-    if (Number(updateResult.affectedRows) !== 1) {
-      throw new Error("Failed to complete punch-out");
-    }
-
-    await createAttendanceLog(conn, { attendance_id: attendance.id, log_type: "end", method: parsedMethod, time: end_time, ip_address: parsedMethod === "ip" ? ip_address : null, latitude: parsedMethod === "gps" ? parsedLatitude : null, longitude: parsedMethod === "gps" ? parsedLongitude : null, status: 1, created_by: user_id, updated_by: user_id });
-
-    await createAttendanceLog(conn, { attendance_id: attendance.id, log_type: "day_status", method: "emp_cre", time: end_time, extra_data: { day_status }, status: 1, created_by: user_id, updated_by: user_id });
-
-    await generateShift(conn, employee_id, company_id, attendance_date, user_id);
-
-    if (is_verified) {
-      const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-
-      if (existingPayroll) {
-        await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
-      }
-    }
-
-    await conn.commit();
-
-    return res.status(200).json({
-      success: true,
-      message: "Punch-out successful",
-    });
-  } catch (error) {
-    if (conn) {
-      await conn.rollback();
-    }
-
-    console.error("Punch-out Error:", error);
-
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Punch-out failed",
-    });
-  } finally {
-    if (conn) {
-      conn.release();
+    if (!isAllowedIp) {
+      throw new Error(ipNotAllowedMsg);
     }
   }
-});
 
-router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    await conn.beginTransaction();
-
-    const { attendance_method, latitude, longitude } = req.body;
-
-    const user_id = Number(req.user?.id);
-
-    const company_id = Number(req.company?.id);
-
-    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
-
-    const VALID_METHODS = ["gps", "ip", "manual"];
-
-    const parsedMethod = String(attendance_method || "").trim().toLowerCase();
-
-    if (!VALID_METHODS.includes(parsedMethod)) {
-      throw new Error("Invalid attendance method");
-    }
-
-    const attendance_date = getCurrentDate();
-
-    const break_time = getCurrentTime();
-
-    const [employeeRows] = await conn.query(
-      `
-        SELECT
-          e.id,
-          e.attendance_methods,
-          e.is_auto,
-          c.company_ips,
-          c.latitude,
-          c.longitude,
-          c.max_distance
-
-        FROM employees e
-
-        INNER JOIN companies c
-          ON c.id = e.company_id
-          AND c.is_active = 1
-          AND c.is_deleted = 0
-
-        WHERE e.user_id = ?
-          AND e.company_id = ?
-          AND e.is_deleted = 0
-          AND e.is_active = 1
-        LIMIT 1
-        `,
-      [user_id, company_id],
-    );
-
-    if (!employeeRows.length) {
-      throw new Error("Employee not found");
-    }
-
-    const employee = employeeRows[0];
-
-    const employee_id = Number(employee.id);
-
-    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
-
-    if (!empMethods.includes(parsedMethod)) {
-      throw new Error("Attendance method not allowed");
-    }
-
-    const is_verified = 1;
-
-    const verified_by = is_verified === 1 ? user_id : null;
-
-    const verify_date = is_verified === 1 ? new Date() : null;
-
-    const [[mainAttendance]] = await conn.query(
-      `
-        SELECT
-          id,
-          start_time,
-          end_time,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (!mainAttendance) {
-      throw new Error("Punch-in required before break");
-    }
-
-    if (mainAttendance.end_time) {
-      throw new Error("Cannot start break after punch-out");
-    }
-
-    if (break_time <= mainAttendance.start_time) {
-      throw new Error("Invalid break time");
-    }
-
-    const [[activeBreak]] = await conn.query(
-      `
-        SELECT
-          id
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (activeBreak) {
-      throw new Error("Break already active");
-    }
-
-    let parsedLatitude = null;
-    let parsedLongitude = null;
-
-    const MAX_DISTANCE = employee.max_distance;
-
-    if (parsedMethod === "gps") {
-      parsedLatitude = Number(latitude);
-
-      parsedLongitude = Number(longitude);
-
-      if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
-        throw new Error("Invalid GPS coordinates");
-      }
-
-      if (parsedLatitude < -90 || parsedLatitude > 90) {
-        throw new Error("Invalid latitude range");
-      }
-
-      if (parsedLongitude < -180 || parsedLongitude > 180) {
-        throw new Error("Invalid longitude range");
-      }
-
-      if (employee.latitude === null || employee.longitude === null) {
-        throw new Error("Company GPS not configured");
-      }
-
-      const distance = getDistanceInMeters(Number(employee.latitude), Number(employee.longitude), parsedLatitude, parsedLongitude);
-
-      if (Number.isNaN(distance)) {
-        throw new Error("Unable to validate GPS distance");
-      }
-
-      if (distance > MAX_DISTANCE) {
-        throw new Error("Outside allowed location");
-      }
-    }
-
-    if (parsedMethod === "ip") {
-      if (!ip_address) {
-        throw new Error("IP address not found");
-      }
-
-      let allowedIps = [];
-
-      try {
-        allowedIps = employee.company_ips ? JSON.parse(employee.company_ips) : [];
-      } catch (error) {
-        throw new Error("Invalid company IP configuration");
-      }
-
-      if (!Array.isArray(allowedIps)) {
-        throw new Error("Company IP configuration must be an array");
-      }
-
-      const normalizedIp = String(ip_address).trim();
-
-      const isAllowedIp = allowedIps.some((item) => String(item).trim() === normalizedIp);
-
-      if (!isAllowedIp) {
-        throw new Error("IP address not allowed");
-      }
-    }
-
-    const [breakResult] = await conn.query(
-      `
-        INSERT INTO attendance (
-          employee_id,
-          company_id,
-          attendance_date,
-          type,
-          start_time,
-          is_verified,
-          verified_by,
-          verify_date,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2,
-          created_by
-        )
-        VALUES (
-          ?, ?, ?,
-          'break',
-
-          ?,
-
-          ?,
-          ?,
-          ?,
-
-          ?,
-          ?,
-
-          ?,
-          ?,
-          ?,
-
-          ?
-        )
-        `,
-      [employee_id, company_id, attendance_date, break_time, is_verified, verified_by, verify_date, Number(mainAttendance.is_deductible) || 0, Number(mainAttendance.is_overtime) || 0, mainAttendance.day_status, mainAttendance.value1 || null, mainAttendance.value2 || null, user_id],
-    );
-
-    const attendance_id = Number(breakResult.insertId);
-
-    await createAttendanceLog(conn, { attendance_id, log_type: "start", method: parsedMethod, time: break_time, ip_address: parsedMethod === "ip" ? ip_address : null, latitude: parsedMethod === "gps" ? parsedLatitude : null, longitude: parsedMethod === "gps" ? parsedLongitude : null, status: 1, created_by: user_id, updated_by: user_id });
-
-    await conn.commit();
-
-    return res.status(201).json({
-      success: true,
-      message: "Break started successfully",
-    });
-  } catch (error) {
-    if (conn) {
-      await conn.rollback();
-    }
-
-    console.error("Break-in Error:", error);
-
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Break start failed",
-    });
-  } finally {
-    if (conn) {
-      conn.release();
-    }
+  return { parsedLatitude, parsedLongitude };
+}
+
+function parseEmployeeMethods(rawMethods) {
+  return JSON.parse(rawMethods || "[]").map((m) => String(m).trim().toLowerCase());
+}
+
+const normalizeTime = (value) => {
+  if (!value) return null;
+  return parseTime(value, "HH:mm:ss") || null;
+};
+
+const timeToMinutes = (time) => {
+  if (!time) return null;
+  const parts = String(time).split(":").map(Number);
+  return parts[0] * 60 + (parts[1] || 0);
+};
+
+const calculateMinutesBetween = (start, end) => {
+  if (!start || !end) return 0;
+  const startMins = timeToMinutes(start);
+  const endMins = timeToMinutes(end);
+  if (startMins === null || endMins === null) return 0;
+  return Math.max(0, endMins - startMins);
+};
+
+const minutesToTime = (minutes) => {
+  const normalized = ((minutes % 1440) + 1440) % 1440;
+  const hours = String(Math.floor(normalized / 60)).padStart(2, "0");
+  const mins = String(normalized % 60).padStart(2, "0");
+  return `${hours}:${mins}:00`;
+};
+
+const getShiftMidpoint = (shiftStart, shiftEnd) => {
+  const startMinutes = timeToMinutes(shiftStart) || 0;
+  let endMinutes = timeToMinutes(shiftEnd) || 0;
+  if (endMinutes <= startMinutes) endMinutes += 1440;
+  return minutesToTime(Math.floor((startMinutes + endMinutes) / 2));
+};
+
+const buildPunchObject = (time, method, latitude, longitude, ip_address) => {
+  if (!time) return null;
+  return {
+    time,
+    method: method || null,
+    latitude: latitude !== null && latitude !== undefined ? Number(latitude) : null,
+    longitude: longitude !== null && longitude !== undefined ? Number(longitude) : null,
+    ip_address: ip_address || null,
+  };
+};
+
+const normalizeDayStatus = (status) => {
+  if (!status) return "unmarked";
+  const normalized = String(status).trim().toLowerCase();
+  if (normalized === "paid_leave") return "leave";
+  return normalized;
+};
+
+const buildDayStatusPayload = ({ dayStatus, value1, value2 }) => {
+  const normalizedStatus = normalizeDayStatus(dayStatus);
+  if (normalizedStatus === "half_day") {
+    return { half_day_session: value1 || null };
   }
-});
-
-router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
-  let conn;
-
-  try {
-    conn = await db.getConnection();
-
-    await conn.beginTransaction();
-
-    const { attendance_method, latitude, longitude } = req.body;
-
-    const user_id = Number(req.user?.id);
-
-    const company_id = Number(req.company?.id);
-
-    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
-
-    const VALID_METHODS = ["gps", "ip", "manual"];
-
-    const parsedMethod = String(attendance_method || "").trim().toLowerCase();
-
-    if (!VALID_METHODS.includes(parsedMethod)) {
-      throw new Error("Invalid attendance method");
+  if (normalizedStatus === "leave") {
+    const leaveType = value1 || null;
+    const payload = { leave_type: leaveType };
+    if (String(leaveType || "").trim().toLowerCase() === "paid") {
+      payload.leave_sub_type = value2 || null;
     }
-
-    const attendance_date = getCurrentDate();
-
-    const end_time = getCurrentTime();
-
-    const [employeeRows] = await conn.query(
-      `
-        SELECT
-          e.id,
-          e.attendance_methods,
-          e.is_auto,
-          c.company_ips,
-          c.latitude,
-          c.longitude,
-          c.max_distance
-
-        FROM employees e
-
-        INNER JOIN companies c
-          ON c.id = e.company_id
-          AND c.is_active = 1
-          AND c.is_deleted = 0
-
-        WHERE e.user_id = ?
-          AND e.company_id = ?
-          AND e.is_deleted = 0
-          AND e.is_active = 1
-        LIMIT 1
-        `,
-      [user_id, company_id],
-    );
-
-    if (!employeeRows.length) {
-      throw new Error("Employee not found");
-    }
-
-    const employee = employeeRows[0];
-
-    const employee_id = Number(employee.id);
-
-    const empMethods = JSON.parse(employee.attendance_methods || '[]').map(m => String(m).trim().toLowerCase());
-
-    if (!empMethods.includes(parsedMethod)) {
-      throw new Error("Attendance method not allowed");
-    }
-
-    const is_verified = 1;
-
-    const verified_by = is_verified === 1 ? user_id : null;
-
-    const verify_date = is_verified === 1 ? new Date() : null;
-
-    const [[mainAttendance]] = await conn.query(
-      `
-        SELECT
-          id,
-          start_time,
-          end_time
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-
-        LIMIT 1
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (!mainAttendance) {
-      throw new Error("Punch-in required before break-out");
-    }
-
-    if (mainAttendance.end_time) {
-      throw new Error("Cannot end break after punch-out");
-    }
-
-    const [[openBreak]] = await conn.query(
-      `
-        SELECT
-          id,
-          start_time
-
-        FROM attendance
-
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-
-        LIMIT 1
-        FOR UPDATE
-        `,
-      [employee_id, company_id, attendance_date],
-    );
-
-    if (!openBreak) {
-      throw new Error("No active break found");
-    }
-
-    if (end_time <= openBreak.start_time) {
-      throw new Error("Invalid break end time");
-    }
-
-    let parsedLatitude = null;
-    let parsedLongitude = null;
-
-    const MAX_DISTANCE = employee.max_distance;
-
-    if (parsedMethod === "gps") {
-      parsedLatitude = Number(latitude);
-
-      parsedLongitude = Number(longitude);
-
-      if (Number.isNaN(parsedLatitude) || Number.isNaN(parsedLongitude)) {
-        throw new Error("Invalid GPS coordinates");
-      }
-
-      if (parsedLatitude < -90 || parsedLatitude > 90) {
-        throw new Error("Invalid latitude range");
-      }
-
-      if (parsedLongitude < -180 || parsedLongitude > 180) {
-        throw new Error("Invalid longitude range");
-      }
-
-      if (employee.latitude === null || employee.longitude === null) {
-        throw new Error("Company GPS not configured");
-      }
-
-      const distance = getDistanceInMeters(Number(employee.latitude), Number(employee.longitude), parsedLatitude, parsedLongitude);
-
-      if (Number.isNaN(distance)) {
-        throw new Error("Unable to validate GPS distance");
-      }
-
-      if (distance > MAX_DISTANCE) {
-        throw new Error("Outside allowed location");
-      }
-    }
-
-    if (parsedMethod === "ip") {
-      if (!ip_address) {
-        throw new Error("IP address not found");
-      }
-
-      let allowedIps = [];
-
-      try {
-        allowedIps = employee.company_ips ? JSON.parse(employee.company_ips) : [];
-      } catch (error) {
-        throw new Error("Invalid company IP configuration");
-      }
-
-      if (!Array.isArray(allowedIps)) {
-        throw new Error("Company IP configuration must be an array");
-      }
-
-      const normalizedIp = String(ip_address).trim();
-
-      const isAllowedIp = allowedIps.some((item) => String(item).trim() === normalizedIp);
-
-      if (!isAllowedIp) {
-        throw new Error("IP address not allowed");
-      }
-    }
-
-    await conn.query(
-      `
-      UPDATE attendance
-
-      SET
-        end_time = ?,
-        is_verified = ?,
-        verified_by = ?,
-        verify_date = ?
-
-      WHERE id = ?
-      `,
-      [end_time, is_verified, verified_by, verify_date, openBreak.id],
-    );
-
-    await createAttendanceLog(conn, { attendance_id: openBreak.id, log_type: "end", method: parsedMethod, time: end_time, ip_address: parsedMethod === "ip" ? ip_address : null, latitude: parsedMethod === "gps" ? parsedLatitude : null, longitude: parsedMethod === "gps" ? parsedLongitude : null, status: 1, created_by: user_id, updated_by: user_id });
-
-    await conn.commit();
-
-    return res.status(200).json({
-      success: true,
-      message: "Break ended successfully",
-    });
-  } catch (error) {
-    if (conn) {
-      await conn.rollback();
-    }
-
-    console.error("Break-out Error:", error);
-
-    return res.status(400).json({
-      success: false,
-      message: error.message || "Break end failed",
-    });
-  } finally {
-    if (conn) {
-      conn.release();
-    }
+    return payload;
   }
-});
+  return {};
+};
 
-// Helper to normalize face attendance type string
+const removeNullFields = (obj = {}) =>
+  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
+
+async function recalculateShiftAndPayroll(conn, companyId, employeeId, attendanceDate, createdBy) {
+  await generateShift(conn, employeeId, companyId, attendanceDate, createdBy);
+  const existingPayroll = await payrollExists({ conn, companyId, employeeId });
+  if (existingPayroll) {
+    await upsertPayroll({ conn, companyId, employeeId, createdBy });
+  }
+}
+
 const normalizeFaceAttendanceType = (raw) => {
   const key = String(raw || "").trim().toLowerCase().replace(/_/g, " ").replace(/-/g, " ");
 
@@ -1217,35 +1276,8 @@ const faceAttendanceTypeLabel = (punchType) => {
 const fetchTodayFaceAttendanceState = async (conn, company_id, employee_id) => {
   const attendance_date = getCurrentDate();
 
-  const [[mainAttendance]] = await conn.query(
-    `
-    SELECT id, start_time, end_time
-    FROM attendance
-    WHERE employee_id = ?
-      AND company_id = ?
-      AND attendance_date = ?
-      AND type = 'attendance'
-    ORDER BY id DESC
-    LIMIT 1
-    `,
-    [employee_id, company_id, attendance_date],
-  );
-
-  const [[activeBreak]] = await conn.query(
-    `
-    SELECT id, start_time, end_time
-    FROM attendance
-    WHERE employee_id = ?
-      AND company_id = ?
-      AND attendance_date = ?
-      AND type = 'break'
-      AND start_time IS NOT NULL
-      AND end_time IS NULL
-    ORDER BY id DESC
-    LIMIT 1
-    `,
-    [employee_id, company_id, attendance_date],
-  );
+  const [[mainAttendance]] = await conn.query(ATTENDANCE_QUERY.GET_FACE_STATE_MAIN_ATTENDANCE, [employee_id, company_id, attendance_date]);
+  const [[activeBreak]] = await conn.query(ATTENDANCE_QUERY.GET_FACE_STATE_ACTIVE_BREAK, [employee_id, company_id, attendance_date]);
 
   const hasPunchIn = Boolean(mainAttendance) && mainAttendance.start_time != null;
   const hasPunchOut = Boolean(mainAttendance) && mainAttendance.end_time != null;
@@ -1302,19 +1334,7 @@ const validateFaceAttendanceType = async (conn, company_id, employee_id, weekend
       };
     }
 
-    const [[holiday]] = await conn.query(
-      `
-      SELECT id
-      FROM holidays
-      WHERE company_id = ?
-        AND date = ?
-        AND is_optional = 0
-        AND is_deleted = 0
-        AND is_active = 1
-      LIMIT 1
-      `,
-      [company_id, attendance_date],
-    );
+    const [[holiday]] = await conn.query(ATTENDANCE_QUERY.GET_HOLIDAY_SIMPLE, [company_id, attendance_date]);
 
     if (holiday) {
       return {
@@ -1432,29 +1452,763 @@ const fetchEmployeeForFaceAttendance = async (conn, company_id, employeeRef) => 
     return null;
   }
 
-  const [rows] = await conn.query(
-    `
-    SELECT
-      e.id,
-      e.user_id,
-      e.weekends
-    FROM employees e
-    INNER JOIN companies c
-      ON c.id = e.company_id
-      AND c.is_active = 1
-      AND c.is_deleted = 0
-    WHERE e.company_id = ?
-      AND e.is_deleted = 0
-      AND e.is_active = 1
-      AND (e.user_id = ? OR e.id = ?)
-    LIMIT 1
-    `,
-    [company_id, ref, ref],
-  );
+  const [rows] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_FACE_ATTENDANCE, [company_id, ref, ref]);
 
   return rows?.[0] || null;
 };
 
+/**
+ * Helper to validate approved half-day leave against actual punch/work times.
+ */
+async function validateHalfDayLeave(conn, {
+  leave = null,
+  company_id,
+  employee_id,
+  attendance_date,
+  start_time = null,
+  end_time = null,
+  shift_start = null,
+  shift_end = null,
+  grace_minutes = 0,
+  user_id = null
+}) {
+  let targetLeave = leave;
+
+  if (!targetLeave) {
+    const [[foundLeave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE, [employee_id, company_id, attendance_date]);
+    targetLeave = foundLeave || null;
+  }
+
+  if (!targetLeave) {
+    return { valid: true, day_status: "present", half_day_type: null, leave: null };
+  }
+
+  if (Number(targetLeave.is_half_day) !== 1) {
+    return { valid: true, day_status: "present", half_day_type: null, leave: targetLeave };
+  }
+
+  const sStart = parseTime(shift_start, "HH:mm:ss");
+  const sEnd = parseTime(shift_end, "HH:mm:ss");
+
+  if (!sStart || !sEnd) {
+    return { valid: true, day_status: "half_day", half_day_type: targetLeave.half_day_type || null, leave: targetLeave };
+  }
+
+  const totalShiftMinutes = diffMinutes(sStart, sEnd);
+  const halfShiftMinutes = Math.floor(totalShiftMinutes / 2);
+  const shiftMidTime = addMinutesToTime(sStart, halfShiftMinutes);
+
+  const grace = safeNumber(grace_minutes, 0);
+
+  const pStart = start_time ? parseTime(start_time, "HH:mm:ss") : null;
+  const pEnd = end_time ? parseTime(end_time, "HH:mm:ss") : null;
+
+  let isValid = true;
+  const halfDayType = targetLeave.half_day_type || "first_half";
+
+  if (halfDayType === "first_half") {
+    if (pStart) {
+      const earliestAllowedStart = addMinutesToTime(shiftMidTime, -grace);
+      if (pStart < earliestAllowedStart) {
+        isValid = false;
+      }
+    }
+  } else if (halfDayType === "second_half") {
+    if (pStart && pStart >= shiftMidTime) {
+      isValid = false;
+    }
+    if (pEnd) {
+      const latestAllowedEnd = addMinutesToTime(shiftMidTime, grace);
+      if (pEnd > latestAllowedEnd) {
+        isValid = false;
+      }
+    }
+  }
+
+  if (isValid) {
+    return { valid: true, day_status: "half_day", half_day_type: halfDayType, leave: targetLeave };
+  }
+
+  const leaveConfigId = targetLeave.leave_config_id;
+  const origDays = Number(targetLeave.total_days || 0.5);
+  const leaveYear = getYearFromDate(targetLeave.start_date) || new Date().getFullYear();
+
+  if (leaveConfigId && origDays > 0) {
+    await adjustEmployeeLeaveBalance({
+      conn,
+      company_id,
+      employee_id,
+      leave_config_id: leaveConfigId,
+      year: leaveYear,
+      days: origDays,
+      mode: "restore",
+      user_id
+    });
+  }
+
+  await conn.query(ATTENDANCE_QUERY.CANCEL_EMPLOYEE_LEAVE, [user_id, targetLeave.id]);
+
+  return { valid: false, day_status: "present", half_day_type: null, leave_cancelled: true, leave: targetLeave };
+}
+
+/**
+ * Process approved leave splitting & balance restoration when employee punches out on a leave date.
+ */
+async function handleApprovedLeaveOnPunchOut(conn, {
+  leave,
+  employee_id,
+  company_id,
+  attendance_date,
+  user_id,
+  start_time = null,
+  end_time = null,
+  shift_start = null,
+  shift_end = null,
+  grace_minutes = 0
+}) {
+  if (!leave) return { day_status: "present", half_day_type: null };
+
+  if (Number(leave.is_half_day) === 1) {
+    return await validateHalfDayLeave(conn, {
+      leave,
+      company_id,
+      employee_id,
+      attendance_date,
+      start_time,
+      end_time,
+      shift_start,
+      shift_end,
+      grace_minutes,
+      user_id
+    });
+  }
+
+  const origStartDate = formatIST(leave.start_date, "YYYY-MM-DD");
+  const origEndDate = formatIST(leave.end_date, "YYYY-MM-DD");
+  const attDate = formatIST(attendance_date, "YYYY-MM-DD");
+
+  const origDays = Number(leave.total_days || 0);
+  const leaveConfigId = leave.leave_config_id;
+  const leaveYear = getYearFromDate(origStartDate);
+
+  // 1. Restore original leave balance
+  if (leaveConfigId && origDays > 0) {
+    await adjustEmployeeLeaveBalance({
+      conn,
+      company_id,
+      employee_id,
+      leave_config_id: leaveConfigId,
+      year: leaveYear,
+      days: origDays,
+      mode: "restore",
+      user_id
+    });
+  }
+
+  // 2. Cancel original leave
+  await conn.query(ATTENDANCE_QUERY.CANCEL_EMPLOYEE_LEAVE, [user_id, leave.id]);
+
+  const attDay = parseDate(attDate);
+  const prevDateStr = attDay.subtract(1, "day").format("YYYY-MM-DD");
+  const nextDateStr = attDay.add(1, "day").format("YYYY-MM-DD");
+
+  const calculateSegmentDays = async (sDate, eDate) => {
+    if (isDateAfter(sDate, eDate)) return 0;
+    const [empRows] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_WEEKENDS, [employee_id, company_id]);
+    const weekends = empRows[0]?.weekends || null;
+
+    const [holidayRows] = await conn.query(ATTENDANCE_QUERY.GET_RANGE_HOLIDAYS, [company_id, sDate, eDate]);
+    const holidaySet = new Set(holidayRows.map((h) => formatIST(h.date, "YYYY-MM-DD")));
+
+    let total = 0;
+    eachDateBetween(sDate, eDate, (dStr) => {
+      const isHoliday = holidaySet.has(dStr);
+      const wInfo = weekendInfo(dStr, weekends);
+      if (!isHoliday && !(wInfo?.is_weekend || wInfo?.isWeekend)) {
+        total += 1;
+      }
+    });
+    return Number(total.toFixed(2));
+  };
+
+  // 3. Segment 1: origStartDate -> prevDateStr
+  if (!isDateAfter(origStartDate, prevDateStr)) {
+    const seg1Days = await calculateSegmentDays(origStartDate, prevDateStr);
+    if (seg1Days > 0) {
+      const [insertRes1] = await conn.query(ATTENDANCE_QUERY.COPY_LEAVE_SEGMENT, [origStartDate, prevDateStr, seg1Days, user_id, leave.id]);
+
+      const newLeaveId1 = insertRes1.insertId;
+
+      await conn.query(ATTENDANCE_QUERY.COPY_LEAVE_ATTACHMENTS, [newLeaveId1, user_id, leave.id]);
+
+      if (leaveConfigId) {
+        await adjustEmployeeLeaveBalance({
+          conn,
+          company_id,
+          employee_id,
+          leave_config_id: leaveConfigId,
+          year: getYearFromDate(origStartDate),
+          days: seg1Days,
+          mode: "deduct",
+          user_id
+        });
+      }
+    }
+  }
+
+  // 4. Segment 2: nextDateStr -> origEndDate
+  if (!isDateAfter(nextDateStr, origEndDate)) {
+    const seg2Days = await calculateSegmentDays(nextDateStr, origEndDate);
+    if (seg2Days > 0) {
+      const [insertRes2] = await conn.query(ATTENDANCE_QUERY.COPY_LEAVE_SEGMENT, [nextDateStr, origEndDate, seg2Days, user_id, leave.id]);
+
+      const newLeaveId2 = insertRes2.insertId;
+
+      await conn.query(ATTENDANCE_QUERY.COPY_LEAVE_ATTACHMENTS, [newLeaveId2, user_id, leave.id]);
+
+      if (leaveConfigId) {
+        await adjustEmployeeLeaveBalance({
+          conn,
+          company_id,
+          employee_id,
+          leave_config_id: leaveConfigId,
+          year: getYearFromDate(nextDateStr),
+          days: seg2Days,
+          mode: "deduct",
+          user_id
+        });
+      }
+    }
+  }
+
+  return { day_status: "present", half_day_type: null };
+}
+
+// Core Attendance Transaction Handlers
+async function executePunchOut(conn, {
+  employee_id,
+  company_id,
+  attendance_date,
+  end_time,
+  user_id,
+  is_verified,
+  verified_by,
+  verify_date,
+  shift_start,
+  shift_end,
+  grace_minutes,
+  method,
+  ip_address = null,
+  parsedLatitude = null,
+  parsedLongitude = null
+}) {
+  const [[attendance]] = await conn.query(ATTENDANCE_QUERY.GET_MAIN_ATTENDANCE_PUNCH_OUT_LOCK, [employee_id, company_id, attendance_date]);
+  if (!attendance) {
+    throw new Error("No attendance found");
+  }
+
+  if (attendance.end_time) {
+    throw new Error("Already punched out");
+  }
+
+  if (String(end_time) <= String(attendance.start_time)) {
+    throw new Error("Punch-out time must be after punch-in");
+  }
+
+  const [[activeBreak]] = await conn.query(ATTENDANCE_QUERY.GET_ACTIVE_BREAK_LOCK, [employee_id, company_id, attendance_date]);
+  if (activeBreak) {
+    throw new Error("Break session still active");
+  }
+
+  let day_status = "present";
+  let value1 = null;
+
+  const [[leave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE, [employee_id, company_id, attendance_date]);
+
+  if (leave && leave.is_half_day===1) {
+    const leaveRes = await validateHalfDayLeave(conn, {
+      leave,
+      company_id,
+      employee_id,
+      attendance_date,
+      start_time,
+      end_time,
+      shift_start,
+      shift_end,
+      grace_minutes,
+      user_id
+    });
+    day_status = leaveRes.day_status;
+    value1 = leaveRes.half_day_type;
+  }
+
+  const [updateResult] = await conn.query(ATTENDANCE_QUERY.UPDATE_ATTENDANCE_PUNCH_OUT, [
+    end_time, day_status, value1, is_verified, verified_by, verify_date, 1, attendance.id
+  ]);
+
+  if (Number(updateResult.affectedRows) !== 1) {
+    throw new Error("Failed to complete punch-out");
+  }
+
+  await createAttendanceLog(conn, {
+    attendance_id: attendance.id,
+    log_type: "end",
+    method,
+    time: end_time,
+    ip_address: method === "ip" ? ip_address : null,
+    latitude: method === "gps" ? parsedLatitude : null,
+    longitude: method === "gps" ? parsedLongitude : null,
+    status: 1,
+    created_by: user_id,
+    updated_by: user_id
+  });
+
+  await createAttendanceLog(conn, {
+    attendance_id: attendance.id,
+    log_type: "day_status",
+    method: "emp_cre",
+    time: end_time,
+    extra_data: { day_status },
+    status: 1,
+    created_by: user_id,
+    updated_by: user_id
+  });
+
+  await generateShift(conn, employee_id, company_id, attendance_date, user_id);
+
+  if (is_verified) {
+    const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
+    if (existingPayroll) {
+      await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
+    }
+  }
+
+  return { attendance_id: attendance.id, day_status };
+}
+
+async function executeBreakIn(conn, {
+  employee_id,
+  company_id,
+  attendance_date,
+  break_time,
+  user_id,
+  is_verified,
+  verified_by,
+  verify_date,
+  method,
+  ip_address = null,
+  parsedLatitude = null,
+  parsedLongitude = null
+}) {
+  const [[mainAttendance]] = await conn.query(ATTENDANCE_QUERY.GET_MAIN_ATTENDANCE_PUNCH_OUT_LOCK, [employee_id, company_id, attendance_date]);
+  if (!mainAttendance) {
+    throw new Error("Punch-in required before break");
+  }
+
+  if (mainAttendance.end_time) {
+    throw new Error("Cannot start break after punch-out");
+  }
+
+  if (break_time <= mainAttendance.start_time) {
+    throw new Error("Invalid break time");
+  }
+
+  const [[activeBreak]] = await conn.query(ATTENDANCE_QUERY.GET_ACTIVE_BREAK_LOCK, [employee_id, company_id, attendance_date]);
+  if (activeBreak) {
+    throw new Error("Break already active");
+  }
+
+  const [breakResult] = await conn.query(ATTENDANCE_QUERY.INSERT_BREAK, [
+    employee_id,
+    company_id,
+    attendance_date,
+    break_time,
+    is_verified,
+    verified_by,
+    verify_date,
+    Number(mainAttendance.is_deductible) || 0,
+    Number(mainAttendance.is_overtime) || 0,
+    mainAttendance.day_status,
+    mainAttendance.value1 || null,
+    mainAttendance.value2 || null,
+    user_id
+  ]);
+
+  const attendance_id = Number(breakResult.insertId);
+
+  await createAttendanceLog(conn, {
+    attendance_id,
+    log_type: "start",
+    method,
+    time: break_time,
+    ip_address: method === "ip" ? ip_address : null,
+    latitude: method === "gps" ? parsedLatitude : null,
+    longitude: method === "gps" ? parsedLongitude : null,
+    status: 1,
+    created_by: user_id,
+    updated_by: user_id
+  });
+
+  return { attendance_id };
+}
+
+async function executeBreakOut(conn, {
+  employee_id,
+  company_id,
+  attendance_date,
+  end_time,
+  user_id,
+  is_verified,
+  verified_by,
+  verify_date,
+  method,
+  ip_address = null,
+  parsedLatitude = null,
+  parsedLongitude = null
+}) {
+  const [[mainAttendance]] = await conn.query(ATTENDANCE_QUERY.GET_MAIN_ATTENDANCE_BREAK_OUT, [employee_id, company_id, attendance_date]);
+  if (!mainAttendance) {
+    throw new Error("Punch-in required before break-out");
+  }
+
+  if (mainAttendance.end_time) {
+    throw new Error("Cannot end break after punch-out");
+  }
+
+  const [[openBreak]] = await conn.query(ATTENDANCE_QUERY.GET_OPEN_BREAK_LOCK, [employee_id, company_id, attendance_date]);
+  if (!openBreak) {
+    throw new Error("No active break found");
+  }
+
+  if (end_time <= openBreak.start_time) {
+    throw new Error("Invalid break end time");
+  }
+
+  await conn.query(ATTENDANCE_QUERY.UPDATE_BREAK_END, [end_time, is_verified, verified_by, verify_date, openBreak.id]);
+
+  await createAttendanceLog(conn, {
+    attendance_id: openBreak.id,
+    log_type: "end",
+    method,
+    time: end_time,
+    ip_address: method === "ip" ? ip_address : null,
+    latitude: method === "gps" ? parsedLatitude : null,
+    longitude: method === "gps" ? parsedLongitude : null,
+    status: 1,
+    created_by: user_id,
+    updated_by: user_id
+  });
+
+  return { attendance_id: openBreak.id };
+}
+
+// =============================================================================
+// ENDPOINTS
+// =============================================================================
+
+// Route 1: POST /punch-in
+router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const { attendance_method, latitude, longitude } = req.body;
+    const user_id = Number(req.user?.id);
+    const company_id = Number(req.company?.id);
+    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
+
+    const attendance_date = getCurrentDate();
+    const start_time = getCurrentTime();
+
+    const { employee, leave, parsedMethod, parsedLatitude, parsedLongitude } =
+      await validateAttendanceCommon(conn, {
+        user_id,
+        company_id,
+        attendance_date,
+        attendance_method,
+        latitude,
+        longitude,
+        ip_address
+      });
+
+    const employee_id = Number(employee.id);
+
+    const [[existingAttendance]] = await conn.query(ATTENDANCE_QUERY.GET_EXISTING_ATTENDANCE_LOCK, [employee_id, company_id, attendance_date]);
+    if (existingAttendance) {
+      throw new Error("Already punched in today");
+    }
+
+    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
+    const verified_by = is_verified === 1 ? user_id : null;
+    const verify_date = is_verified === 1 ? new Date() : null;
+
+    let day_status = leave && Number(leave.is_half_day) === 1 ? "half_day" : "present";
+
+    const [attendanceResult] = await conn.query(ATTENDANCE_QUERY.INSERT_ATTENDANCE_PUNCH_IN, [
+      employee_id, company_id, attendance_date, start_time, is_verified, verified_by, verify_date, day_status, user_id
+    ]);
+
+    const attendance_id = Number(attendanceResult.insertId);
+
+    await createAttendanceLog(conn, {
+      attendance_id,
+      log_type: "start",
+      method: parsedMethod,
+      time: start_time,
+      ip_address: parsedMethod === "ip" ? ip_address : null,
+      latitude: parsedMethod === "gps" ? parsedLatitude : null,
+      longitude: parsedMethod === "gps" ? parsedLongitude : null,
+      status: 1,
+      created_by: user_id,
+      updated_by: user_id
+    });
+
+    await conn.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Punch-in successful",
+    });
+  } catch (error) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Punch-in Error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Punch-in failed",
+    });
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+});
+
+// Route 2: POST /punch-out
+router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const { attendance_method, latitude, longitude } = req.body;
+    const user_id = Number(req.user?.id);
+    const company_id = Number(req.company?.id);
+    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
+
+    const attendance_date = getCurrentDate();
+    const end_time = getCurrentTime();
+
+    const { employee, parsedMethod, parsedLatitude, parsedLongitude } =
+      await validateAttendanceCommon(conn, {
+        user_id,
+        company_id,
+        attendance_date,
+        attendance_method,
+        latitude,
+        longitude,
+        ip_address
+      });
+
+    const employee_id = Number(employee.id);
+
+    const is_verified = Number(employee.is_auto) === 1 ? 1 : 0;
+    const verified_by = is_verified === 1 ? user_id : null;
+    const verify_date = is_verified === 1 ? new Date() : null;
+
+    await executePunchOut(conn, {
+      employee_id,
+      company_id,
+      attendance_date,
+      end_time,
+      user_id,
+      is_verified,
+      verified_by,
+      verify_date,
+      shift_start: employee.shift_start,
+      shift_end: employee.shift_end,
+      grace_minutes: employee.grace_minutes,
+      method: parsedMethod,
+      ip_address,
+      parsedLatitude,
+      parsedLongitude
+    });
+
+    await conn.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Punch-out successful",
+    });
+  } catch (error) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Punch-out Error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Punch-out failed",
+    });
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+});
+
+// Route 3: POST /break-in
+router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const { attendance_method, latitude, longitude } = req.body;
+    const user_id = Number(req.user?.id);
+    const company_id = Number(req.company?.id);
+    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
+
+    const attendance_date = getCurrentDate();
+    const break_time = getCurrentTime();
+
+    const { employee, parsedMethod, parsedLatitude, parsedLongitude } =
+      await validateAttendanceCommon(conn, {
+        user_id,
+        company_id,
+        attendance_date,
+        attendance_method,
+        latitude,
+        longitude,
+        ip_address
+      });
+
+    const employee_id = Number(employee.id);
+
+    const is_verified = 1;
+    const verified_by = is_verified === 1 ? user_id : null;
+    const verify_date = is_verified === 1 ? new Date() : null;
+
+    await executeBreakIn(conn, {
+      employee_id,
+      company_id,
+      attendance_date,
+      break_time,
+      user_id,
+      is_verified,
+      verified_by,
+      verify_date,
+      method: parsedMethod,
+      ip_address,
+      parsedLatitude,
+      parsedLongitude
+    });
+
+    await conn.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Break started successfully",
+    });
+  } catch (error) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Break-in Error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Break start failed",
+    });
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+});
+
+// Route 4: POST /break-out
+router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const { attendance_method, latitude, longitude } = req.body;
+    const user_id = Number(req.user?.id);
+    const company_id = Number(req.company?.id);
+    const ip_address = getClientMeta(req)?.ip_v4?.trim() || null;
+
+    const attendance_date = getCurrentDate();
+    const end_time = getCurrentTime();
+
+    const { employee, parsedMethod, parsedLatitude, parsedLongitude } =
+      await validateAttendanceCommon(conn, {
+        user_id,
+        company_id,
+        attendance_date,
+        attendance_method,
+        latitude,
+        longitude,
+        ip_address
+      });
+
+    const employee_id = Number(employee.id);
+
+    const is_verified = 1;
+    const verified_by = is_verified === 1 ? user_id : null;
+    const verify_date = is_verified === 1 ? new Date() : null;
+
+    await executeBreakOut(conn, {
+      employee_id,
+      company_id,
+      attendance_date,
+      end_time,
+      user_id,
+      is_verified,
+      verified_by,
+      verify_date,
+      method: parsedMethod,
+      ip_address,
+      parsedLatitude,
+      parsedLongitude
+    });
+
+    await conn.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Break ended successfully",
+    });
+  } catch (error) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Break-out Error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Break end failed",
+    });
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+});
+
+// Route 5: POST /face-attendance-check
 router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
   let conn;
 
@@ -1489,18 +2243,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
     if (!employee) {
       return sendError(res, 404, "Employee not found", faceResult.responseData);
     }
-
-    const [[faceRow]] = await conn.query(
-      `
-      SELECT face_enrolled, face_data
-      FROM employees
-      WHERE id = ?
-        AND company_id = ?
-        AND is_deleted = 0
-      LIMIT 1
-      `,
-      [employee.id, company_id],
-    );
+    const [[faceRow]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_FACE_DATA, [employee.id, company_id]);
 
     if (!faceRow || Number(faceRow.face_enrolled) !== 1 || !faceRow.face_data) {
       return sendError(res, 400, "Face enrollment is not set for this employee", faceResult.responseData);
@@ -1522,8 +2265,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
   } catch (error) {
     console.error("[FACE_ATTENDANCE_CHECK_ERROR]", error);
     const message = error?.response?.data?.message || error?.message || "Failed to check face attendance";
-    const status = error?.response ? 400 : 500;
-    return sendError(res, status, message);
+    return sendError(res, 400, message);
   } finally {
     if (conn) {
       conn.release();
@@ -1531,6 +2273,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
   }
 });
 
+// Route 6: POST /face-attendance
 router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
   let conn;
   let transactionActive = false;
@@ -1588,17 +2331,7 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     const employee_id = safeNumber(employee.id, 0);
     const face_user_id = safeNumber(employee.user_id, 0);
 
-    const [[faceRow]] = await conn.query(
-      `
-      SELECT face_enrolled, face_data
-      FROM employees
-      WHERE id = ?
-        AND company_id = ?
-        AND is_deleted = 0
-      LIMIT 1
-      `,
-      [employee_id, company_id],
-    );
+    const [[faceRow]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_FACE_DATA, [employee_id, company_id]);
 
     if (!faceRow || Number(faceRow.face_enrolled) !== 1 || !faceRow.face_data) {
       return await fail(400, "Face enrollment is not set for this employee");
@@ -1618,24 +2351,7 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     const verify_date = new Date();
 
     if (punchType === "punch_in") {
-      const [attendanceResult] = await conn.query(
-        `
-        INSERT INTO attendance (
-          employee_id,
-          company_id,
-          attendance_date,
-          type,
-          start_time,
-          is_verified,
-          verified_by,
-          verify_date,
-          day_status,
-          created_by
-        )
-        VALUES (?, ?, ?, 'attendance', ?, 0, NULL, NULL, 'present', ?)
-        `,
-        [employee_id, company_id, attendance_date, event_time, manager_user_id],
-      );
+      const [attendanceResult] = await conn.query(ATTENDANCE_QUERY.INSERT_FACE_PUNCH_IN, [employee_id, company_id, attendance_date, event_time, manager_user_id]);
 
       const attendance_id = Number(attendanceResult.insertId);
 
@@ -1648,225 +2364,39 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     }
 
     if (punchType === "punch_out") {
-      const [[attendance]] = await conn.query(
-        `
-        SELECT
-          id,
-          start_time,
-          end_time,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (!attendance) {
-        return await fail(400, "No attendance found");
-      }
-
-      if (attendance.end_time) {
-        return await fail(400, "Already punched out");
-      }
-
-      if (String(event_time) <= String(attendance.start_time)) {
-        return await fail(400, "Punch-out time must be after punch-in");
-      }
-
-      const [[activeBreak]] = await conn.query(
-        `
-        SELECT id
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (activeBreak) {
-        return await fail(400, "Break session still active");
-      }
-
-      let day_status = "present";
-      let value1 = null;
-
-      const [[leave]] = await conn.query(
-        `
-        SELECT
-          el.id,
-          el.is_half_day,
-          el.half_day_type,
-          lc.code,
-          lc.is_paid
-        FROM employee_leaves el
-        INNER JOIN leave_configs lc
-          ON lc.id = el.leave_config_id
-        WHERE el.employee_id = ?
-          AND el.company_id = ?
-          AND el.status = 'approved'
-          AND el.is_active = 1
-          AND el.is_deleted = 0
-          AND lc.is_deleted = 0
-          AND ? BETWEEN el.start_date AND el.end_date
-        LIMIT 1
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (leave) {
-        if (Number(leave.is_half_day) !== 1) {
-          await conn.query(
-            `
-            UPDATE employee_leaves
-            SET
-              status = 'cancelled',
-              cancelled_at = NOW(),
-              updated_by = ?,
-              updated_at = NOW()
-            WHERE id = ?
-            `,
-            [manager_user_id, leave.id],
-          );
-          day_status = "present";
-        } else {
-          day_status = "half_day";
-          value1 = leave.half_day_type || null;
-        }
-      }
-
-      const [updateResult] = await conn.query(
-        `
-        UPDATE attendance
-        SET
-          end_time = ?,
-          day_status = ?,
-          value1 = ?,
-          is_verified = ?,
-          verified_by = ?,
-          verify_date = ?,
-          is_overtime = 1
-        WHERE id = ?
-          AND end_time IS NULL
-        `,
-        [event_time, day_status, value1, 1, verified_by, verify_date, attendance.id],
-      );
-
-      if (Number(updateResult.affectedRows) !== 1) {
-        return await fail(400, "Failed to complete punch-out");
-      }
-
-      await createAttendanceLog(conn, { attendance_id: attendance.id, log_type: "end", method: FACE_ATTENDANCE_METHOD, time: event_time, status: 1, created_by: manager_user_id, updated_by: manager_user_id });
-
-      await createAttendanceLog(conn, { attendance_id: attendance.id, log_type: "day_status", method: "emp_cre", time: event_time, extra_data: { day_status }, status: 1, created_by: manager_user_id, updated_by: manager_user_id });
-
-      await generateShift(conn, employee_id, company_id, attendance_date, manager_user_id);
-
-      const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-
-      if (existingPayroll) {
-        await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: manager_user_id });
-      }
+      const { attendance_id, day_status } = await executePunchOut(conn, {
+        employee_id,
+        company_id,
+        attendance_date,
+        end_time: event_time,
+        user_id: manager_user_id,
+        is_verified: 1,
+        verified_by,
+        verify_date,
+        shift_start: employee.shift_start,
+        shift_end: employee.shift_end,
+        grace_minutes: employee.grace_minutes,
+        method: FACE_ATTENDANCE_METHOD
+      });
 
       await conn.commit();
       transactionActive = false;
 
-      return sendSuccess(res, 200, "Punch-out successful", { type: "punch out", employee_id: face_user_id, attendance_id: attendance.id, attendance_date, time: event_time, day_status });
+      return sendSuccess(res, 200, "Punch-out successful", { type: "punch out", employee_id: face_user_id, attendance_id, attendance_date, time: event_time, day_status });
     }
 
     if (punchType === "break_start") {
-      const [[mainAttendance]] = await conn.query(
-        `
-        SELECT
-          id,
-          start_time,
-          end_time,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (!mainAttendance) {
-        return await fail(400, "Punch-in required before break");
-      }
-
-      if (mainAttendance.end_time) {
-        return await fail(400, "Cannot start break after punch-out");
-      }
-
-      if (event_time <= mainAttendance.start_time) {
-        return await fail(400, "Invalid break time");
-      }
-
-      const [[activeBreak]] = await conn.query(
-        `
-        SELECT id
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (activeBreak) {
-        return await fail(400, "Break already active");
-      }
-
-      const [breakResult] = await conn.query(
-        `
-        INSERT INTO attendance (
-          employee_id,
-          company_id,
-          attendance_date,
-          type,
-          start_time,
-          is_verified,
-          verified_by,
-          verify_date,
-          is_deductible,
-          is_overtime,
-          day_status,
-          value1,
-          value2,
-          created_by
-        )
-        VALUES (?, ?, ?, 'break', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [employee_id, company_id, attendance_date, event_time, 1, verified_by, verify_date, Number(mainAttendance.is_deductible) || 0, Number(mainAttendance.is_overtime) || 0, mainAttendance.day_status, mainAttendance.value1 || null, mainAttendance.value2 || null, manager_user_id],
-      );
-
-      const attendance_id = Number(breakResult.insertId);
-
-      await createAttendanceLog(conn, { attendance_id, log_type: "start", method: FACE_ATTENDANCE_METHOD, time: event_time, status: 1, created_by: manager_user_id, updated_by: manager_user_id });
+      const { attendance_id } = await executeBreakIn(conn, {
+        employee_id,
+        company_id,
+        attendance_date,
+        break_time: event_time,
+        user_id: manager_user_id,
+        is_verified: 1,
+        verified_by,
+        verify_date,
+        method: FACE_ATTENDANCE_METHOD
+      });
 
       await conn.commit();
       transactionActive = false;
@@ -1875,64 +2405,17 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     }
 
     if (punchType === "break_end") {
-      const [[mainAttendance]] = await conn.query(
-        `
-        SELECT id, start_time, end_time
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'attendance'
-        LIMIT 1
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (!mainAttendance) {
-        return await fail(400, "Punch-in required before break-out");
-      }
-
-      if (mainAttendance.end_time) {
-        return await fail(400, "Cannot end break after punch-out");
-      }
-
-      const [[openBreak]] = await conn.query(
-        `
-        SELECT id, start_time
-        FROM attendance
-        WHERE employee_id = ?
-          AND company_id = ?
-          AND attendance_date = ?
-          AND type = 'break'
-          AND end_time IS NULL
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [employee_id, company_id, attendance_date],
-      );
-
-      if (!openBreak) {
-        return await fail(400, "No active break found");
-      }
-
-      if (event_time <= openBreak.start_time) {
-        return await fail(400, "Invalid break end time");
-      }
-
-      await conn.query(
-        `
-        UPDATE attendance
-        SET
-          end_time = ?,
-          is_verified = ?,
-          verified_by = ?,
-          verify_date = ?
-        WHERE id = ?
-        `,
-        [event_time, 1, verified_by, verify_date, openBreak.id],
-      );
-
-      await createAttendanceLog(conn, { attendance_id: openBreak.id, log_type: "end", method: FACE_ATTENDANCE_METHOD, time: event_time, status: 1, created_by: manager_user_id, updated_by: manager_user_id });
+      const { attendance_id } = await executeBreakOut(conn, {
+        employee_id,
+        company_id,
+        attendance_date,
+        end_time: event_time,
+        user_id: manager_user_id,
+        is_verified: 1,
+        verified_by,
+        verify_date,
+        method: FACE_ATTENDANCE_METHOD
+      });
 
       await conn.commit();
       transactionActive = false;
@@ -1940,7 +2423,7 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
       return sendSuccess(res, 200, "Break ended successfully", {
         type: "break end",
         employee_id: face_user_id,
-        attendance_id: openBreak.id,
+        attendance_id,
         attendance_date,
         time: event_time,
       });
@@ -1952,7 +2435,6 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     console.error("[FACE_ATTENDANCE_ERROR]", error);
 
     const status = error?.statusCode || (error?.response ? 400 : 500);
-
     const message = error?.response?.data?.message || error?.message || "Face attendance failed";
 
     return sendError(res, status, message);
@@ -1963,52 +2445,9 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
   }
 });
 
-const resolveModifier = async (conn, user_id, company_id) => {
-  const [[row]] = await conn.query(
-    `SELECT e.id AS employee_id, c.owner_user_id
-     FROM companies c
-     LEFT JOIN employees e
-       ON e.user_id = ? AND e.company_id = c.id AND e.is_deleted = 0
-     WHERE c.id = ? AND c.is_deleted = 0`,
-    [user_id, company_id],
-  );
-  if (!row) return { error: 404, message: "Company not found" };
-  const modified_by = row.employee_id || (row.owner_user_id === user_id ? user_id : null);
-  if (!modified_by)
-    return {
-      error: 403,
-      message: "Modifier not found (not employee or owner)",
-    };
-  return { modified_by };
-};
-
+// Route 7: PUT /approve
 router.put("/approve", auth(AT.MNG), async (req, res) => {
   let conn;
-
-  const normalizeTime = (value) => {
-    if (!value) return null;
-    const parsed = parseTime(value, "HH:mm:ss");
-    return parsed || null;
-  };
-
-  const timeToMinutes = (time) => {
-    const parts = String(time || "00:00:00").split(":").map(Number);
-    return parts[0] * 60 + (parts[1] || 0) + Math.floor((parts[2] || 0) / 60);
-  };
-
-  const minutesToTime = (minutes) => {
-    const normalized = ((minutes % 1440) + 1440) % 1440;
-    const hours = String(Math.floor(normalized / 60)).padStart(2, "0");
-    const mins = String(normalized % 60).padStart(2, "0");
-    return `${hours}:${mins}:00`;
-  };
-
-  const getShiftMidpoint = (shiftStart, shiftEnd) => {
-    const startMinutes = timeToMinutes(shiftStart);
-    let endMinutes = timeToMinutes(shiftEnd);
-    if (endMinutes <= startMinutes) endMinutes += 1440;
-    return minutesToTime(Math.floor((startMinutes + endMinutes) / 2));
-  };
 
   try {
     const user_id = req.user?.id;
@@ -2067,12 +2506,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
     await conn.beginTransaction();
 
     if (mode === "leave" && leave_type === "paid" && !systemPaidLeaveValues.includes(leave_type_value)) {
-      const [leaveConfigs] = await conn.query(
-        `SELECT id FROM leave_configs
-         WHERE company_id = ? AND code = ? AND is_paid = 1 AND is_active = 1 AND is_deleted = 0
-         LIMIT 1`,
-        [company_id, leave_type_value],
-      );
+      const [leaveConfigs] = await conn.query(ATTENDANCE_QUERY.GET_PAID_LEAVE_CONFIG, [company_id, leave_type_value]);
       if (!leaveConfigs.length) {
         await conn.rollback();
         return res.status(400).json({ success: false, message: "Invalid paid leave_type_value" });
@@ -2105,13 +2539,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
 
     const employeeIdList = employees.map((emp) => emp.id);
 
-    const [attendanceRows] = await conn.query(
-      `SELECT * FROM attendance
-       WHERE company_id = ? AND attendance_date = ? AND employee_id IN (?)
-         AND type = 'attendance'
-       FOR UPDATE`,
-      [company_id, attendance_date, employeeIdList],
-    );
+    const [attendanceRows] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_APPROVE_LOCK, [company_id, attendance_date, employeeIdList]);
 
     const attendanceMap = new Map();
     for (const row of attendanceRows) {
@@ -2203,7 +2631,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
         }
         day_status = "half_day";
         notes = "system_given";
-        value2 = half_day_type;
+        value1 = half_day_type;
       } else if (mode === "leave") {
         start_time = null;
         end_time = null;
@@ -2218,25 +2646,37 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
         absentEmployeeIds.push(emp.id);
       }
 
+      if ((mode === "actual" || mode === "present") && day_status === "present" && start_time) {
+        const [[leave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE, [emp.id, company_id, attendance_date]);
+        if (leave) {
+          const leaveRes = await handleApprovedLeaveOnPunchOut(conn, {
+            leave,
+            employee_id: emp.id,
+            company_id,
+            attendance_date,
+            user_id,
+            start_time,
+            end_time,
+            shift_start: shiftStart,
+            shift_end: shiftEnd,
+            grace_minutes: emp.grace_minutes
+          });
+          const finalStatus = typeof leaveRes === "string" ? leaveRes : (leaveRes.day_status || "present");
+          if (finalStatus === "half_day") {
+            day_status = "half_day";
+            value1 = (typeof leaveRes === "object" && leaveRes.half_day_type) || leave.half_day_type || null;
+          }
+        }
+      }
+
       let attendanceId;
       if (existingRow) {
-        await conn.query(
-          `UPDATE attendance
-           SET start_time = ?, end_time = ?, day_status = ?, value1 = ?, value2 = ?,
-               is_verified = 1, verified_by = ?, verify_date = ?, remark = ?
-           WHERE id = ?`,
-          [start_time, end_time, day_status, value1, value2, user_id, now, notes, existingRow.id],
-        );
+        await conn.query(ATTENDANCE_QUERY.UPDATE_ATTENDANCE_APPROVE, [start_time, end_time, day_status, value1, value2, user_id, now, notes, existingRow.id]);
         attendanceId = existingRow.id;
       } else {
-        const [insertResult] = await conn.query(
-          `INSERT INTO attendance (
-             employee_id, company_id, attendance_date, type,
-             start_time, end_time, day_status, value1, value2,
-             is_verified, verified_by, verify_date, created_by, remark
-           ) VALUES (?, ?, ?, 'attendance', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-          [emp.id, company_id, attendance_date, start_time, end_time, day_status, value1, value2, user_id, now, user_id, notes],
-        );
+        const [insertResult] = await conn.query(ATTENDANCE_QUERY.INSERT_ATTENDANCE_APPROVE, [
+          emp.id, company_id, attendance_date, start_time, end_time, day_status, value1, value2, user_id, now, user_id, notes
+        ]);
         attendanceId = insertResult.insertId;
       }
 
@@ -2255,14 +2695,8 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
     const errors = [];
 
     for (const emp of employees) {
-      await generateShift(conn, emp.id, company_id, attendance_date, user_id);
-
       try {
-        const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: emp.id });
-
-        if (existingPayroll) {
-          await upsertPayroll({ conn, companyId: company_id, employeeId: emp.id, createdBy: user_id });
-        }
+        await recalculateShiftAndPayroll(conn, company_id, emp.id, attendance_date, user_id);
       } catch (error) {
         errors.push({
           employee_id: emp.id,
@@ -2297,6 +2731,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
   }
 });
 
+// Route 8: POST /mark
 router.post("/mark", auth(AT.MNG), async (req, res) => {
   let conn;
   let transactionActive = false;
@@ -2342,7 +2777,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
       leave_type_value = null,
       leave_day_overtime = 0,
       notes = null,
-      attendance_id = null, // explicit record ID for update
+      attendance_id = null,
     } = req.body;
 
     employee_id = safeNumber(employee_id, 0);
@@ -2373,16 +2808,10 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     if (end_time && !parseTime(end_time)) return fail(400, "Invalid end_time");
 
     // Fetch employee (with lock)
-    const [[employee]] = await conn.query(
-      `SELECT id, company_id, shift_start, shift_end, expected_work_minutes, break_minutes, grace_minutes, weekends
-       FROM employees
-       WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
-       LIMIT 1 FOR UPDATE`,
-      [employee_id, company_id]
-    );
+    const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_MARK, [employee_id, company_id]);
     if (!employee) return fail(404, "Employee not found");
 
-    // Build the DB columns based on type/status
+    // Build DB columns based on type/status
     let db_day_status = "present";
     let db_value1 = null;
     let db_value2 = null;
@@ -2428,18 +2857,36 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 
         if (leave_type === "paid") {
           if (!staticPaidLeaveValues.includes(leave_type_value)) {
-            const [leaveConfigs] = await conn.query(
-              `SELECT id FROM leave_configs
-               WHERE company_id = ? AND code = ? AND is_paid = 1 AND is_active = 1 AND is_deleted = 0
-               LIMIT 1`,
-              [company_id, leave_type_value]
-            );
+            const [leaveConfigs] = await conn.query(ATTENDANCE_QUERY.GET_PAID_LEAVE_CONFIG, [company_id, leave_type_value]);
             if (!leaveConfigs.length) {
               await conn.rollback();
               return res.status(400).json({ success: false, message: "Invalid paid leave_type_value" });
             }
           }
           db_value2 = leave_type_value;
+        }
+      }
+    }
+
+    if (type === "attendance" && ["present", "half_day"].includes(status)) {
+      const [[leave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE, [employee_id, company_id, date]);
+      if (leave) {
+        const leaveRes = await handleApprovedLeaveOnPunchOut(conn, {
+          leave,
+          employee_id,
+          company_id,
+          attendance_date: date,
+          user_id,
+          start_time,
+          end_time,
+          shift_start: employee.shift_start,
+          shift_end: employee.shift_end,
+          grace_minutes: employee.grace_minutes
+        });
+        const finalStatus = typeof leaveRes === "string" ? leaveRes : (leaveRes.day_status || "present");
+        if (finalStatus === "half_day") {
+          db_day_status = "half_day";
+          db_value1 = (typeof leaveRes === "object" && leaveRes.half_day_type) || leave.half_day_type || db_value1 || null;
         }
       }
     }
@@ -2457,13 +2904,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
         return fail(400, "end_time must be greater than start_time");
 
       // Check for parent attendance
-      const [[attendanceRow]] = await conn.query(
-        `SELECT id, start_time, end_time, day_status
-         FROM attendance
-         WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
-         ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-        [employee_id, company_id, date]
-      );
+      const [[attendanceRow]] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_PARENT, [employee_id, company_id, date]);
       if (!attendanceRow) return fail(400, "Attendance not found");
       if (!["present", "half_day"].includes(attendanceRow.day_status))
         return fail(400, "Break allowed only for present/half_day");
@@ -2485,10 +2926,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     let existing = null;
 
     if (attendance_id) {
-      const [rows] = await conn.query(
-        `SELECT * FROM attendance WHERE id = ? AND employee_id = ? AND company_id = ? AND attendance_date = ? FOR UPDATE`,
-        [attendance_id, employee_id, company_id, date]
-      );
+      const [rows] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_EXISTING_BY_ID, [attendance_id, employee_id, company_id, date]);
       existing = rows?.[0] || null;
       if (!existing) return fail(404, "Attendance/break record not found with given ID");
       if (existing.type !== type) return fail(400, `Record type mismatch: expected ${type}, found ${existing.type}`);
@@ -2496,29 +2934,14 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 
     if (!existing) {
       if (type === "attendance") {
-        const [rows] = await conn.query(
-          `SELECT * FROM attendance
-           WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'attendance'
-           ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-          [employee_id, company_id, date]
-        );
+        const [rows] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_EXISTING_MAIN, [employee_id, company_id, date]);
         existing = rows?.[0] || null;
       } else {
         if (start_time) {
-          const [rows] = await conn.query(
-            `SELECT * FROM attendance
-             WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND start_time = ?
-             ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-            [employee_id, company_id, date, start_time]
-          );
+          const [rows] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_EXISTING_BREAK_BY_START, [employee_id, company_id, date, start_time]);
           existing = rows?.[0] || null;
         } else {
-          const [rows] = await conn.query(
-            `SELECT * FROM attendance
-             WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break' AND end_time IS NULL
-             ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-            [employee_id, company_id, date]
-          );
+          const [rows] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_EXISTING_BREAK_OPEN, [employee_id, company_id, date]);
           const openBreak = rows?.[0];
           if (!openBreak) return fail(400, "No open break found to update");
           existing = openBreak;
@@ -2528,14 +2951,9 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     }
 
     if (type === "break" && start_time) {
-      const [overlapping] = await conn.query(
-        `SELECT id FROM attendance
-         WHERE employee_id = ? AND company_id = ? AND attendance_date = ? AND type = 'break'
-           AND id != ?
-           AND (start_time < ? AND COALESCE(end_time, '23:59:59') > ?)
-         LIMIT 1`,
-        [employee_id, company_id, date, existing?.id || 0, end_time || "23:59:59", start_time]
-      );
+      const [overlapping] = await conn.query(ATTENDANCE_QUERY.GET_ATTENDANCE_MARK_OVERLAPPING_BREAK, [
+        employee_id, company_id, date, existing?.id || 0, end_time || "23:59:59", start_time
+      ]);
       if (overlapping.length) return fail(400, "Break overlaps existing break");
     }
 
@@ -2570,18 +2988,9 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
         updateValues
       );
     } else {
-      const [insertResult] = await conn.query(
-        `INSERT INTO attendance (
-           employee_id, company_id, attendance_date,
-           type, start_time, end_time,
-           is_deductible, is_overtime,
-           created_by,
-           is_verified, verified_by, verify_date,
-           day_status, value1, value2, value3,
-           remark
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?)`,
-        [employee_id, company_id, date, type, start_time, end_time, is_deductible ? 1 : 0, is_overtime ? 1 : 0, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes]
-      );
+      const [insertResult] = await conn.query(ATTENDANCE_QUERY.INSERT_ATTENDANCE_MARK, [
+        employee_id, company_id, date, type, start_time, end_time, is_deductible ? 1 : 0, is_overtime ? 1 : 0, user_id, user_id, db_day_status, db_value1, db_value2, db_value3, notes
+      ]);
       attendance_id_final = insertResult.insertId;
     }
 
@@ -2633,12 +3042,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     }
 
     // Recalculate shift & payroll
-    await generateShift(conn, employee_id, company_id, date, user_id);
-
-    const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-    if (existingPayroll) {
-      await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
-    }
+    await recalculateShiftAndPayroll(conn, company_id, employee_id, date, user_id);
 
     await conn.commit();
     transactionActive = false;
@@ -2653,6 +3057,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
   }
 });
 
+// Route 9: GET /my/past-punches
 router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
   let conn;
 
@@ -2670,17 +3075,11 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
     }
 
     const type = String(req.query.type || "").trim().toLowerCase();
-
     const date = req.query.date || null;
-
     const from_date = req.query.from_date || null;
-
     const to_date = req.query.to_date || null;
-
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
-
     const offset = (page - 1) * limit;
 
     if (!["attendance", "break"].includes(type)) {
@@ -2697,37 +3096,7 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       });
     }
 
-    const [[employee]] = await conn.query(
-      `
-        SELECT
-          e.id,
-          e.employee_code,
-          e.designation,
-          e.shift_start,
-          e.shift_end,
-          e.expected_work_minutes,
-          e.break_minutes,
-          e.grace_minutes,
-          u.name,
-          u.email,
-          u.phone
-
-        FROM employees e
-
-        INNER JOIN users u
-          ON u.id = e.user_id
-          AND u.is_deleted = 0
-          AND u.is_active = 1
-
-        WHERE e.user_id = ?
-          AND e.company_id = ?
-          AND e.is_deleted = 0
-          AND e.is_active = 1
-
-        LIMIT 1
-        `,
-      [user_id, company_id],
-    );
+    const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_PAST_PUNCHES, [user_id, company_id]);
 
     if (!employee) {
       return res.status(404).json({
@@ -2753,39 +3122,26 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
     const params = [employee.id, company_id, type];
 
     if (date) {
-      where += `
-        AND a.attendance_date = ?
-      `;
-
+      where += ` AND a.attendance_date = ? `;
       params.push(date);
     } else {
       if (from_date) {
-        where += `
-          AND a.attendance_date >= ?
-        `;
-
+        where += ` AND a.attendance_date >= ? `;
         params.push(from_date);
       }
-
       if (to_date) {
-        where += `
-          AND a.attendance_date <= ?
-        `;
-
+        where += ` AND a.attendance_date <= ? `;
         params.push(to_date);
       }
     }
 
     const countQuery = `
       SELECT COUNT(*) AS total
-
       FROM attendance a
-
       ${where}
     `;
 
     const [[countRow]] = await conn.query(countQuery, params);
-
     const total = Number(countRow?.total || 0);
 
     const query = `
@@ -2861,34 +3217,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
     const [rows] = await conn.query(query, [...params, limit, offset]);
 
-    const timeToMinutes = (time) => {
-      if (!time) {
-        return null;
-      }
-      const parts = String(time).split(":").map(Number);
-      return parts[0] * 60 + (parts[1] || 0);
-    };
-
-    const calculateMinutes = (start, end) => {
-      if (!start || !end) {
-        return 0;
-      }
-      return Math.max(0, timeToMinutes(end) - timeToMinutes(start));
-    };
-
-    const buildPunchObject = (time, method, latitude, longitude, ip_address) => {
-      if (!time) {
-        return null;
-      }
-      return {
-        time,
-        method: method || null,
-        latitude: latitude !== null ? Number(latitude) : null,
-        longitude: longitude !== null ? Number(longitude) : null,
-        ip_address: ip_address || null,
-      };
-    };
-
     const data = rows.map((r) => {
       const isBreak = r.type === "break";
 
@@ -2914,14 +3242,14 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
           overtime_minutes: Number(r.overtime_minutes || 0),
         };
       } else {
-        const workedMinutes = calculateMinutes(r.start_time, r.end_time);
+        const workedMinutes = calculateMinutesBetween(r.start_time, r.end_time);
         let lateMinutes = 0;
         if (employee.shift_start && r.start_time) {
-          lateMinutes = Math.max(0, calculateMinutes(employee.shift_start, r.start_time) - Number(employee.grace_minutes || 0));
+          lateMinutes = Math.max(0, calculateMinutesBetween(employee.shift_start, r.start_time) - Number(employee.grace_minutes || 0));
         }
         let earlyLeaveMinutes = 0;
         if (employee.shift_end && r.end_time) {
-          earlyLeaveMinutes = Math.max(0, calculateMinutes(r.end_time, employee.shift_end));
+          earlyLeaveMinutes = Math.max(0, calculateMinutesBetween(r.end_time, employee.shift_end));
         }
         let overtimeMinutes = 0;
         if (workedMinutes > Number(employee.expected_work_minutes || 0)) {
@@ -3005,6 +3333,7 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
   }
 });
 
+// Route 10: GET /current-status
 router.get("/current-status", auth(), async (req, res) => {
   let conn;
 
@@ -3012,269 +3341,147 @@ router.get("/current-status", auth(), async (req, res) => {
     conn = await db.getConnection();
 
     const user_id = Number(req.user?.id);
-
     const company_id = Number(req.company?.id);
 
     if (!Number.isInteger(user_id) || user_id <= 0 || !Number.isInteger(company_id) || company_id <= 0) {
       return sendError(res, 401, "Unauthorized access");
     }
 
-    const today = getCurrentDate();
+    // 1. Validate user
+    const [[userRow]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_USER, [user_id]);
+    if (!userRow) {
+      return sendError(res, 404, "User not found");
+    }
 
-    const now = getISTNow();
+    // 2. Validate company
+    const [[companyRow]] = await conn.query(ATTENDANCE_QUERY.GET_CHECK_COMPANY, [company_id]);
+    if (!companyRow) {
+      return sendError(res, 404, "Company not found");
+    }
 
-    const todayDayName = getDayName(today);
-
-    const [[employee]] = await conn.query(
-      `
-          SELECT
-            e.id,
-            e.weekends,
-            e.shift_start,
-            e.shift_end,
-            e.expected_work_minutes,
-            e.break_minutes,
-            e.grace_minutes,
-            e.designation,
-            e.employee_code,
-            e.attendance_methods AS emp_attendance_methods,
-            e.is_auto,
-            c.name AS company_name,
-            c.attendance_methods
-
-          FROM employees e
-
-          INNER JOIN companies c
-            ON c.id = e.company_id
-
-          WHERE
-            e.user_id = ?
-            AND e.company_id = ?
-            AND e.is_active = 1
-            AND e.is_deleted = 0
-            AND c.is_active = 1
-            AND c.is_deleted = 0
-
-          LIMIT 1
-        `,
-      [user_id, company_id],
-    );
-
+    // 3. Check employee
+    const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_CURRENT_STATUS, [user_id, company_id]);
     if (!employee) {
       return sendError(res, 404, "Employee not found");
     }
 
     const employee_id = employee.id;
+    const today = getCurrentDate();
+    const now = getISTNow();
+    const todayDayName = getDayName(today);
 
-    const empMethodsRaw = JSON.parse(employee.emp_attendance_methods || '[]');
-    const companyMethodsRaw = JSON.parse(employee.attendance_methods || '[]');
-    const companyMethodsSet = new Set(companyMethodsRaw.map(m => String(m).trim().toLowerCase()));
+    const empMethodsRaw = parseEmployeeMethods(employee.emp_attendance_methods);
+    const companyMethodsRaw = parseEmployeeMethods(employee.attendance_methods);
+    const companyMethodsSet = new Set(companyMethodsRaw);
 
     let allowed_methods = [];
     let auto_approved = Number(employee.is_auto) === 1;
 
     for (const m of empMethodsRaw) {
-      const method = String(m || "").trim().toLowerCase();
-
-      if (!method) {
-        continue;
-      }
-
-      if (companyMethodsSet.has(method) && !allowed_methods.includes(method)) {
-        allowed_methods.push(method);
+      if (companyMethodsSet.has(m) && !allowed_methods.includes(m)) {
+        allowed_methods.push(m);
       }
     }
 
-    const employeeWeekends = normalizeWeekends(employee.weekends);
+    // 4. Fetch company holiday for today (is_optional=0)
+    const [[holiday]] = await conn.query(ATTENDANCE_QUERY.GET_HOLIDAY_CURRENT_STATUS, [company_id, today]);
 
+    // 5. Employee's weekend
+    const employeeWeekends = normalizeWeekends(employee.weekends);
     const isWeekend = employeeWeekends.includes(todayDayName);
 
-    const [[holiday]] = await conn.query(
-      `
-          SELECT
-            id,
-            name
+    // 6. Fetch employee's approved leave for today
+    const [[approvedLeave]] = await conn.query(ATTENDANCE_QUERY.GET_APPROVED_LEAVE_READ, [employee_id, company_id, today]);
 
-          FROM holidays
+    // Fetch attendance and break rows
+    const [attendanceRows] = await conn.query(ATTENDANCE_QUERY.GET_CURRENT_STATUS_ATTENDANCES, [employee_id, company_id, today]);
+    const [breakRows] = await conn.query(ATTENDANCE_QUERY.GET_CURRENT_STATUS_BREAKS, [employee_id, company_id, today]);
 
-          WHERE
-            company_id = ?
-            AND date = ?
-            AND is_optional = 0
-            AND is_active = 1
-            AND is_deleted = 0
+    // --- Weekend check: if today is weekend, send weekend response ---
+    if (isWeekend) {
+      return res.status(200).json({
+        success: true,
+        message: "Current attendance status fetched successfully",
+        data: {
+          status: "WEEKEND",
+          allowed_methods,
+          auto_approved,
+          allowed_actions: [],
+          day_info: {
+            date: today,
+            day_name: todayDayName,
+            is_weekend: true,
+            is_holiday: !!holiday,
+            ...(holiday && { holiday_name: holiday.name }),
+          },
+        },
+      });
+    }
+    
+    // --- Full-day leave check (is_half_day != 1) ---
+    const isFullDayLeave = approvedLeave && Number(approvedLeave.is_half_day) !== 1;
+    if (isFullDayLeave && !attendanceRows.length) {
+      return res.status(200).json({
+        success: true,
+        message: "Current attendance status fetched successfully",
+        data: {
+          status: "LEAVE",
+          allowed_methods,
+          auto_approved,
+          allowed_actions: [],
+          day_info: {
+            date: today,
+            day_name: todayDayName,
+            is_weekend: false,
+            is_holiday: !!holiday,
+            ...(holiday && { holiday_name: holiday.name }),
+          },
+        },
+      });
+    }
 
-          LIMIT 1
-        `,
-      [company_id, today],
-    );
+    // --- Half-day detection ---
+    // Priority: 1) leave table half_day  2) attendance table value2 (manager-marked half_day)
+    const leaveIsHalfDay = approvedLeave && Number(approvedLeave.is_half_day) === 1;
 
-    const [attendanceRows] = await conn.query(
-      `
-        SELECT
-          a.id,
-          a.start_time,
-          a.end_time,
-          a.is_overtime,
-          a.is_verified,
-          a.day_status,
-          start_log.method       AS punch_in_method,
-          start_log.ip_address   AS punch_in_ip,
-          start_log.latitude     AS punch_in_latitude,
-          start_log.longitude    AS punch_in_longitude,
-          end_log.method         AS punch_out_method,
-          end_log.ip_address     AS punch_out_ip,
-          end_log.latitude       AS punch_out_latitude,
-          end_log.longitude      AS punch_out_longitude
+    const isRowHalfDay = (row) => {
+      const ds = String(row.day_status || "").trim().toLowerCase();
+      if (ds === "half_day") return true;
+      const v1 = String(row.value1 || "").trim().toLowerCase();
+      const v2 = String(row.value2 || "").trim().toLowerCase();
+      return ["half_day", "first_half", "second_half"].includes(v1) ||
+        ["half_day", "first_half", "second_half"].includes(v2);
+    };
 
-        FROM attendance a
+    const attendanceIsHalfDay = attendanceRows.some(isRowHalfDay);
+    const isHalfDay = leaveIsHalfDay || attendanceIsHalfDay;
 
-        LEFT JOIN (
-          SELECT
-            al.attendance_id,
-            al.method,
-            al.ip_address,
-            al.latitude,
-            al.longitude
+    // Resolve half_day_type: leave table always has first priority
+    let resolvedHalfDayType = "first_half";
+    if (leaveIsHalfDay && approvedLeave.half_day_type) {
+      resolvedHalfDayType = approvedLeave.half_day_type;
+    } else if (attendanceIsHalfDay) {
+      const halfDayRow = attendanceRows.find(isRowHalfDay);
+      if (halfDayRow) {
+        // value1 stores the half_day_type (first_half / second_half) when day_status is half_day
+        const v1 = String(halfDayRow.value1 || "").trim().toLowerCase();
+        const v2 = String(halfDayRow.value2 || "").trim().toLowerCase();
+        if (["first_half", "second_half"].includes(v1)) resolvedHalfDayType = v1;
+        else if (["first_half", "second_half"].includes(v2)) resolvedHalfDayType = v2;
+      }
+    }
 
-          FROM attendance_logs al
-
-          INNER JOIN (
-            SELECT
-              attendance_id,
-              MAX(id) AS max_id
-
-            FROM attendance_logs
-
-            WHERE log_type = 'start'
-
-            GROUP BY attendance_id
-          ) t
-            ON t.max_id = al.id
-        ) start_log
-          ON start_log.attendance_id = a.id
-
-        LEFT JOIN (
-          SELECT
-            al.attendance_id,
-            al.method,
-            al.ip_address,
-            al.latitude,
-            al.longitude
-
-          FROM attendance_logs al
-
-          INNER JOIN (
-            SELECT
-              attendance_id,
-              MAX(id) AS max_id
-
-            FROM attendance_logs
-
-            WHERE log_type = 'end'
-
-            GROUP BY attendance_id
-          ) t
-            ON t.max_id = al.id
-        ) end_log
-          ON end_log.attendance_id = a.id
-
-        WHERE
-          a.employee_id = ?
-          AND a.company_id = ?
-          AND a.attendance_date = ?
-          AND a.type = 'attendance'
-
-        ORDER BY a.start_time ASC
-      `,
-      [employee_id, company_id, today],
-    );
-
-    const [breakRows] = await conn.query(
-      `
-        SELECT
-          a.id,
-          a.start_time,
-          a.end_time,
-          a.is_deductible,
-          start_log.method       AS break_start_method,
-          start_log.ip_address   AS break_start_ip,
-          start_log.latitude     AS break_start_latitude,
-          start_log.longitude    AS break_start_longitude,
-          end_log.method         AS break_end_method,
-          end_log.ip_address     AS break_end_ip,
-          end_log.latitude       AS break_end_latitude,
-          end_log.longitude      AS break_end_longitude
-
-        FROM attendance a
-
-        LEFT JOIN (
-          SELECT
-            al.attendance_id,
-            al.method,
-            al.ip_address,
-            al.latitude,
-            al.longitude
-
-          FROM attendance_logs al
-
-          INNER JOIN (
-            SELECT
-              attendance_id,
-              MAX(id) AS max_id
-
-            FROM attendance_logs
-
-            WHERE log_type = 'start'
-
-            GROUP BY attendance_id
-          ) t
-            ON t.max_id = al.id
-        ) start_log
-          ON start_log.attendance_id = a.id
-
-        LEFT JOIN (
-          SELECT
-            al.attendance_id,
-            al.method,
-            al.ip_address,
-            al.latitude,
-            al.longitude
-
-          FROM attendance_logs al
-
-          INNER JOIN (
-            SELECT
-              attendance_id,
-              MAX(id) AS max_id
-
-            FROM attendance_logs
-
-            WHERE log_type = 'end'
-
-            GROUP BY attendance_id
-          ) t
-            ON t.max_id = al.id
-        ) end_log
-          ON end_log.attendance_id = a.id
-
-        WHERE
-          a.employee_id = ?
-          AND a.company_id = ?
-          AND a.attendance_date = ?
-          AND a.type = 'break'
-
-        ORDER BY a.start_time ASC
-      `,
-      [employee_id, company_id, today],
-    );
-
-    const restrictedDayStatus = attendanceRows.find((row) => row.day_status && !["present", "half_day"].includes(String(row.day_status).trim().toLowerCase()));
-
+    // --- Restricted day status check (non-present, non-half_day statuses from attendance) ---
+    const restrictedDayStatus = attendanceRows.find((row) => {
+      const ds = String(row.day_status || "").trim().toLowerCase();
+      if (["present", "half_day"].includes(ds)) return false;
+      if (isRowHalfDay(row)) return false;
+      return true;
+    });
     const hasRestrictedDayStatus = !!restrictedDayStatus;
 
+    // --- Calculate work and break time ---
     let total_work_ms = 0;
-
     let isWorking = false;
 
     for (const row of attendanceRows) {
@@ -3283,7 +3490,6 @@ router.get("/current-status", auth(), async (req, res) => {
       }
 
       const start = parseDateTimeIST(today, row.start_time);
-
       let end = null;
 
       if (row.end_time) {
@@ -3297,7 +3503,6 @@ router.get("/current-status", auth(), async (req, res) => {
     }
 
     let total_break_ms = 0;
-
     let isOnBreak = false;
 
     for (const row of breakRows) {
@@ -3306,7 +3511,6 @@ router.get("/current-status", auth(), async (req, res) => {
       }
 
       const start = parseDateTimeIST(today, row.start_time);
-
       let end = null;
 
       if (row.end_time) {
@@ -3320,11 +3524,10 @@ router.get("/current-status", auth(), async (req, res) => {
     }
 
     total_work_ms = Math.max(0, total_work_ms - total_break_ms);
-
     const total_work_minutes = Math.floor(total_work_ms / 60000);
-
     const total_break_minutes = Math.floor(total_break_ms / 60000);
 
+    // --- Build activities timeline ---
     const activities = [];
 
     for (const row of attendanceRows) {
@@ -3413,42 +3616,37 @@ router.get("/current-status", auth(), async (req, res) => {
 
     const today_activities = activities.map(({ sort_time, ...rest }) => rest);
 
+    // --- Determine status and allowed_actions ---
     let status = "NOT_PUNCHED_IN";
-
     let allowed_actions = [];
 
     if (holiday) {
       status = "HOLIDAY";
-
-      allowed_actions = [];
-    } else if (isWeekend) {
-      status = "WEEKEND";
-
       allowed_actions = [];
     } else if (hasRestrictedDayStatus) {
       status = String(restrictedDayStatus.day_status).trim().toUpperCase();
-
       allowed_actions = [];
     } else if (!attendanceRows.length) {
-      status = "NOT_PUNCHED_IN";
-
-      allowed_actions = ["PUNCH_IN"];
+      if (isHalfDay) {
+        status = "HALF_DAY";
+        allowed_actions = ["PUNCH_IN"];
+      } else {
+        status = "NOT_PUNCHED_IN";
+        allowed_actions = ["PUNCH_IN"];
+      }
     } else {
       const activeAttendance = attendanceRows.find((row) => !row.end_time);
 
       if (activeAttendance) {
         if (isOnBreak) {
           status = "ON_BREAK";
-
           allowed_actions = ["BREAK_END"];
         } else {
           status = "WORKING";
-
           allowed_actions = ["PUNCH_OUT", "BREAK_START"];
         }
       } else {
         status = "COMPLETED";
-
         allowed_actions = [];
       }
     }
@@ -3470,11 +3668,36 @@ router.get("/current-status", auth(), async (req, res) => {
       },
     };
 
-    if (!["HOLIDAY", "WEEKEND", "NOT_PUNCHED_IN"].includes(status)) {
+    if (!["HOLIDAY", "WEEKEND", "NOT_PUNCHED_IN", "LEAVE"].includes(status) || status === "HALF_DAY") {
+      let shiftStart = employee.shift_start;
+      let shiftEnd = employee.shift_end;
+      let expectedWorkMinutes = Number(employee.expected_work_minutes || 0);
+
+      if (isHalfDay) {
+        const sStart = parseTime(employee.shift_start, "HH:mm:ss");
+        const sEnd = parseTime(employee.shift_end, "HH:mm:ss");
+        if (sStart && sEnd) {
+          const totalShiftMins = diffMinutes(sStart, sEnd);
+          const halfShiftMins = Math.floor(totalShiftMins / 2);
+          const midpoint = addMinutesToTime(sStart, halfShiftMins);
+
+          // first_half leave = employee works SECOND half (midpoint → shift_end)
+          // second_half leave = employee works FIRST half (shift_start → midpoint)
+          if (resolvedHalfDayType === "first_half") {
+            shiftStart = midpoint;
+            shiftEnd = employee.shift_end;
+          } else {
+            shiftStart = employee.shift_start;
+            shiftEnd = midpoint;
+          }
+        }
+        expectedWorkMinutes = Math.floor(expectedWorkMinutes / 2);
+      }
+
       responseData.shift = {
-        start_time: employee.shift_start,
-        end_time: employee.shift_end,
-        expected_work_minutes: Number(employee.expected_work_minutes || 0),
+        start_time: shiftStart,
+        end_time: shiftEnd,
+        expected_work_minutes: expectedWorkMinutes,
         allowed_break_minutes: Number(employee.break_minutes || 0),
         grace_minutes: Number(employee.grace_minutes || 0),
       };
@@ -3486,6 +3709,7 @@ router.get("/current-status", auth(), async (req, res) => {
 
       responseData.today_activities = today_activities;
     }
+
     return res.status(200).json({
       success: true,
       message: "Current attendance status fetched successfully",
@@ -3493,7 +3717,6 @@ router.get("/current-status", auth(), async (req, res) => {
     });
   } catch (err) {
     console.error("❌ current-status error:", err);
-
     return sendError(res, 500, "Failed to fetch current attendance status");
   } finally {
     if (conn) {
@@ -3502,6 +3725,7 @@ router.get("/current-status", auth(), async (req, res) => {
   }
 });
 
+// Route 11: GET /logs
 router.get("/logs", auth(), async (req, res) => {
   let conn;
 
@@ -3512,7 +3736,6 @@ router.get("/logs", auth(), async (req, res) => {
     const attendanceId = Number(req.query.id);
 
     const logType = String(req.query.log_type || "").trim().toLowerCase();
-
     const search = String(req.query.search || "").trim();
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -3540,13 +3763,7 @@ router.get("/logs", auth(), async (req, res) => {
       });
     }
 
-    const [[attendance]] = await conn.query(
-      `SELECT id, type, attendance_date
-       FROM attendance
-       WHERE id = ? AND company_id = ?
-       LIMIT 1`,
-      [attendanceId, companyId],
-    );
+    const [[attendance]] = await conn.query(ATTENDANCE_QUERY.GET_LOG_ATTENDANCE, [attendanceId, companyId]);
 
     if (!attendance) {
       return res.status(404).json({
@@ -3622,7 +3839,7 @@ router.get("/logs", auth(), async (req, res) => {
 
       const [userRows] = await conn.query(`SELECT id, name FROM users WHERE id IN (?)`, [uniqueIds]);
 
-      const [[company]] = await conn.query(`SELECT owner_user_id FROM companies WHERE id = ?`, [companyId]);
+      const [[company]] = await conn.query(ATTENDANCE_QUERY.GET_COMPANY_OWNER, [companyId]);
       const ownerUserId = company ? company.owner_user_id : null;
 
       const [empRows] = await conn.query(
@@ -3705,36 +3922,12 @@ router.get("/logs", auth(), async (req, res) => {
   }
 });
 
+// Route 12: GET /list
 router.get("/list", auth(AT.MNG), async (req, res) => {
   let conn;
 
   const allowedTypes = ["attendance", "break"];
   const allowedDayStatuses = ["present", "absent", "leave", "half_day", "unmarked"];
-
-  const normalizeDayStatus = (status) => {
-    if (!status) return "unmarked";
-    const normalized = String(status).trim().toLowerCase();
-    if (normalized === "paid_leave") return "leave";
-    return normalized;
-  };
-
-  const buildDayStatusPayload = ({ dayStatus, value1, value2 }) => {
-    const normalizedStatus = normalizeDayStatus(dayStatus);
-    if (normalizedStatus === "half_day") {
-      return { half_day_session: value1 || null };
-    }
-    if (normalizedStatus === "leave") {
-      const leaveType = value1 || null;
-      const payload = { leave_type: leaveType };
-      if (String(leaveType || "").trim().toLowerCase() === "paid") {
-        payload.leave_sub_type = value2 || null;
-      }
-      return payload;
-    }
-    return {};
-  };
-
-  const removeNullFields = (obj = {}) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
 
   try {
     conn = await db.getConnection();
@@ -4269,6 +4462,7 @@ router.get("/list", auth(AT.MNG), async (req, res) => {
   }
 });
 
+// Route 13: GET /dashboard-summary
 router.get("/dashboard-summary", auth(), async (req, res) => {
   let conn;
 
@@ -4285,217 +4479,16 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
     }
 
     const now = new Date();
-
     const today = now.toISOString().split("T")[0];
-
     const currentYear = now.getFullYear();
-
     const currentMonth = now.getMonth();
-
     const monthStart = new Date(currentYear, currentMonth, 1).toISOString().split("T")[0];
-
     const monthEnd = new Date(currentYear, currentMonth + 1, 0).toISOString().split("T")[0];
 
-    const [[employeeStats]] = await conn.query(
-      `
-        SELECT
-          COUNT(*) AS total_employees,
-          SUM(
-            CASE
-              WHEN e.status = 'active'
-              THEN 1
-              ELSE 0
-            END
-          ) AS active_employees,
-          SUM(
-            CASE
-              WHEN e.status != 'active'
-              THEN 1
-              ELSE 0
-            END
-          ) AS inactive_employees,
-          SUM(
-            CASE
-              WHEN e.face_enrolled = 1
-              THEN 1
-              ELSE 0
-            END
-          ) AS face_enrolled_count,
-          SUM(
-            CASE
-              WHEN e.fingerprint_mapped = 1
-              THEN 1
-              ELSE 0
-            END
-          ) AS fingerprint_mapped_count
-
-        FROM employees e
-
-        INNER JOIN users u
-        ON u.id = e.user_id
-
-        WHERE e.company_id = ?
-        AND e.is_deleted = 0
-        AND e.is_active = 1
-
-        AND u.is_deleted = 0
-        AND u.is_active = 1
-
-        AND (
-          e.joining_date IS NULL
-          OR e.joining_date <= ?
-        )
-        `,
-      [company_id, today],
-    );
-
-    const [[attendanceStats]] = await conn.query(
-      `
-        SELECT
-          COUNT(
-            DISTINCT CASE
-              WHEN a.day_status IN (
-                'present',
-                'half_day'
-              )
-              THEN a.employee_id
-            END
-          ) AS present_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.day_status = 'absent'
-              THEN a.employee_id
-            END
-          ) AS absent_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.day_status = 'half_day'
-              THEN a.employee_id
-            END
-          ) AS half_day_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.day_status = 'paid_leave'
-              THEN a.employee_id
-            END
-          ) AS paid_leave_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.day_status = 'unmarked'
-              THEN a.employee_id
-            END
-          ) AS unmarked_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.is_verified = 1
-              THEN a.employee_id
-            END
-          ) AS verified_attendance_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.is_verified = 0
-              THEN a.employee_id
-            END
-          ) AS unverified_attendance_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.is_overtime = 1
-              THEN a.employee_id
-            END
-          ) AS overtime_employee_count,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.type = 'attendance'
-              THEN a.id
-            END
-          ) AS attendance_entries,
-          COUNT(
-            DISTINCT CASE
-              WHEN a.type = 'break'
-              THEN a.id
-            END
-          ) AS break_entries
-
-        FROM attendance a
-
-        INNER JOIN employees e
-        ON e.id = a.employee_id
-
-        INNER JOIN users u
-        ON u.id = e.user_id
-
-        WHERE a.company_id = ?
-        AND a.attendance_date = ?
-
-        AND e.is_deleted = 0
-        AND e.is_active = 1
-
-        AND u.is_deleted = 0
-        AND u.is_active = 1
-        `,
-      [company_id, today],
-    );
-
-    const [[shiftStats]] = await conn.query(
-      `
-        SELECT
-          COUNT(*) AS total_shifts,
-          SUM(
-            worked_minutes
-          ) AS total_worked_minutes,
-          SUM(
-            allowed_break_minutes
-          ) AS total_break_minutes,
-          SUM(
-            extra_break_minutes
-          ) AS total_extra_break_minutes,
-          SUM(
-            overtime_minutes
-          ) AS total_overtime_minutes,
-          SUM(
-            late_minutes
-          ) AS total_late_minutes,
-          SUM(
-            early_leave_minutes
-          ) AS total_early_leave_minutes,
-          AVG(
-            worked_minutes
-          ) AS avg_worked_minutes
-
-        FROM shifts
-
-        WHERE company_id = ?
-        AND shift_date = ?
-        AND is_deleted = 0
-        `,
-      [company_id, today],
-    );
-
-    const [leaveStatsRows] = await conn.query(
-      `
-        SELECT
-          status,
-          COUNT(*) AS total_requests,
-          COUNT(
-            DISTINCT employee_id
-          ) AS total_employees,
-          SUM(total_days)
-          AS total_leave_days
-
-        FROM employee_leaves
-
-        WHERE company_id = ?
-
-        AND is_deleted = 0
-        AND is_active = 1
-
-        AND start_date <= ?
-        AND end_date >= ?
-
-        GROUP BY status
-        `,
-      [company_id, monthEnd, monthStart],
-    );
+    const [[employeeStats]] = await conn.query(ATTENDANCE_QUERY.GET_DASHBOARD_EMPLOYEE_STATS, [company_id, today]);
+    const [[attendanceStats]] = await conn.query(ATTENDANCE_QUERY.GET_DASHBOARD_ATTENDANCE_STATS, [company_id, today]);
+    const [[shiftStats]] = await conn.query(ATTENDANCE_QUERY.GET_DASHBOARD_SHIFT_STATS, [company_id, today]);
+    const [leaveStatsRows] = await conn.query(ATTENDANCE_QUERY.GET_DASHBOARD_LEAVE_STATS, [company_id, monthEnd, monthStart]);
 
     const leaveStats = {
       pending: {
@@ -4530,40 +4523,10 @@ router.get("/dashboard-summary", auth(), async (req, res) => {
       }
     }
 
-    const [[holidayStats]] = await conn.query(
-      `
-        SELECT
-          COUNT(*) AS total_holidays,
-          SUM(
-            CASE
-              WHEN is_optional = 1
-              THEN 1
-              ELSE 0
-            END
-          ) AS optional_holidays,
-          SUM(
-            CASE
-              WHEN is_optional = 0
-              THEN 1
-              ELSE 0
-            END
-          ) AS mandatory_holidays
-
-        FROM holidays
-
-        WHERE company_id = ?
-        AND is_deleted = 0
-        AND is_active = 1
-
-        AND YEAR(date) = YEAR(?)
-        `,
-      [company_id, today],
-    );
+    const [[holidayStats]] = await conn.query(ATTENDANCE_QUERY.GET_DASHBOARD_HOLIDAY_STATS, [company_id, today]);
 
     const totalEmployees = Number(employeeStats?.total_employees || 0);
-
     const totalPresent = Number(attendanceStats?.present_count || 0);
-
     const calculatedAbsent = Math.max(0, totalEmployees - totalPresent);
 
     return res.status(200).json({

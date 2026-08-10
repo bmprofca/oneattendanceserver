@@ -94,7 +94,7 @@ async function _processEmployeeBatch(conn, employees, today, weekday, holidayMap
   const employeeIds = employees.map((e) => Number(e.id));
 
   const [leaveRows] = await conn.query(
-    `SELECT el.employee_id, lc.code, lc.is_paid
+    `SELECT el.employee_id, lc.code, lc.is_paid,el.is_half_day,el.half_day_type
      FROM   employee_leaves el
      INNER JOIN leave_configs lc
        ON  lc.id        = el.leave_config_id
@@ -111,7 +111,12 @@ async function _processEmployeeBatch(conn, employees, today, weekday, holidayMap
   const leaveMap = new Map();
   for (const row of leaveRows) {
     const eid = Number(row.employee_id);
-    if (!leaveMap.has(eid)) leaveMap.set(eid, { code: row.code, is_paid: Number(row.is_paid) });
+    if (!leaveMap.has(eid)) leaveMap.set(eid, {
+      code: row.code,
+      is_paid: Number(row.is_paid),
+      is_half_day: Number(row.is_half_day),
+      half_day_type: row.half_day_type
+    });
   }
 
   const [existingRows] = await conn.query(
@@ -142,6 +147,10 @@ async function _processEmployeeBatch(conn, employees, today, weekday, holidayMap
 
       if (leave) {
 
+        if (leave.is_half_day === 1) {
+          skippedCount++;
+          continue;
+        }
         dayStatus = "leave";
         value1 = leave.is_paid === 1 ? "paid" : "unpaid";
         value2 = leave.code;

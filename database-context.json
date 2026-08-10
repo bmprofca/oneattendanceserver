@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-08-07T14:50:51.208Z",
+  "generated_at": "2026-08-10T19:03:36.872Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -456,7 +456,7 @@
     "bank_accounts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 5,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -1032,7 +1032,7 @@
     "company_invites": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 4,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -1982,7 +1982,7 @@
     "employees": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -2372,7 +2372,7 @@
     "employee_leaves": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 13,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -2694,7 +2694,7 @@
     "employee_leave_attachments": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -2865,7 +2865,7 @@
     "employee_leave_balances": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -3099,7 +3099,7 @@
     "employee_salary_component": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 35,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {
@@ -3327,7 +3327,7 @@
     "holidays": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 4,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -3840,7 +3840,7 @@
     "invite_salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 25,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {
@@ -4222,7 +4222,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -6078,7 +6078,7 @@
     "salary_structures": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 16,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -6523,7 +6523,7 @@
     "shifts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
