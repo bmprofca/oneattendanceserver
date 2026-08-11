@@ -3034,7 +3034,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
     }
 
     const type = String(req.query.type || "").trim().toLowerCase();
-    const date = req.query.date || null;
     const from_date = req.query.from_date || null;
     const to_date = req.query.to_date || null;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -3043,10 +3042,6 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
     if (!["attendance", "break"].includes(type)) {
       return sendError(res, 400, "Invalid type. Allowed: attendance, break");
-    }
-
-    if (date && (from_date || to_date)) {
-      return sendError(res, 400, "Use either date OR from_date/to_date");
     }
 
     const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_PAST_PUNCHES, [user_id, company_id]);
@@ -3071,18 +3066,14 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
     const params = [employee.id, company_id, type];
 
-    if (date) {
-      where += ` AND a.attendance_date = ? `;
-      params.push(date);
-    } else {
-      if (from_date) {
-        where += ` AND a.attendance_date >= ? `;
-        params.push(from_date);
-      }
-      if (to_date) {
-        where += ` AND a.attendance_date <= ? `;
-        params.push(to_date);
-      }
+
+    if (from_date) {
+      where += ` AND a.attendance_date >= ? `;
+      params.push(from_date);
+    }
+    if (to_date) {
+      where += ` AND a.attendance_date <= ? `;
+      params.push(to_date);
     }
 
     const countQuery = `
