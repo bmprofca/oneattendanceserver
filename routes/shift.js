@@ -402,7 +402,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
         if (holiday) {
           obj.is_holiday = {
             name: holiday.name,
-            is_optional: holiday.is_optional
+            is_optional: holiday.is_optional==1
           };
         }
 

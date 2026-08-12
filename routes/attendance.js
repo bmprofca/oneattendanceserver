@@ -5,24 +5,9 @@ import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
 import getClientMeta from "../utils/ipHelper.js";
 import {
-  parseDate,
-  isDateAfter,
-  addMinutesToTime,
-  getISTNow,
-  getCurrentDate,
-  getCurrentTime,
-  parseDateTimeIST,
-  weekendInfo,
-  formatTime12Hour,
-  getDayName,
-  normalizeWeekends,
-  diffMinutes,
-  normalizeHalfDayType,
-  diffMilliseconds,
-  parseTime,
-  eachDateBetween,
-  formatIST,
-  getYearFromDate
+  parseDate, isDateAfter, addMinutesToTime, getISTNow, getCurrentDate, getCurrentTime,
+  parseDateTimeIST, weekendInfo, formatTime12Hour, getDayName, normalizeWeekends, diffMinutes,
+  normalizeHalfDayType, diffMilliseconds, parseTime, eachDateBetween, formatIST, getYearFromDate
 } from "../utils/time.js";
 import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
 import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
@@ -3244,7 +3229,7 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
     const meta = {
       ...buildMeta(page, limit, total, data.length),
-      filters: { type, date, from_date, to_date },
+      filters: { type, from_date, to_date },
     };
 
     return sendSuccess(

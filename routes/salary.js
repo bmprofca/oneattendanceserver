@@ -19,11 +19,14 @@ import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 
 const router = express.Router();
 
-// local helpers for functions removed from time.js
+// --------------- GLOBAL HELPERS ---------------
+const toBool = (val) => (val === true || val === 1 || val === "1") ? 1 : 0;
 const isValidDate = (value) => !!parseDate(value);
 const formatDate = (date) => formatIST(date, "YYYY-MM-DD");
+const VALID_COMPONENT_TYPES = ["earning", "deduction", "employer_contribution"];
+const VALID_CALC_TYPES = ["fixed", "percentage"];
 
-// --------------- SQL FIELD CONSTANTS ---------------
+// --------------- SQL FIELD & QUERY CONSTANTS ---------------
 const SALARY_COMPONENT_FIELDS = `
   id, company_id, code, name, type, calc_type, calc_value,
   is_taxable, is_statutory, is_active, created_at, updated_at
@@ -37,6 +40,22 @@ const SALARY_STRUCTURE_FIELDS = `
   ss.id, ss.company_id, ss.employee_id, ss.base_amount,
   ss.effective_from, ss.effective_to, ss.is_active
 `;
+
+// Frequently used queries
+const SELECT_COMPONENT_BY_ID = `SELECT ${SALARY_COMPONENT_FIELDS} FROM salary_components WHERE id = ? AND company_id = ?`;
+const SELECT_PACKAGE_BY_ID = `SELECT ${SALARY_PACKAGE_FIELDS} FROM salary_component_packages WHERE id = ? AND company_id = ?`;
+const SELECT_SS_BY_ID = `SELECT ${SALARY_STRUCTURE_FIELDS} FROM salary_structures ss WHERE ss.id = ? AND ss.company_id = ? AND ss.is_deleted = 0`;
+
+const PACKAGE_EXISTS_BY_NAME = `SELECT id FROM salary_component_packages WHERE company_id = ? AND name = ? AND is_deleted = 0 LIMIT 1`;
+const PACKAGE_EXISTS_BY_ID = `SELECT id FROM salary_component_packages WHERE id = ? AND company_id = ? AND is_deleted = 0`;
+const PACKAGE_EXISTS_BY_CODE_EXCEPT = `SELECT id FROM salary_component_packages WHERE company_id = ? AND code = ? AND id != ? AND is_deleted = 0 LIMIT 1`;
+
+const COMPONENT_EXISTS_BY_CODE = `SELECT id FROM salary_components WHERE company_id = ? AND code = ? AND is_deleted = 0 LIMIT 1`;
+const COMPONENT_EXISTS_BY_ID = `SELECT id FROM salary_components WHERE id = ? AND company_id = ? AND is_deleted = 0`;
+const COMPONENT_EXISTS_BY_CODE_EXCEPT = `SELECT id FROM salary_components WHERE company_id = ? AND code = ? AND id != ? AND is_deleted = 0 LIMIT 1`;
+
+const CHECK_PAYROLL_USED = `SELECT id FROM payroll_entries WHERE salary_id = ? AND is_deleted = 0 LIMIT 1`;
+const CHECK_EMPLOYEE_EXISTS = `SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0`;
 
 // --------------- FORMAT HELPERS ---------------
 function formatSalaryComponent(row) {
@@ -75,1133 +94,1015 @@ function formatSalaryPackage(pkg, items = []) {
   };
 }
 
+// --------------- CONNECTION / TRANSACTION WRAPPERS ---------------
+const withConnection = (handler) => async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    return await handler(conn, req, res);
+  } catch (err) {
+    console.error("Connection Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
+const withTransaction = (handler) => async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const result = await handler(conn, req, res);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error("Transaction Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
+// --------------- VALIDATION HELPERS ---------------
+function parsePackageComponentIds(components) {
+  const idsSet = new Set();
+  const ids = [];
+  components.forEach((item, index) => {
+    if (!item.component_id) throw { status: 400, message: `component_id required at index ${index}` };
+    const compId = parseInt(item.component_id);
+    if (isNaN(compId) || compId <= 0) throw { status: 400, message: `Invalid component_id at index ${index}` };
+    if (idsSet.has(compId)) throw { status: 400, message: `Duplicate component_id: ${compId}` };
+    idsSet.add(compId);
+    ids.push(compId);
+  });
+  return ids;
+}
+
+async function validateComponentIdsInDB(conn, companyId, ids, requireActive = true) {
+  if (!ids.length) return;
+  const activeCondition = requireActive ? "AND is_active = 1" : "";
+  const [validComponents] = await conn.query(
+    `SELECT id FROM salary_components WHERE id IN (?) AND company_id = ? AND is_deleted = 0 ${activeCondition}`,
+    [ids, companyId]
+  );
+  if (validComponents.length !== ids.length) {
+    throw { status: 400, message: requireActive ? "Some components are invalid or inactive" : "Some components are invalid" };
+  }
+}
+
+function validateEmployeeComponents(components) {
+  if (!Array.isArray(components) || components.length === 0) {
+    throw { status: 400, message: "components array is required" };
+  }
+
+  const dupCheck = new Set();
+  const validated = components.map((c, idx) => {
+    const compId = Number(c.component_id);
+    if (!compId || isNaN(compId) || compId <= 0) throw { status: 400, message: `Invalid component_id at index ${idx}` };
+    if (dupCheck.has(compId)) throw { status: 400, message: `Duplicate salary component: ${compId}` };
+    dupCheck.add(compId);
+
+    if (!VALID_CALC_TYPES.includes(c.calc_type)) throw { status: 400, message: `Invalid calc_type for component ${compId}` };
+
+    const calcVal = Number(c.calc_value);
+    if (!Number.isFinite(calcVal) || calcVal < 0) throw { status: 400, message: `Invalid calc_value for component ${compId}` };
+    if (c.calc_type === "percentage" && calcVal > 100) throw { status: 400, message: `Percentage component ${compId} cannot exceed 100` };
+
+    return {
+      component_id: compId,
+      calc_type: c.calc_type,
+      calc_value: calcVal,
+      remark: c.remark || null,
+    };
+  });
+
+  return validated;
+}
+
+async function checkSalaryOverlap(conn, employeeId, companyId, effectiveFrom, effectiveTo, excludeId = null) {
+  const excludeClause = excludeId ? "AND id != ?" : "";
+  const params = [employeeId, companyId];
+  if (excludeId) params.push(excludeId);
+  const to = effectiveTo || "9999-12-31";
+  const [overlap] = await conn.query(
+    `SELECT id FROM salary_structures
+     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 ${excludeClause}
+       AND effective_from <= ? AND COALESCE(effective_to, '9999-12-31') >= ?
+     LIMIT 1`,
+    [...params, to, effectiveFrom]
+  );
+  if (overlap.length) throw { status: 400, message: "Salary period overlaps with an existing salary structure" };
+}
+
+// Helper to fetch package items for a single package (used in create & update)
+async function getPackageItems(conn, package_id) {
+  const [items] = await conn.query(
+    `SELECT spi.component_id, sc.name, sc.code, sc.type, sc.calc_type, sc.calc_value
+     FROM salary_component_package_items spi
+     JOIN salary_components sc ON sc.id = spi.component_id
+     WHERE spi.package_id = ? AND spi.is_deleted = 0 AND sc.is_deleted = 0
+     ORDER BY spi.component_id ASC`,
+    [package_id]
+  );
+  return items;
+}
+
 // --------------- ROUTES ---------------
 
 // 1. Create salary component
-router.post("/components/create", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    let {
-      code, name, type, calc_type, calc_value, is_taxable, is_statutory
-    } = req.body;
+router.post("/components/create", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  let { code, name, type, calc_type, calc_value, is_taxable, is_statutory } = req.body;
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  if (!company_id) throw { status: 400, message: "Company context missing" };
+  if (!code || !name || !type) throw { status: 400, message: "code, name and type are required" };
 
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company context missing");
-    if (!code || !name || !type) return sendError(res, 400, "code, name and type are required");
+  code = code.trim().toUpperCase();
+  name = name.trim();
+  type = type.trim().toLowerCase();
+  calc_type = calc_type ? calc_type.trim().toLowerCase() : "fixed";
 
-    code = code.trim().toUpperCase();
-    name = name.trim();
-    type = type.trim().toLowerCase();
-    calc_type = calc_type ? calc_type.trim().toLowerCase() : "fixed";
+  is_taxable = toBool(is_taxable);
+  is_statutory = toBool(is_statutory);
 
-    const toBool = val => val === true || val === 1 || val === "1";
-    is_taxable = toBool(is_taxable) ? 1 : 0;
-    is_statutory = toBool(is_statutory) ? 1 : 0;
+  if (!VALID_COMPONENT_TYPES.includes(type)) throw { status: 400, message: `Invalid type. Allowed: ${VALID_COMPONENT_TYPES.join(", ")}` };
+  if (!VALID_CALC_TYPES.includes(calc_type)) throw { status: 400, message: `Invalid calc_type. Allowed: ${VALID_CALC_TYPES.join(", ")}` };
 
-    const validTypes = ["earning", "deduction", "employer_contribution"];
-    const validCalcTypes = ["fixed", "percentage"];
-    if (!validTypes.includes(type)) return sendError(res, 400, "Invalid type. Allowed: earning, deduction, employer_contribution");
-    if (!validCalcTypes.includes(calc_type)) return sendError(res, 400, "Invalid calc_type. Allowed: fixed, percentage");
+  calc_value = parseFloat(calc_value);
+  if (isNaN(calc_value)) calc_value = 0;
+  if (calc_type === "percentage" && (calc_value <= 0 || calc_value > 100)) throw { status: 400, message: "For percentage, calc_value must be between 0 and 100" };
+  if (calc_type === "fixed" && calc_value < 0) throw { status: 400, message: "Fixed amount cannot be negative" };
 
-    calc_value = parseFloat(calc_value);
-    if (isNaN(calc_value)) calc_value = 0;
-    if (calc_type === "percentage" && (calc_value <= 0 || calc_value > 100)) return sendError(res, 400, "For percentage, calc_value must be between 0 and 100");
-    if (calc_type === "fixed" && calc_value < 0) return sendError(res, 400, "Fixed amount cannot be negative");
+  const [existing] = await conn.query(COMPONENT_EXISTS_BY_CODE, [company_id, code]);
+  if (existing.length) throw { status: 409, message: "Salary component code already exists" };
 
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+  const [result] = await conn.query(
+    `INSERT INTO salary_components (company_id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [company_id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, user_id || null]
+  );
 
-    const [existing] = await conn.query(
-      `SELECT id FROM salary_components WHERE company_id = ? AND code = ? AND is_deleted = 0 LIMIT 1`,
-      [company_id, code]
-    );
-    if (existing.length) {
-      await conn.rollback();
-      return sendError(res, 409, "Salary component code already exists");
-    }
-
-    const [result] = await conn.query(
-      `INSERT INTO salary_components (company_id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [company_id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, user_id || null]
-    );
-
-    const [[created]] = await conn.query(`SELECT ${SALARY_COMPONENT_FIELDS} FROM salary_components WHERE id = ?`, [result.insertId]);
-    await conn.commit();
-
-    return sendSuccess(res, 201, "Salary component created successfully", formatSalaryComponent(created));
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Create Salary Component Error:", err);
-    if (err.code === "ER_DUP_ENTRY") return sendError(res, 409, "Salary component code already exists");
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  const [[created]] = await conn.query(SELECT_COMPONENT_BY_ID, [result.insertId, company_id]);
+  return sendSuccess(res, 201, "Salary component created successfully", formatSalaryComponent(created));
+}));
 
 // 2. List salary components
-router.get("/components/list", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
+router.get("/components/list", auth(SAL_COMP.MNG), withConnection(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  if (!company_id) throw { status: 400, message: "Company context missing" };
 
-    const company_id = req.company?.id;
-    if (!company_id) return sendError(res, 400, "Company context missing");
+  let { search = "", page = 1, limit = 10, type, is_active } = req.query;
+  page = Math.max(1, parseInt(page) || 1);
+  limit = Math.min(100, parseInt(limit) || 10);
+  const offset = (page - 1) * limit;
 
-    let { search = "", page = 1, limit = 10, type, is_active } = req.query;
-    page = Math.max(1, parseInt(page) || 1);
-    limit = Math.min(100, parseInt(limit) || 10);
-    const offset = (page - 1) * limit;
+  let whereClause = `WHERE company_id = ? AND is_deleted = 0`;
+  let params = [company_id];
 
-    let whereClause = `WHERE company_id = ? AND is_deleted = 0`;
-    let params = [company_id];
-
-    if (search) {
-      whereClause += ` AND (LOWER(code) LIKE ? OR LOWER(name) LIKE ?)`;
-      const s = `%${search.toLowerCase()}%`;
-      params.push(s, s);
-    }
-
-    if (type) {
-      const validTypes = ["earning", "deduction", "employer_contribution"];
-      if (!validTypes.includes(type)) return sendError(res, 400, "Invalid type filter");
-      whereClause += ` AND type = ?`;
-      params.push(type);
-    }
-
-    if (is_active !== undefined) {
-      const activeVal = (is_active === "1" || is_active === 1) ? 1 : 0;
-      whereClause += ` AND is_active = ?`;
-      params.push(activeVal);
-    }
-
-    const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM salary_components ${whereClause}`, params);
-
-    const [rows] = await conn.query(
-      `SELECT ${SALARY_COMPONENT_FIELDS} FROM salary_components ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
-
-    const data = rows.map(formatSalaryComponent);
-    return sendSuccess(res, 200, "Salary components fetched successfully", data, buildMeta(page, limit, total, data.length));
-  } catch (err) {
-    console.error("List Salary Components Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (search) {
+    whereClause += ` AND (LOWER(code) LIKE ? OR LOWER(name) LIKE ?)`;
+    const s = `%${search.toLowerCase()}%`;
+    params.push(s, s);
   }
-});
+
+  if (type) {
+    if (!VALID_COMPONENT_TYPES.includes(type)) throw { status: 400, message: "Invalid type filter" };
+    whereClause += ` AND type = ?`;
+    params.push(type);
+  }
+
+  if (is_active !== undefined) {
+    if (is_active !== "true" && is_active !== "false") {
+      throw { status: 400, message: "is_active must be true or false" };
+    }
+
+    const activeVal = is_active === "true" ? 1 : 0;
+
+    whereClause += ` AND is_active = ?`;
+    params.push(activeVal);
+  }
+
+  const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM salary_components ${whereClause}`, params);
+
+  const [rows] = await conn.query(
+    `SELECT ${SALARY_COMPONENT_FIELDS} FROM salary_components ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+
+  const data = rows.map(formatSalaryComponent);
+  return sendSuccess(res, 200, "Salary components fetched successfully", data, buildMeta(page, limit, total, data.length));
+}));
 
 // 3. Update salary component
-router.put("/components/update", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    let { id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, is_active } = req.body;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
+router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  let { id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, is_active } = req.body;
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    if (!company_id || !id) return sendError(res, 400, "company_id and id are required");
+  if (!company_id || !id) throw { status: 400, message: "company_id and id are required" };
 
-    if (code !== undefined) code = code.trim().toUpperCase();
-    if (name !== undefined) name = name.trim();
-    if (type !== undefined) type = type.trim().toLowerCase();
-    if (calc_type !== undefined) calc_type = calc_type.trim().toLowerCase();
+  if (code !== undefined) code = code.trim().toUpperCase();
+  if (name !== undefined) name = name.trim();
+  if (type !== undefined) type = type.trim().toLowerCase();
+  if (calc_type !== undefined) calc_type = calc_type.trim().toLowerCase();
 
-    const toBool = val => val === true || val === 1 || val === "1";
-    const validTypes = ["earning", "deduction", "employer_contribution"];
-    const validCalcTypes = ["fixed", "percentage"];
+  if (type && !VALID_COMPONENT_TYPES.includes(type)) throw { status: 400, message: "Invalid type" };
+  if (calc_type && !VALID_CALC_TYPES.includes(calc_type)) throw { status: 400, message: "Invalid calc_type" };
 
-    if (type && !validTypes.includes(type)) return sendError(res, 400, "Invalid type");
-    if (calc_type && !validCalcTypes.includes(calc_type)) return sendError(res, 400, "Invalid calc_type");
+  const [[existing]] = await conn.query(COMPONENT_EXISTS_BY_ID, [id, company_id]);
+  if (!existing) throw { status: 404, message: "Salary component not found" };
 
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const [[existing]] = await conn.query(
-      `SELECT calc_type, calc_value FROM salary_components WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, company_id]
-    );
-    if (!existing) {
-      await conn.rollback();
-      return sendError(res, 404, "Salary component not found");
-    }
-
-    if (code !== undefined) {
-      const [dup] = await conn.query(
-        `SELECT id FROM salary_components WHERE company_id = ? AND code = ? AND id != ? AND is_deleted = 0`,
-        [company_id, code, id]
-      );
-      if (dup.length) {
-        await conn.rollback();
-        return sendError(res, 409, "Salary component code already exists");
-      }
-    }
-
-    let finalCalcType = calc_type !== undefined ? calc_type : existing.calc_type;
-    let finalCalcValue;
-    if (calc_value !== undefined) {
-      finalCalcValue = parseFloat(calc_value);
-      if (isNaN(finalCalcValue)) finalCalcValue = 0;
-    } else {
-      finalCalcValue = existing.calc_value;
-    }
-
-    if (finalCalcType === "percentage" && (finalCalcValue <= 0 || finalCalcValue > 100)) {
-      await conn.rollback();
-      return sendError(res, 400, "For percentage, calc_value must be between 0 and 100");
-    }
-    if (finalCalcType === "fixed" && finalCalcValue < 0) {
-      await conn.rollback();
-      return sendError(res, 400, "Fixed amount cannot be negative");
-    }
-
-    let updateFields = [], params = [];
-    if (code !== undefined) { updateFields.push("code = ?"); params.push(code); }
-    if (name !== undefined) { updateFields.push("name = ?"); params.push(name); }
-    if (type !== undefined) { updateFields.push("type = ?"); params.push(type); }
-    if (calc_type !== undefined) { updateFields.push("calc_type = ?"); params.push(calc_type); }
-    if (calc_value !== undefined || calc_type !== undefined) { updateFields.push("calc_value = ?"); params.push(finalCalcValue); }
-    if (is_taxable !== undefined) { updateFields.push("is_taxable = ?"); params.push(toBool(is_taxable) ? 1 : 0); }
-    if (is_statutory !== undefined) { updateFields.push("is_statutory = ?"); params.push(toBool(is_statutory) ? 1 : 0); }
-    if (is_active !== undefined) { updateFields.push("is_active = ?"); params.push(toBool(is_active) ? 1 : 0); }
-    if (!updateFields.length) {
-      await conn.rollback();
-      return sendError(res, 400, "No fields provided to update");
-    }
-    updateFields.push("updated_by = ?"); params.push(user_id || null);
-    params.push(id, company_id);
-
-    await conn.query(
-      `UPDATE salary_components SET ${updateFields.join(", ")} WHERE id = ? AND company_id = ?`,
-      params
-    );
-
-    const [[updated]] = await conn.query(`SELECT ${SALARY_COMPONENT_FIELDS} FROM salary_components WHERE id = ? AND company_id = ?`, [id, company_id]);
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Salary component updated successfully", formatSalaryComponent(updated));
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Update Salary Component Error:", err);
-    if (err.code === "ER_DUP_ENTRY") return sendError(res, 409, "Salary component code already exists");
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (code !== undefined) {
+    const [dup] = await conn.query(COMPONENT_EXISTS_BY_CODE_EXCEPT, [company_id, code, id]);
+    if (dup.length) throw { status: 409, message: "Salary component code already exists" };
   }
-});
+
+  let finalCalcType = calc_type !== undefined ? calc_type : existing.calc_type;
+  let finalCalcValue;
+  if (calc_value !== undefined) {
+    finalCalcValue = parseFloat(calc_value);
+    if (isNaN(finalCalcValue)) finalCalcValue = 0;
+  } else {
+    finalCalcValue = existing.calc_value;
+  }
+
+  if (finalCalcType === "percentage" && (finalCalcValue <= 0 || finalCalcValue > 100)) throw { status: 400, message: "For percentage, calc_value must be between 0 and 100" };
+  if (finalCalcType === "fixed" && finalCalcValue < 0) throw { status: 400, message: "Fixed amount cannot be negative" };
+
+  let updateFields = [], params = [];
+  if (code !== undefined) { updateFields.push("code = ?"); params.push(code); }
+  if (name !== undefined) { updateFields.push("name = ?"); params.push(name); }
+  if (type !== undefined) { updateFields.push("type = ?"); params.push(type); }
+  if (calc_type !== undefined) { updateFields.push("calc_type = ?"); params.push(calc_type); }
+  if (calc_value !== undefined || calc_type !== undefined) { updateFields.push("calc_value = ?"); params.push(finalCalcValue); }
+  if (is_taxable !== undefined) { updateFields.push("is_taxable = ?"); params.push(toBool(is_taxable)); }
+  if (is_statutory !== undefined) { updateFields.push("is_statutory = ?"); params.push(toBool(is_statutory)); }
+  if (is_active !== undefined) { updateFields.push("is_active = ?"); params.push(toBool(is_active)); }
+  if (!updateFields.length) throw { status: 400, message: "No fields provided to update" };
+  updateFields.push("updated_by = ?"); params.push(user_id || null);
+  params.push(id, company_id);
+
+  await conn.query(
+    `UPDATE salary_components SET ${updateFields.join(", ")} WHERE id = ? AND company_id = ?`,
+    params
+  );
+
+  const [[updated]] = await conn.query(SELECT_COMPONENT_BY_ID, [id, company_id]);
+  return sendSuccess(res, 200, "Salary component updated successfully", formatSalaryComponent(updated));
+}));
 
 // 4. Delete salary component
-router.delete("/components/delete", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    let { id } = req.body;
-    id = parseInt(id);
+router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    if (!company_id || isNaN(id) || id <= 0) return sendError(res, 400, "Valid company_id and id are required");
+  let { id, ids } = req.body;
 
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const [[existing]] = await conn.query(
-      `SELECT id FROM salary_components WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [id, company_id]
-    );
-    if (!existing) {
-      await conn.rollback();
-      return sendError(res, 404, "Salary component not found or already deleted");
-    }
-
-    const [[inUse]] = await conn.query(
-      `SELECT id FROM salary_component_package_items WHERE component_id = ? AND is_deleted = 0 LIMIT 1`,
-      [id]
-    );
-    if (inUse) {
-      await conn.rollback();
-      return sendError(res, 400, "Cannot delete component. It is used in salary package");
-    }
-
-    await conn.query(
-      `UPDATE salary_components SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [user_id || null, id, company_id]
-    );
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Salary component deleted successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete Salary Component Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (!company_id) {
+    throw {
+      status: 400,
+      message: "Valid company_id is required",
+    };
   }
-});
+  let componentIds = [];
+  
+  if (id !== undefined && ids === undefined) {
+    const parsedId = parseInt(id);
+
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      throw {
+        status: 400,
+        message: "Valid component id is required",
+      };
+    }
+
+    componentIds = [parsedId];
+  }
+
+  else if (ids !== undefined) {
+    if (ids === "all") {
+      const [rows] = await conn.query(
+        `
+          SELECT id
+          FROM salary_components
+          WHERE company_id = ?
+            AND is_deleted = 0
+          `,
+        [company_id]
+      );
+
+      componentIds = rows.map((row) => row.id);
+    } else if (Array.isArray(ids)) {
+      componentIds = [
+        ...new Set(
+          ids
+            .map((value) => parseInt(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+        ),
+      ];
+
+      if (componentIds.length === 0) {
+        throw {
+          status: 400,
+          message: "Valid component ids are required",
+        };
+      }
+    } else {
+      throw {
+        status: 400,
+        message: "ids must be an array or 'all'",
+      };
+    }
+  } else {
+    throw {
+      status: 400,
+      message: "id or ids is required",
+    };
+  }
+
+  if (componentIds.length === 0) {
+    return sendSuccess(res, 200, "No salary components to delete");
+  }
+
+  const placeholders = componentIds.map(() => "?").join(", ");
+  const [existingRows] = await conn.query(
+    `
+      SELECT id
+      FROM salary_components
+      WHERE company_id = ?
+        AND id IN (${placeholders})
+        AND is_deleted = 0
+      `,
+    [company_id, ...componentIds]
+  );
+
+  const existingIds = new Set(existingRows.map((row) => row.id));
+
+  const missingIds = componentIds.filter(
+    (componentId) => !existingIds.has(componentId)
+  );
+
+  if (missingIds.length > 0) {
+    throw {
+      status: 404,
+      message: "One or more salary components not found or already deleted",
+      data: {
+        ids: missingIds,
+      },
+    };
+  }
+  const [inUseRows] = await conn.query(
+    `
+      SELECT DISTINCT component_id
+      FROM salary_component_package_items
+      WHERE component_id IN (${placeholders})
+        AND is_deleted = 0
+      `,
+    componentIds
+  );
+
+  if (inUseRows.length > 0) {
+    const inUseIds = inUseRows.map((row) => row.component_id);
+
+    throw {
+      status: 400,
+      message: "Cannot delete component. It is used in salary package",
+      data: {
+        ids: inUseIds,
+      },
+    };
+  }
+
+  const [result] = await conn.query(
+    `
+      UPDATE salary_components
+      SET
+        is_deleted = 1,
+        deleted_at = NOW(),
+        deleted_by = ?
+      WHERE company_id = ?
+        AND id IN (${placeholders})
+        AND is_deleted = 0
+      `,
+    [user_id || null, company_id, ...componentIds]
+  );
+
+  return sendSuccess(
+    res,
+    200,
+    componentIds.length === 1
+      ? "Salary component deleted successfully"
+      : "Salary components deleted successfully",
+    {
+      deleted_count: result.affectedRows,
+      ids: componentIds,
+    }
+  );
+})
+);
 
 // 5. Create salary package
-router.post("/components/create-package", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
+router.post("/components/create-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  let { name, code, description, components } = req.body;
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    let { name, code, description, components } = req.body;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
+  name = name?.trim();
+  code = code?.trim().toUpperCase();
+  description = description?.trim() || null;
 
-    name = name?.trim();
-    code = code?.trim().toUpperCase();
-    description = description?.trim() || null;
+  if (!company_id) throw { status: 400, message: "Company missing" };
+  if (!name) throw { status: 400, message: "name is required" };
+  if (!Array.isArray(components) || components.length === 0) throw { status: 400, message: "components array is required" };
 
-    if (!company_id) return sendError(res, 400, "Company missing");
-    if (!name) return sendError(res, 400, "name is required");
-    if (!Array.isArray(components) || components.length === 0) return sendError(res, 400, "components array is required");
+  const componentIds = parsePackageComponentIds(components);
 
-    const componentIdsSet = new Set();
-    components.forEach((item, index) => {
-      if (!item.component_id) return sendError(res, 400, `component_id required at index ${index}`);
-      const compId = parseInt(item.component_id);
-      if (isNaN(compId) || compId <= 0) return sendError(res, 400, `Invalid component_id at index ${index}`);
-      if (componentIdsSet.has(compId)) return sendError(res, 400, `Duplicate component_id: ${compId}`);
-      componentIdsSet.add(compId);
-    });
+  const [existing] = await conn.query(PACKAGE_EXISTS_BY_NAME, [company_id, name]);
+  if (existing.length) throw { status: 409, message: "Package name already exists" };
 
-    const componentIds = [...componentIdsSet];
-    await conn.beginTransaction();
+  await validateComponentIdsInDB(conn, company_id, componentIds, true);
 
-    const [existing] = await conn.query(
-      `SELECT id FROM salary_component_packages WHERE company_id = ? AND name = ? AND is_deleted = 0 LIMIT 1`,
-      [company_id, name]
-    );
-    if (existing.length) {
-      await conn.rollback();
-      return sendError(res, 409, "Package name already exists");
-    }
+  const [pkgResult] = await conn.query(
+    `INSERT INTO salary_component_packages (company_id, name, code, description, created_by) VALUES (?, ?, ?, ?, ?)`,
+    [company_id, name, code || null, description, user_id || null]
+  );
+  const package_id = pkgResult.insertId;
 
-    const [validComponents] = await conn.query(
-      `SELECT id FROM salary_components WHERE id IN (?) AND company_id = ? AND is_deleted = 0 AND is_active = 1`,
-      [componentIds, company_id]
-    );
-    if (validComponents.length !== componentIds.length) {
-      await conn.rollback();
-      return sendError(res, 400, "Some components are invalid or inactive");
-    }
+  const values = componentIds.map(compId => [
+    package_id, compId, 1, user_id || null, user_id || null
+  ]);
+  await conn.query(
+    `INSERT INTO salary_component_package_items (package_id, component_id, is_active, created_by, updated_by) VALUES ?`,
+    [values]
+  );
 
-    const [pkgResult] = await conn.query(
-      `INSERT INTO salary_component_packages (company_id, name, code, description, created_by) VALUES (?, ?, ?, ?, ?)`,
-      [company_id, name, code || null, description, user_id || null]
-    );
-    const package_id = pkgResult.insertId;
+  const [[pkg]] = await conn.query(SELECT_PACKAGE_BY_ID, [package_id, company_id]);
+  const items = await getPackageItems(conn, package_id);
 
-    const values = components.map(item => [
-      package_id, parseInt(item.component_id), 1, user_id || null, user_id || null
-    ]);
-    await conn.query(
-      `INSERT INTO salary_component_package_items (package_id, component_id, is_active, created_by, updated_by) VALUES ?`,
-      [values]
-    );
-
-    const [[pkg]] = await conn.query(`SELECT ${SALARY_PACKAGE_FIELDS} FROM salary_component_packages WHERE id = ? AND company_id = ?`, [package_id, company_id]);
-    const [items] = await conn.query(
-      `SELECT spi.component_id, sc.name, sc.code, sc.type, sc.calc_type, sc.calc_value
-       FROM salary_component_package_items spi
-       JOIN salary_components sc ON sc.id = spi.component_id
-       WHERE spi.package_id = ? AND spi.is_deleted = 0 AND sc.is_deleted = 0
-       ORDER BY spi.component_id ASC`,
-      [package_id]
-    );
-
-    await conn.commit();
-
-    return sendSuccess(res, 201, "Salary package created successfully", formatSalaryPackage(pkg, items));
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Create Salary Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  return sendSuccess(res, 201, "Salary package created successfully", formatSalaryPackage(pkg, items));
+}));
 
 // 6. List salary packages
-router.get("/components/packages", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    if (!company_id) return sendError(res, 400, "Company not found");
+router.get("/components/packages", auth(SAL_COMP.MNG), withConnection(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  if (!company_id) throw { status: 400, message: "Company not found" };
 
-    let { page = 1, limit = 10, search = "", sort_by = "created_at", sort_order = "desc" } = req.query;
-    page = parseInt(page) || 1;
-    limit = Math.min(100, parseInt(limit) || 10);
-    const offset = (page - 1) * limit;
+  let { page = 1, limit = 10, search = "", sort_by = "created_at", sort_order = "desc" } = req.query;
+  page = parseInt(page) || 1;
+  limit = Math.min(100, parseInt(limit) || 10);
+  const offset = (page - 1) * limit;
 
-    const validSortFields = ["name", "code", "created_at"];
-    if (!validSortFields.includes(sort_by)) sort_by = "created_at";
-    sort_order = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
+  const validSortFields = ["name", "code", "created_at"];
+  if (!validSortFields.includes(sort_by)) sort_by = "created_at";
+  sort_order = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
 
-    const [[{ total }]] = await conn.query(
-      `SELECT COUNT(*) as total FROM salary_component_packages WHERE company_id = ? AND is_deleted = 0 AND (name LIKE ? OR code LIKE ?)`,
-      [company_id, `%${search}%`, `%${search}%`]
-    );
+  const baseSearchCondition = `company_id = ? AND is_deleted = 0 AND (name LIKE ? OR code LIKE ?)`;
+  const searchParams = [company_id, `%${search}%`, `%${search}%`];
 
-    const [packages] = await conn.query(
-      `SELECT ${SALARY_PACKAGE_FIELDS} FROM salary_component_packages WHERE company_id = ? AND is_deleted = 0 AND (name LIKE ? OR code LIKE ?) ORDER BY ${sort_by} ${sort_order} LIMIT ? OFFSET ?`,
-      [company_id, `%${search}%`, `%${search}%`, limit, offset]
-    );
+  const [[{ total }]] = await conn.query(
+    `SELECT COUNT(*) as total FROM salary_component_packages WHERE ${baseSearchCondition}`,
+    searchParams
+  );
 
-    if (!packages.length) {
-      return sendSuccess(res, 200, "No packages found", [], buildMeta(page, limit, total, 0));
-    }
+  const [packages] = await conn.query(
+    `SELECT ${SALARY_PACKAGE_FIELDS} FROM salary_component_packages WHERE ${baseSearchCondition} ORDER BY ${sort_by} ${sort_order} LIMIT ? OFFSET ?`,
+    [...searchParams, limit, offset]
+  );
 
-    const packageIds = packages.map(p => p.id);
-    const [items] = await conn.query(
-      `SELECT spi.package_id, spi.component_id, sc.name as component_name, sc.code as component_code, sc.type, sc.calc_type, sc.calc_value
-       FROM salary_component_package_items spi
-       JOIN salary_components sc ON sc.id = spi.component_id
-       WHERE spi.package_id IN (?) AND spi.is_deleted = 0 AND sc.is_deleted = 0
-       ORDER BY spi.package_id ASC`,
-      [packageIds]
-    );
-
-    const packageMap = {};
-    packages.forEach(pkg => { packageMap[pkg.id] = { ...pkg, items: [] }; });
-    items.forEach(item => {
-      if (packageMap[item.package_id]) {
-        packageMap[item.package_id].items.push({
-          component_id: item.component_id,
-          name: item.component_name,
-          code: item.component_code,
-          type: item.type,
-          calc_type: item.calc_type,
-          calc_value: item.calc_value,
-        });
-      }
-    });
-
-    const data = Object.values(packageMap).map(pkg => formatSalaryPackage(pkg, pkg.items));
-    return sendSuccess(res, 200, "Salary packages fetched successfully", data, buildMeta(page, limit, total, data.length));
-  } catch (err) {
-    console.error("Fetch Packages Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (!packages.length) {
+    return sendSuccess(res, 200, "No packages found", [], buildMeta(page, limit, total, 0));
   }
-});
+
+  const packageIds = packages.map(p => p.id);
+  const [items] = await conn.query(
+    `SELECT spi.package_id, spi.component_id, sc.name as component_name, sc.code as component_code, sc.type, sc.calc_type, sc.calc_value
+     FROM salary_component_package_items spi
+     JOIN salary_components sc ON sc.id = spi.component_id
+     WHERE spi.package_id IN (?) AND spi.is_deleted = 0 AND sc.is_deleted = 0
+     ORDER BY spi.package_id ASC`,
+    [packageIds]
+  );
+
+  const packageMap = {};
+  packages.forEach(pkg => { packageMap[pkg.id] = { ...pkg, items: [] }; });
+  items.forEach(item => {
+    if (packageMap[item.package_id]) {
+      packageMap[item.package_id].items.push({
+        component_id: item.component_id,
+        name: item.component_name,
+        code: item.component_code,
+        type: item.type,
+        calc_type: item.calc_type,
+        calc_value: item.calc_value,
+      });
+    }
+  });
+
+  const data = Object.values(packageMap).map(pkg => formatSalaryPackage(pkg, pkg.items));
+  return sendSuccess(res, 200, "Salary packages fetched successfully", data, buildMeta(page, limit, total, data.length));
+}));
 
 // 7. Update salary package
-router.put("/components/update-package", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    let { package_id, name, code, description, components } = req.body;
+router.put("/components/update-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  let { package_id, name, code, description, components } = req.body;
 
-    if (!company_id || !package_id) return sendError(res, 400, "company_id and package_id required");
-    if (!Array.isArray(components) || components.length === 0) return sendError(res, 400, "components array required");
+  if (!company_id || !package_id) throw { status: 400, message: "company_id and package_id required" };
+  if (!Array.isArray(components) || components.length === 0) throw { status: 400, message: "components array required" };
 
-    if (name !== undefined) name = name.trim();
-    if (code !== undefined) code = code.trim().toUpperCase();
-    if (description !== undefined) description = description?.trim() || null;
+  if (name !== undefined) name = name.trim();
+  if (code !== undefined) code = code.trim().toUpperCase();
+  if (description !== undefined) description = description?.trim() || null;
 
-    const componentIdsSet = new Set();
-    components.forEach((item, index) => {
-      if (!item.component_id) return sendError(res, 400, `component_id required at index ${index}`);
-      const compId = parseInt(item.component_id);
-      if (isNaN(compId) || compId <= 0) return sendError(res, 400, `Invalid component_id at index ${index}`);
-      if (componentIdsSet.has(compId)) return sendError(res, 400, `Duplicate component_id: ${compId}`);
-      componentIdsSet.add(compId);
-    });
-    const newIds = [...componentIdsSet];
+  const newIds = parsePackageComponentIds(components);
 
-    await conn.beginTransaction();
+  const [[pkg]] = await conn.query(PACKAGE_EXISTS_BY_ID, [package_id, company_id]);
+  if (!pkg) throw { status: 404, message: "Package not found" };
 
-    const [[pkg]] = await conn.query(
-      `SELECT id FROM salary_component_packages WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [package_id, company_id]
-    );
-    if (!pkg) {
-      await conn.rollback();
-      return sendError(res, 404, "Package not found");
-    }
-
-    if (code !== undefined) {
-      const [dup] = await conn.query(
-        `SELECT id FROM salary_component_packages WHERE company_id = ? AND code = ? AND id != ? AND is_deleted = 0`,
-        [company_id, code, package_id]
-      );
-      if (dup.length) {
-        await conn.rollback();
-        return sendError(res, 409, "Package code already exists");
-      }
-    }
-
-    const [validComponents] = await conn.query(
-      `SELECT id FROM salary_components WHERE id IN (?) AND company_id = ? AND is_deleted = 0 AND is_active = 1`,
-      [newIds, company_id]
-    );
-    if (validComponents.length !== newIds.length) {
-      await conn.rollback();
-      return sendError(res, 400, "Invalid or inactive components");
-    }
-
-    let updateFields = [], params = [];
-    if (name !== undefined) { updateFields.push("name = ?"); params.push(name); }
-    if (code !== undefined) { updateFields.push("code = ?"); params.push(code); }
-    if (description !== undefined) { updateFields.push("description = ?"); params.push(description); }
-    if (updateFields.length) {
-      updateFields.push("updated_by = ?"); params.push(user_id || null);
-      params.push(package_id, company_id);
-      await conn.query(
-        `UPDATE salary_component_packages SET ${updateFields.join(", ")} WHERE id = ? AND company_id = ?`,
-        params
-      );
-    }
-
-    const [existingItems] = await conn.query(
-      `SELECT component_id FROM salary_component_package_items WHERE package_id = ? AND is_deleted = 0`,
-      [package_id]
-    );
-    const existingIds = existingItems.map(i => i.component_id);
-    const toDelete = existingIds.filter(id => !newIds.includes(id));
-    const toAdd = newIds.filter(id => !existingIds.includes(id));
-
-    if (toDelete.length) {
-      await conn.query(
-        `UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id = ? AND component_id IN (?) AND is_deleted = 0`,
-        [user_id || null, package_id, toDelete]
-      );
-    }
-    if (toAdd.length) {
-      const addValues = components
-        .filter(item => toAdd.includes(parseInt(item.component_id)))
-        .map(item => [package_id, parseInt(item.component_id), 1, user_id || null, user_id || null]);
-      await conn.query(`INSERT INTO salary_component_package_items (package_id, component_id, is_active, created_by, updated_by) VALUES ?`, [addValues]);
-    }
-
-    const [[updatedPkg]] = await conn.query(`SELECT ${SALARY_PACKAGE_FIELDS} FROM salary_component_packages WHERE id = ? AND company_id = ?`, [package_id, company_id]);
-    const [items] = await conn.query(
-      `SELECT spi.component_id, sc.name, sc.code, sc.type, sc.calc_type, sc.calc_value
-       FROM salary_component_package_items spi JOIN salary_components sc ON sc.id = spi.component_id
-       WHERE spi.package_id = ? AND spi.is_deleted = 0 AND sc.is_deleted = 0
-       ORDER BY spi.component_id ASC`,
-      [package_id]
-    );
-
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Salary package updated successfully", formatSalaryPackage(updatedPkg, items));
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Update Package Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (code !== undefined) {
+    const [dup] = await conn.query(PACKAGE_EXISTS_BY_CODE_EXCEPT, [company_id, code, package_id]);
+    if (dup.length) throw { status: 409, message: "Package code already exists" };
   }
-});
+
+  await validateComponentIdsInDB(conn, company_id, newIds, true);
+
+  let updateFields = [], params = [];
+  if (name !== undefined) { updateFields.push("name = ?"); params.push(name); }
+  if (code !== undefined) { updateFields.push("code = ?"); params.push(code); }
+  if (description !== undefined) { updateFields.push("description = ?"); params.push(description); }
+  if (updateFields.length) {
+    updateFields.push("updated_by = ?"); params.push(user_id || null);
+    params.push(package_id, company_id);
+    await conn.query(
+      `UPDATE salary_component_packages SET ${updateFields.join(", ")} WHERE id = ? AND company_id = ?`,
+      params
+    );
+  }
+
+  const [existingItems] = await conn.query(
+    `SELECT component_id FROM salary_component_package_items WHERE package_id = ? AND is_deleted = 0`,
+    [package_id]
+  );
+  const existingIds = existingItems.map(i => i.component_id);
+  const toDelete = existingIds.filter(id => !newIds.includes(id));
+  const toAdd = newIds.filter(id => !existingIds.includes(id));
+
+  if (toDelete.length) {
+    await conn.query(
+      `UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id = ? AND component_id IN (?) AND is_deleted = 0`,
+      [user_id || null, package_id, toDelete]
+    );
+  }
+  if (toAdd.length) {
+    const addValues = toAdd.map(compId => [package_id, compId, 1, user_id || null, user_id || null]);
+    await conn.query(`INSERT INTO salary_component_package_items (package_id, component_id, is_active, created_by, updated_by) VALUES ?`, [addValues]);
+  }
+
+  const [[updatedPkg]] = await conn.query(SELECT_PACKAGE_BY_ID, [package_id, company_id]);
+  const items = await getPackageItems(conn, package_id);
+
+  return sendSuccess(res, 200, "Salary package updated successfully", formatSalaryPackage(updatedPkg, items));
+}));
 
 // 8. Delete salary package
-router.delete("/components/delete-package", auth(SAL_COMP.MNG), async (req, res) => {
-  let conn;
-  try {
-    let { package_id } = req.body;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    package_id = parseInt(package_id);
+router.delete("/components/delete-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+  let { package_id } = req.body;
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  package_id = parseInt(package_id);
 
-    if (!company_id || isNaN(package_id) || package_id <= 0) return sendError(res, 400, "Valid company_id and package_id are required");
+  if (!company_id || isNaN(package_id) || package_id <= 0) throw { status: 400, message: "Valid company_id and package_id are required" };
 
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+  const [[pkg]] = await conn.query(PACKAGE_EXISTS_BY_ID, [package_id, company_id]);
+  if (!pkg) throw { status: 404, message: "Package not found or already deleted" };
 
-    const [[pkg]] = await conn.query(`SELECT id FROM salary_component_packages WHERE id = ? AND company_id = ? AND is_deleted = 0`, [package_id, company_id]);
-    if (!pkg) {
-      await conn.rollback();
-      return sendError(res, 404, "Package not found or already deleted");
-    }
+  await conn.query(`UPDATE salary_component_packages SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ? AND is_deleted = 0`, [user_id || null, package_id, company_id]);
+  await conn.query(`UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id = ? AND is_deleted = 0`, [user_id || null, package_id]);
 
-    await conn.query(`UPDATE salary_component_packages SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ? AND is_deleted = 0`, [user_id || null, package_id, company_id]);
-    await conn.query(`UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id = ? AND is_deleted = 0`, [user_id || null, package_id]);
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Salary package deleted successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete Package Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  return sendSuccess(res, 200, "Salary package deleted successfully");
+}));
 
 // 9. Assign salary to employee
-router.post("/assign-salary", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+router.post("/assign-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+  let { employee_id, base_amount, effective_from, effective_to, components = [] } = req.body;
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    let { employee_id, base_amount, effective_from, effective_to, components = [] } = req.body;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
+  if (!company_id || !employee_id || !base_amount || !effective_from) throw { status: 400, message: "Required fields missing" };
+  employee_id = Number(employee_id);
+  base_amount = Number(base_amount);
+  if (!employee_id || isNaN(base_amount) || base_amount <= 0) throw { status: 400, message: "Invalid numeric values" };
 
-    if (!company_id || !employee_id || !base_amount || !effective_from) return sendError(res, 400, "Required fields missing");
-    employee_id = Number(employee_id);
-    base_amount = Number(base_amount);
-    if (!employee_id || isNaN(base_amount) || base_amount <= 0) return sendError(res, 400, "Invalid numeric values");
-    if (!Array.isArray(components)) return sendError(res, 400, "components must be an array");
+  if (!isValidDate(effective_from)) throw { status: 400, message: "Invalid effective_from" };
+  if (effective_to && !isValidDate(effective_to)) throw { status: 400, message: "Invalid effective_to" };
+  if (effective_to && isDateBefore(effective_to, effective_from)) throw { status: 400, message: "effective_to cannot be before effective_from" };
 
-    const [[employee]] = await conn.query(
-      `SELECT e.id, e.employee_code, u.name FROM employees e JOIN users u ON u.id = e.user_id WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 LIMIT 1`,
-      [employee_id, company_id]
-    );
-    if (!employee) return sendError(res, 404, "Employee not found");
+  const [[employee]] = await conn.query(
+    `SELECT e.id, e.employee_code, u.name FROM employees e JOIN users u ON u.id = e.user_id WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 LIMIT 1`,
+    [employee_id, company_id]
+  );
+  if (!employee) throw { status: 404, message: "Employee not found" };
 
-    if (!isValidDate(effective_from)) return sendError(res, 400, "Invalid effective_from");
-    if (effective_to && !isValidDate(effective_to)) return sendError(res, 400, "Invalid effective_to");
-    if (effective_to && isDateBefore(effective_to, effective_from)) return sendError(res, 400, "effective_to cannot be before effective_from");
+  await checkSalaryOverlap(conn, employee_id, company_id, effective_from, effective_to);
 
-    const fromMonth = parseDate(effective_from).format("YYYY-MM");
-    const toMonth = effective_to ? parseDate(effective_to).format("YYYY-MM") : fromMonth;
+  const validatedComponents = validateEmployeeComponents(components);
+  const compIds = validatedComponents.map(c => c.component_id);
+  await validateComponentIdsInDB(conn, company_id, compIds, false);
 
-    const [[overlapSalary]] = await conn.query(
-      `SELECT id FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0
-         AND DATE_FORMAT(effective_from, '%Y-%m') <= ? AND DATE_FORMAT(COALESCE(effective_to, effective_from), '%Y-%m') >= ? LIMIT 1`,
-      [employee_id, company_id, toMonth, fromMonth]
-    );
-    if (overlapSalary) return sendError(res, 400, "Salary structure already exists in the selected period");
+  const [salaryResult] = await conn.query(
+    `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by)
+     VALUES (?, ?, ?, ?, ?, 1, ?)`,
+    [company_id, employee_id, base_amount, effective_from, effective_to || null, user_id || null]
+  );
+  const salary_id = salaryResult.insertId;
 
-    // Component validation
-    const componentIds = components.map(c => Number(c.component_id));
-    if (componentIds.some(id => !id || isNaN(id))) return sendError(res, 400, "Invalid component_id found");
-    if (new Set(componentIds).size !== componentIds.length) return sendError(res, 400, "Duplicate salary components are not allowed");
-
-    if (components.length > 0) {
-      const [validComponents] = await conn.query(`SELECT id, name, type FROM salary_components WHERE id IN (?) AND company_id = ? AND is_deleted = 0`, [componentIds, company_id]);
-      if (validComponents.length !== components.length) return sendError(res, 400, "Some salary components are invalid or unavailable");
-
-      const validCompIds = new Set(validComponents.map(c => Number(c.id)));
-      for (const c of components) {
-        const compId = Number(c.component_id);
-        if (!validCompIds.has(compId)) return sendError(res, 400, `Invalid component_id: ${compId}`);
-        if (!["fixed", "percentage"].includes(c.calc_type)) return sendError(res, 400, `Invalid calc_type for component ${compId}`);
-        const calcVal = Number(c.calc_value);
-        if (isNaN(calcVal) || calcVal < 0) return sendError(res, 400, `Invalid calc_value for component ${compId}`);
-      }
-    }
-
-    const [salaryResult] = await conn.query(
-      `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by) VALUES (?, ?, ?, ?, ?, 1, ?)`,
-      [company_id, employee_id, base_amount, effective_from, effective_to || null, user_id || null]
-    );
-    const salary_id = salaryResult.insertId;
-
-    if (components.length) {
-      const rows = components.map(c => [company_id, employee_id, salary_id, Number(c.component_id), c.calc_type, Number(c.calc_value), c.reason || null, 1, user_id || null]);
-      await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [rows]);
-    }
-
-    await conn.commit();
-
-    return sendSuccess(res, 201, "Salary assigned successfully", {
-      salary_id,
-      employee: { id: employee.id, employee_code: employee.employee_code, name: employee.name },
-      base_amount,
-      effective_from,
-      effective_to,
-      components,
-    });
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Assign Salary Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (validatedComponents.length) {
+    const rows = validatedComponents.map(c => [company_id, employee_id, salary_id, c.component_id, c.calc_type, c.calc_value, c.remark, 1, user_id || null]);
+    await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [rows]);
   }
-});
+
+  return sendSuccess(res, 201, "Salary assigned successfully", {
+    salary_id,
+    employee: { id: employee.id, employee_code: employee.employee_code, name: employee.name },
+    base_amount,
+    effective_from,
+    effective_to,
+    components: validatedComponents,
+  });
+}));
 
 // 10. Update salary
-router.put("/update-salary", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+router.put("/update-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  const { salary_id, base_amount, effective_from, effective_to = null, components = [] } = req.body;
+  if (!company_id || !user_id) throw { status: 400, message: "Invalid company or user" };
+  if (!salary_id) throw { status: 400, message: "salary_id is required" };
 
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    const { salary_id, base_amount, effective_from, effective_to = null, components = [] } = req.body;
-    if (!company_id || !user_id) return sendError(res, 400, "Invalid company or user");
-    if (!salary_id) return sendError(res, 400, "salary_id is required");
-    if (!Array.isArray(components) || components.length === 0) return sendError(res, 400, "Components are required");
+  const [[salary]] = await conn.query(SELECT_SS_BY_ID, [salary_id, company_id]);
+  if (!salary) throw { status: 404, message: "Salary not found" };
 
-    const [[salary]] = await conn.query(`SELECT * FROM salary_structures WHERE id = ? AND company_id = ? AND is_deleted = 0`, [salary_id, company_id]);
-    if (!salary) return sendError(res, 404, "Salary not found");
+  const salaryStatus = getSalaryStatus({ effective_from: salary.effective_from, effective_to: salary.effective_to });
+  if (salaryStatus === "past") throw { status: 400, message: "Past salary cannot be edited" };
 
-    const salaryStatus = getSalaryStatus({ effective_from: salary.effective_from, effective_to: salary.effective_to });
-    if (salaryStatus === "past") return sendError(res, 400, "Past salary cannot be edited");
+  const [[usedInPayroll]] = await conn.query(CHECK_PAYROLL_USED, [salary_id]);
+  if (usedInPayroll) throw { status: 400, message: "Salary already used in payroll. Create a revision instead." };
 
-    const [[usedInPayroll]] = await conn.query(`SELECT id FROM payroll_entries WHERE salary_id = ? AND is_deleted = 0 LIMIT 1`, [salary_id]);
-    if (usedInPayroll) return sendError(res, 400, "Salary already used in payroll. Create a revision instead.");
+  const employee_id = salary.employee_id;
+  const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
+  if (!employee) throw { status: 404, message: "Employee not found" };
 
-    const employee_id = salary.employee_id;
-    const [[employee]] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_active = 1 AND is_deleted = 0`, [employee_id, company_id]);
-    if (!employee) return sendError(res, 404, "Employee not found");
+  const amount = Number(base_amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw { status: 400, message: "Invalid base_amount" };
+  if (!effective_from || !isValidDate(effective_from)) throw { status: 400, message: "Invalid effective_from" };
+  if (effective_to && !isValidDate(effective_to)) throw { status: 400, message: "Invalid effective_to" };
+  if (effective_to && !isDateAfter(effective_to, effective_from)) throw { status: 400, message: "effective_to must be greater than effective_from" };
 
-    const amount = Number(base_amount);
-    if (!Number.isFinite(amount) || amount <= 0) return sendError(res, 400, "Invalid base_amount");
-    if (!effective_from || !isValidDate(effective_from)) return sendError(res, 400, "Invalid effective_from");
-    if (effective_to && !isValidDate(effective_to)) return sendError(res, 400, "Invalid effective_to");
-    if (effective_to && !isDateAfter(effective_to, effective_from)) return sendError(res, 400, "effective_to must be greater than effective_from");
+  const validatedComponents = validateEmployeeComponents(components);
+  const compIds = validatedComponents.map(c => c.component_id);
+  await validateComponentIdsInDB(conn, company_id, compIds, false);
 
-    // component validation
-    const dupCheck = new Set();
-    for (const c of components) {
-      const compId = Number(c.component_id);
-      if (!compId || dupCheck.has(compId)) return sendError(res, 400, "Duplicate salary components are not allowed");
-      dupCheck.add(compId);
-      if (!["fixed", "percentage"].includes(c.calc_type)) return sendError(res, 400, `Invalid calc_type for component ${compId}`);
-      const val = Number(c.calc_value);
-      if (!Number.isFinite(val) || val < 0) return sendError(res, 400, `Invalid calc_value for component ${compId}`);
-      if (c.calc_type === "percentage" && val > 100) return sendError(res, 400, "Percentage component cannot exceed 100");
-    }
+  await checkSalaryOverlap(conn, employee_id, company_id, effective_from, effective_to, salary_id);
 
-    const compIds = components.map(c => Number(c.component_id));
-    const [validComponents] = await conn.query(`SELECT id FROM salary_components WHERE company_id = ? AND is_deleted = 0 AND id IN (?)`, [company_id, compIds]);
-    if (validComponents.length !== compIds.length) return sendError(res, 400, "Invalid salary components");
+  await conn.query(`UPDATE salary_structures SET base_amount = ?, effective_from = ?, effective_to = ?, updated_by = ? WHERE id = ?`, [amount, effective_from, effective_to, user_id, salary_id]);
+  await conn.query(`DELETE FROM employee_salary_component WHERE salary_id = ?`, [salary_id]);
 
-    const [[overlap]] = await conn.query(
-      `SELECT id FROM salary_structures WHERE employee_id = ? AND company_id = ? AND id <> ? AND is_deleted = 0 AND effective_from <= COALESCE(?, '9999-12-31') AND COALESCE(effective_to, '9999-12-31') >= ? LIMIT 1`,
-      [employee_id, company_id, salary_id, effective_to, effective_from]
-    );
-    if (overlap) return sendError(res, 400, "Salary period overlaps with another salary structure");
+  const compRows = validatedComponents.map(c => [company_id, employee_id, salary_id, c.component_id, c.calc_type, c.calc_value, c.remark, 1, user_id]);
+  await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
 
-    await conn.query(`UPDATE salary_structures SET base_amount = ?, effective_from = ?, effective_to = ?, updated_by = ? WHERE id = ?`, [amount, effective_from, effective_to, user_id, salary_id]);
-    await conn.query(`DELETE FROM employee_salary_component WHERE salary_id = ?`, [salary_id]);
-
-    const compRows = components.map(c => [company_id, employee_id, salary_id, c.component_id, c.calc_type, c.calc_value, c.remark || null, 1, user_id]);
-    await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
-
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Salary updated successfully", {
-      salary_id,
-      employee_id,
-      base_amount: Number(amount),
-      effective_from,
-      effective_to,
-      components,
-    });
-  } catch (error) {
-    if (conn) await conn.rollback();
-    console.error("Update Salary Error:", error);
-    return sendError(res, error.status || 500, error.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  return sendSuccess(res, 200, "Salary updated successfully", {
+    salary_id,
+    employee_id,
+    base_amount: amount,
+    effective_from,
+    effective_to,
+    components: validatedComponents,
+  });
+}));
 
 // 11. Revise salary
-router.post("/revise-salary", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  let { employee_id, base_amount, components = [] } = req.body;
 
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    let { employee_id, base_amount, components = [] } = req.body;
+  if (!company_id || !employee_id || !base_amount) throw { status: 400, message: "Required fields missing" };
+  employee_id = Number(employee_id);
+  base_amount = Number(base_amount);
+  if (!employee_id || isNaN(base_amount) || base_amount <= 0) throw { status: 400, message: "Invalid values supplied" };
 
-    if (!company_id || !employee_id || !base_amount) return sendError(res, 400, "Required fields missing");
-    employee_id = Number(employee_id);
-    base_amount = Number(base_amount);
-    if (!employee_id || isNaN(base_amount) || base_amount <= 0) return sendError(res, 400, "Invalid values supplied");
-    if (!Array.isArray(components) || components.length === 0) return sendError(res, 400, "Salary components are required");
+  const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
+  if (!employee) throw { status: 404, message: "Employee not found" };
 
-    const [[employee]] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
-    if (!employee) return sendError(res, 404, "Employee not found");
+  const [[currentSalary]] = await conn.query(
+    `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+       AND EXTRACT(YEAR_MONTH FROM effective_from) <= EXTRACT(YEAR_MONTH FROM CURDATE())
+       AND (effective_to IS NULL OR EXTRACT(YEAR_MONTH FROM effective_to) >= EXTRACT(YEAR_MONTH FROM CURDATE()))
+     ORDER BY effective_from DESC LIMIT 1`,
+    [employee_id, company_id]
+  );
+  if (!currentSalary) throw { status: 400, message: "No salary assigned for the current month. Please assign salary first." };
 
-    const [[currentSalary]] = await conn.query(
-      `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
-         AND EXTRACT(YEAR_MONTH FROM effective_from) <= EXTRACT(YEAR_MONTH FROM CURDATE())
-         AND (effective_to IS NULL OR EXTRACT(YEAR_MONTH FROM effective_to) >= EXTRACT(YEAR_MONTH FROM CURDATE()))
-       ORDER BY effective_from DESC LIMIT 1`,
-      [employee_id, company_id]
-    );
-    if (!currentSalary) return sendError(res, 400, "No salary assigned for the current month. Please assign salary first.");
+  const validatedComponents = validateEmployeeComponents(components);
+  const compIds = validatedComponents.map(c => c.component_id);
+  await validateComponentIdsInDB(conn, company_id, compIds, false);
 
-    const compIds = [...new Set(components.map(c => Number(c.component_id)))];
-    const [validComponents] = await conn.query(`SELECT id FROM salary_components WHERE company_id = ? AND is_deleted = 0 AND is_active = 1 AND id IN (?)`, [company_id, compIds]);
-    if (validComponents.length !== compIds.length) return sendError(res, 400, "Invalid salary components supplied");
+  const today = new Date();
+  const effectiveFrom = formatDate(today);
+  const prevEndDate = formatDate(addDays(today, -1));
 
-    const today = new Date();
-    const effectiveFrom = formatDate(today);
-    const prevEndDate = formatDate(addDays(today, -1));
+  await conn.query(`UPDATE salary_structures SET effective_to = ?, is_active = 0, updated_by = ? WHERE id = ?`, [prevEndDate, user_id || null, currentSalary.id]);
 
-    await conn.query(`UPDATE salary_structures SET effective_to = ?, is_active = 0, updated_by = ? WHERE id = ?`, [prevEndDate, user_id || null, currentSalary.id]);
+  const [salaryInsert] = await conn.query(
+    `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by) VALUES (?, ?, ?, ?, NULL, 1, ?)`,
+    [company_id, employee_id, base_amount, effectiveFrom, user_id || null]
+  );
+  const newSalaryId = salaryInsert.insertId;
 
-    const [salaryInsert] = await conn.query(
-      `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by) VALUES (?, ?, ?, ?, NULL, 1, ?)`,
-      [company_id, employee_id, base_amount, effectiveFrom, user_id || null]
-    );
-    const newSalaryId = salaryInsert.insertId;
+  const compRows = validatedComponents.map(c => [company_id, employee_id, newSalaryId, c.component_id, c.calc_type, c.calc_value, c.remark, 1, user_id || null]);
+  await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
 
-    const compRows = components.map(c => [company_id, employee_id, newSalaryId, Number(c.component_id), c.calc_type, Number(c.calc_value || 0), c.reason || null, 1, user_id || null]);
-    await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
-
-    await conn.commit();
-
-    return sendSuccess(res, 201, "Salary revised successfully");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Salary Revision Error:", err);
-    return sendError(res, err.status || 500, err.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  return sendSuccess(res, 201, "Salary revised successfully");
+}));
 
 // 12. Delete salary
-router.delete("/delete-salary", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+router.delete("/delete-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
+  const { salary_id } = req.body;
 
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    const { salary_id } = req.body;
+  if (!company_id || !user_id) throw { status: 400, message: "Invalid company or user" };
+  if (!salary_id) throw { status: 400, message: "salary_id is required" };
 
-    if (!company_id || !user_id) return sendError(res, 400, "Invalid company or user");
-    if (!salary_id) return sendError(res, 400, "salary_id is required");
+  const [[salary]] = await conn.query(`SELECT * FROM salary_structures WHERE id = ? AND company_id = ? AND is_deleted = 0 FOR UPDATE`, [salary_id, company_id]);
+  if (!salary) throw { status: 404, message: "Salary record not found" };
 
-    const [[salary]] = await conn.query(`SELECT * FROM salary_structures WHERE id = ? AND company_id = ? AND is_deleted = 0 FOR UPDATE`, [salary_id, company_id]);
-    if (!salary) return sendError(res, 404, "Salary record not found");
+  const [[payrollUsed]] = await conn.query(CHECK_PAYROLL_USED, [salary_id]);
+  if (payrollUsed) throw { status: 400, message: "Salary already used in payroll. Cannot delete." };
 
-    const [[payrollUsed]] = await conn.query(`SELECT id FROM payroll_entries WHERE salary_id = ? AND is_deleted = 0 LIMIT 1`, [salary_id]);
-    if (payrollUsed) return sendError(res, 400, "Salary already used in payroll. Cannot delete.");
+  const employee_id = salary.employee_id;
 
-    const employee_id = salary.employee_id;
+  const [[prevSalary]] = await conn.query(
+    `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND id <> ? AND effective_from < ? ORDER BY effective_from DESC LIMIT 1 FOR UPDATE`,
+    [employee_id, company_id, salary_id, salary.effective_from]
+  );
+  const [[nextSalary]] = await conn.query(
+    `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND id <> ? AND effective_from > ? ORDER BY effective_from ASC LIMIT 1 FOR UPDATE`,
+    [employee_id, company_id, salary_id, salary.effective_from]
+  );
 
-    const [[prevSalary]] = await conn.query(
-      `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND id <> ? AND effective_from < ? ORDER BY effective_from DESC LIMIT 1 FOR UPDATE`,
-      [employee_id, company_id, salary_id, salary.effective_from]
-    );
-    const [[nextSalary]] = await conn.query(
-      `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND id <> ? AND effective_from > ? ORDER BY effective_from ASC LIMIT 1 FOR UPDATE`,
-      [employee_id, company_id, salary_id, salary.effective_from]
-    );
+  await conn.query(`UPDATE employee_salary_component SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE salary_id = ? AND is_deleted = 0`, [user_id, salary_id]);
+  await conn.query(`UPDATE salary_structures SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?, is_active = 0 WHERE id = ?`, [user_id, salary_id]);
 
-    await conn.query(`UPDATE employee_salary_component SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE salary_id = ? AND is_deleted = 0`, [user_id, salary_id]);
-    await conn.query(`UPDATE salary_structures SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?, is_active = 0 WHERE id = ?`, [user_id, salary_id]);
-
-    if (prevSalary && nextSalary) {
-      await conn.query(`UPDATE salary_structures SET effective_to = DATE_SUB(?, INTERVAL 1 DAY), updated_by = ? WHERE id = ?`, [nextSalary.effective_from, user_id, prevSalary.id]);
-    } else if (prevSalary && !nextSalary) {
-      await conn.query(`UPDATE salary_structures SET effective_to = NULL, updated_by = ? WHERE id = ?`, [user_id, prevSalary.id]);
-    }
-
-    // Re-activate the correct current salary
-    await conn.query(`UPDATE salary_structures SET is_active = 0 WHERE employee_id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
-    const [[currentSalary]] = await conn.query(
-      `SELECT id FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND CURDATE() >= effective_from AND (effective_to IS NULL OR CURDATE() <= effective_to) ORDER BY effective_from DESC LIMIT 1`,
-      [employee_id, company_id]
-    );
-    if (currentSalary) {
-      await conn.query(`UPDATE salary_structures SET is_active = 1, updated_by = ? WHERE id = ?`, [user_id, currentSalary.id]);
-    }
-
-    await conn.commit();
-    return sendSuccess(res, 200, "Salary deleted successfully");
-  } catch (error) {
-    if (conn) await conn.rollback();
-    console.error("Delete Salary Error:", error);
-    return sendError(res, error.status || 500, error.message || "Something went wrong while deleting salary");
-  } finally {
-    if (conn) conn.release();
+  if (prevSalary && nextSalary) {
+    await conn.query(`UPDATE salary_structures SET effective_to = DATE_SUB(?, INTERVAL 1 DAY), updated_by = ? WHERE id = ?`, [nextSalary.effective_from, user_id, prevSalary.id]);
+  } else if (prevSalary && !nextSalary) {
+    await conn.query(`UPDATE salary_structures SET effective_to = NULL, updated_by = ? WHERE id = ?`, [user_id, prevSalary.id]);
   }
-});
+
+  await conn.query(`UPDATE salary_structures SET is_active = 0 WHERE employee_id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
+  const [[currentSalary]] = await conn.query(
+    `SELECT id FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND CURDATE() >= effective_from AND (effective_to IS NULL OR CURDATE() <= effective_to) ORDER BY effective_from DESC LIMIT 1`,
+    [employee_id, company_id]
+  );
+  if (currentSalary) {
+    await conn.query(`UPDATE salary_structures SET is_active = 1, updated_by = ? WHERE id = ?`, [user_id, currentSalary.id]);
+  }
+
+  return sendSuccess(res, 200, "Salary deleted successfully");
+}));
 
 // 13. List all employees salaries
-router.get("/employees-salaries", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    if (!company_id) return sendError(res, 400, "Invalid company");
+router.get("/employees-salaries", auth(SAL.MNG), withConnection(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  if (!company_id) throw { status: 400, message: "Invalid company" };
 
-    let { page = 1, limit = 10, search = "", date, month, year, from_date, to_date } = req.query;
-    page = Math.max(1, parseInt(page) || 1);
-    limit = Math.min(100, parseInt(limit) || 10);
-    const offset = (page - 1) * limit;
+  let { page = 1, limit = 10, search = "", date, month, year, from_date, to_date } = req.query;
+  page = Math.max(1, parseInt(page) || 1);
+  limit = Math.min(100, parseInt(limit) || 10);
+  const offset = (page - 1) * limit;
 
-    let dateCondition = "";
-    let dateParams = [];
+  let dateCondition = "";
+  let dateParams = [];
 
-    if (date) {
-      dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
-      dateParams.push(date, date);
-    } else if (from_date && to_date) {
-      dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
-      dateParams.push(to_date, from_date);
-    } else if (month && year) {
-      const start = `${year}-${String(month).padStart(2, "0")}-01`;
-      const end = new Date(Date.UTC(year, month, 0)).toISOString().split("T")[0];
-      dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
-      dateParams.push(end, start);
-    }
-
-    const activeCondition = dateCondition ? "" : "AND ss.is_active = 1";
-
-    let query = `
-      SELECT e.id AS employee_id, e.employee_code, u.name, u.email, u.profile_picture,
-             ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to,
-             CASE WHEN pe_used.salary_id IS NOT NULL THEN TRUE ELSE FALSE END AS payroll_used
-      FROM employees e
-      JOIN users u ON u.id = e.user_id
-      INNER JOIN salary_structures ss ON ss.employee_id = e.id AND ss.company_id = e.company_id AND ss.is_deleted = 0 ${activeCondition} ${dateCondition}
-      LEFT JOIN (SELECT DISTINCT salary_id FROM payroll_entries WHERE is_deleted = 0) pe_used ON pe_used.salary_id = ss.id
-      WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
-    `;
-    const params = [...dateParams, company_id];
-
-    if (search) {
-      query += ` AND (u.name LIKE ? OR u.email LIKE ? OR e.employee_code LIKE ?)`;
-      const s = `%${search}%`;
-      params.push(s, s, s);
-    }
-
-    query += ` ORDER BY u.name ASC LIMIT ? OFFSET ?`;
-    params.push(limit, offset);
-
-    const [rows] = await conn.query(query, params);
-    if (!rows.length) return sendSuccess(res, 200, "No salaries found", [], buildMeta(page, limit, 0, 0));
-
-    const salaryIds = rows.map(r => r.salary_id);
-    const [componentRows] = await conn.query(
-      `SELECT esc.salary_id, c.id, c.code, c.name, c.type, esc.calc_type, esc.calc_value
-       FROM employee_salary_component esc
-       JOIN salary_components c ON c.id = esc.component_id AND c.company_id = esc.company_id
-       WHERE esc.salary_id IN (?) AND esc.company_id = ? AND esc.is_deleted = 0`,
-      [salaryIds, company_id]
-    );
-    const compMap = {};
-    componentRows.forEach(c => {
-      if (!compMap[c.salary_id]) compMap[c.salary_id] = [];
-      compMap[c.salary_id].push(c);
-    });
-
-    const results = rows.map(row => {
-      const components = compMap[row.salary_id] || [];
-      const base = Number(row.base_amount) || 0;
-      let total_earnings = base, total_deductions = 0, employer_contributions = 0;
-
-      components.forEach(c => {
-        let amount = c.calc_type === "percentage" ? (base * Number(c.calc_value)) / 100 : Number(c.calc_value);
-        amount = Number(amount.toFixed(2));
-        c.amount = amount;
-        if (c.type === "earning") total_earnings += amount;
-        else if (c.type === "deduction") total_deductions += amount;
-        else if (c.type === "employer_contribution") employer_contributions += amount;
-      });
-
-      const gross_salary = Number(total_earnings.toFixed(2));
-      const net_salary = Math.max(0, Number((gross_salary - total_deductions).toFixed(2)));
-      const ctc = Number((gross_salary + employer_contributions).toFixed(2));
-
-      return {
-        salary_id: row.salary_id,
-        payroll_used: Boolean(row.payroll_used),
-        employee: {
-          id: row.employee_id,
-          employee_code: row.employee_code,
-          name: row.name,
-          email: row.email,
-          profile_picture: buildFileUrl(row.profile_picture),
-        },
-        base_amount: base,
-        effective_from: row.effective_from,
-        effective_to: row.effective_to,
-        ctc,
-        gross_salary,
-        employer_contributions: Number(employer_contributions.toFixed(2)),
-        total_deductions: Number(total_deductions.toFixed(2)),
-        net_salary,
-        components,
-      };
-    });
-
-    let countQuery = `
-      SELECT COUNT(*) AS total
-      FROM employees e
-      JOIN users u ON u.id = e.user_id
-      INNER JOIN salary_structures ss ON ss.employee_id = e.id AND ss.company_id = e.company_id AND ss.is_deleted = 0 ${activeCondition} ${dateCondition}
-      WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
-    `;
-    const countParams = [...dateParams, company_id];
-    if (search) {
-      countQuery += ` AND (u.name LIKE ? OR u.email LIKE ? OR e.employee_code LIKE ?)`;
-      const s = `%${search}%`;
-      countParams.push(s, s, s);
-    }
-
-    const [[{ total }]] = await conn.query(countQuery, countParams);
-
-    return sendSuccess(res, 200, "Employee salaries fetched successfully", results, buildMeta(page, limit, total, results.length));
-  } catch (error) {
-    console.error("Employees Salary Error:", error);
-    return sendError(res, 500, "Something went wrong while fetching employee salaries");
-  } finally {
-    if (conn) conn.release();
+  if (date) {
+    dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
+    dateParams.push(date, date);
+  } else if (from_date && to_date) {
+    dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
+    dateParams.push(to_date, from_date);
+  } else if (month && year) {
+    const start = `${year}-${String(month).padStart(2, "0")}-01`;
+    const end = new Date(Date.UTC(year, month, 0)).toISOString().split("T")[0];
+    dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
+    dateParams.push(end, start);
   }
-});
+
+  const activeCondition = dateCondition ? "" : "AND ss.is_active = 1";
+  const searchCondition = search ? "AND (u.name LIKE ? OR u.email LIKE ? OR e.employee_code LIKE ?)" : "";
+  const searchParams = search ? [`%${search}%`, `%${search}%`, `%${search}%`] : [];
+
+  const fromJoins = `FROM employees e JOIN users u ON u.id = e.user_id INNER JOIN salary_structures ss ON ss.employee_id = e.id AND ss.company_id = e.company_id AND ss.is_deleted = 0 ${activeCondition} ${dateCondition} LEFT JOIN (SELECT DISTINCT salary_id FROM payroll_entries WHERE is_deleted = 0) pe_used ON pe_used.salary_id = ss.id WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 ${searchCondition}`;
+  const baseParams = [...dateParams, company_id, ...searchParams];
+
+  const countQuery = `SELECT COUNT(*) AS total ${fromJoins}`;
+  const [[{ total }]] = await conn.query(countQuery, baseParams);
+
+  const dataQuery = `SELECT e.id AS employee_id, e.employee_code, u.name, u.email, u.profile_picture, ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, CASE WHEN pe_used.salary_id IS NOT NULL THEN TRUE ELSE FALSE END AS payroll_used ${fromJoins} ORDER BY u.name ASC LIMIT ? OFFSET ?`;
+  const [rows] = await conn.query(dataQuery, [...baseParams, limit, offset]);
+
+  if (!rows.length) {
+    return sendSuccess(res, 200, "No salaries found", [], buildMeta(page, limit, total, 0));
+  }
+
+  const salaryIds = rows.map(r => r.salary_id);
+  const [componentRows] = await conn.query(
+    `SELECT esc.salary_id, c.id, c.code, c.name, c.type, esc.calc_type, esc.calc_value
+     FROM employee_salary_component esc
+     JOIN salary_components c ON c.id = esc.component_id AND c.company_id = esc.company_id
+     WHERE esc.salary_id IN (?) AND esc.company_id = ? AND esc.is_deleted = 0`,
+    [salaryIds, company_id]
+  );
+
+  const compMap = {};
+  componentRows.forEach(c => {
+    if (!compMap[c.salary_id]) compMap[c.salary_id] = [];
+    compMap[c.salary_id].push(c);
+  });
+
+  const results = rows.map(row => {
+    const components = compMap[row.salary_id] || [];
+    const base = Number(row.base_amount) || 0;
+    let total_earnings = base, total_deductions = 0, employer_contributions = 0;
+
+    components.forEach(c => {
+      let amount = c.calc_type === "percentage" ? (base * Number(c.calc_value)) / 100 : Number(c.calc_value);
+      amount = Number(amount.toFixed(2));
+      c.amount = amount;
+      if (c.type === "earning") total_earnings += amount;
+      else if (c.type === "deduction") total_deductions += amount;
+      else if (c.type === "employer_contribution") employer_contributions += amount;
+    });
+
+    const gross_salary = Number(total_earnings.toFixed(2));
+    const net_salary = Math.max(0, Number((gross_salary - total_deductions).toFixed(2)));
+    const ctc = Number((gross_salary + employer_contributions).toFixed(2));
+
+    return {
+      salary_id: row.salary_id,
+      payroll_used: Boolean(row.payroll_used),
+      employee: {
+        id: row.employee_id,
+        employee_code: row.employee_code,
+        name: row.name,
+        email: row.email,
+        profile_picture: buildFileUrl(row.profile_picture),
+      },
+      base_amount: base,
+      effective_from: row.effective_from,
+      effective_to: row.effective_to,
+      ctc,
+      gross_salary,
+      employer_contributions: Number(employer_contributions.toFixed(2)),
+      total_deductions: Number(total_deductions.toFixed(2)),
+      net_salary,
+      components,
+    };
+  });
+
+  return sendSuccess(res, 200, "Employee salaries fetched successfully", results, buildMeta(page, limit, total, results.length));
+}));
 
 // 14. Employee salary history
-router.get("/employee-salary-history", auth(SAL.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    const employee_id = Number(req.query.employee_id);
+router.get("/employee-salary-history", auth(SAL.MNG), withConnection(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const employee_id = Number(req.query.employee_id);
 
-    if (!company_id || !employee_id) return sendError(res, 400, "Invalid company or employee");
+  if (!company_id || !employee_id) throw { status: 400, message: "Invalid company or employee" };
 
-    const [rows] = await conn.query(
-      `SELECT ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, 'past' AS status
-       FROM salary_structures ss
-       WHERE ss.employee_id = ? AND ss.company_id = ? AND ss.is_deleted = 0 AND (ss.effective_to IS NOT NULL AND ss.effective_to < CURDATE())
-       ORDER BY ss.effective_from DESC`,
-      [employee_id, company_id]
-    );
+  const [rows] = await conn.query(
+    `SELECT ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, 'past' AS status
+     FROM salary_structures ss
+     WHERE ss.employee_id = ? AND ss.company_id = ? AND ss.is_deleted = 0 AND (ss.effective_to IS NOT NULL AND ss.effective_to < CURDATE())
+     ORDER BY ss.effective_from DESC`,
+    [employee_id, company_id]
+  );
 
-    if (!rows.length) return sendSuccess(res, 200, "No salary history found", []);
+  if (!rows.length) return sendSuccess(res, 200, "No salary history found", []);
 
-    const salaryIds = rows.map(r => r.salary_id);
-    const [components] = await conn.query(
-      `SELECT esc.salary_id, c.name, c.code, c.type, esc.calc_type, esc.calc_value
-       FROM employee_salary_component esc
-       JOIN salary_components c ON c.id = esc.component_id
-       WHERE esc.salary_id IN (?) AND esc.company_id = ? AND esc.is_deleted = 0`,
-      [salaryIds, company_id]
-    );
+  const salaryIds = rows.map(r => r.salary_id);
+  const [components] = await conn.query(
+    `SELECT esc.salary_id, c.name, c.code, c.type, esc.calc_type, esc.calc_value
+     FROM employee_salary_component esc
+     JOIN salary_components c ON c.id = esc.component_id
+     WHERE esc.salary_id IN (?) AND esc.company_id = ? AND esc.is_deleted = 0`,
+    [salaryIds, company_id]
+  );
 
-    const compMap = {};
-    components.forEach(c => {
-      if (!compMap[c.salary_id]) compMap[c.salary_id] = [];
-      compMap[c.salary_id].push(c);
-    });
+  const compMap = {};
+  components.forEach(c => {
+    if (!compMap[c.salary_id]) compMap[c.salary_id] = [];
+    compMap[c.salary_id].push(c);
+  });
 
-    const result = rows.map(r => ({
-      salary_id: r.salary_id,
-      base_amount: Number(r.base_amount),
-      effective_from: r.effective_from,
-      effective_to: r.effective_to,
-      status: r.status,
-      components: compMap[r.salary_id] || [],
-    }));
+  const result = rows.map(r => ({
+    salary_id: r.salary_id,
+    base_amount: Number(r.base_amount),
+    effective_from: r.effective_from,
+    effective_to: r.effective_to,
+    status: r.status,
+    components: compMap[r.salary_id] || [],
+  }));
 
-    return sendSuccess(res, 200, "Salary history fetched successfully", result);
-  } catch (err) {
-    console.error("Salary History Error:", err);
-    return sendError(res, 500, "Something went wrong");
-  } finally {
-    if (conn) conn.release();
-  }
-});
+  return sendSuccess(res, 200, "Salary history fetched successfully", result);
+}));
 
 // 15. My salary (employee view)
-router.get("/my-salary", auth(SAL.EMP), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
+router.get("/my-salary", auth(SAL.EMP), withConnection(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    if (!company_id || !user_id) return sendError(res, 401, "Unauthorized access");
+  if (!company_id || !user_id) throw { status: 401, message: "Unauthorized access" };
 
-    let month = new Date().getMonth() + 1;
-    let year = new Date().getFullYear();
+  let month = new Date().getMonth() + 1;
+  let year = new Date().getFullYear();
 
-    if (req.query.month !== undefined) {
-      const parsedMonth = Number(req.query.month);
-      if (!Number.isInteger(parsedMonth) || parsedMonth < 1 || parsedMonth > 12) return sendError(res, 400, "Invalid month. Must be between 1-12");
-      month = parsedMonth;
-    }
-    if (req.query.year !== undefined) {
-      const parsedYear = Number(req.query.year);
-      if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) return sendError(res, 400, "Invalid year. Must be between 2000-2100");
-      year = parsedYear;
-    }
-
-    const targetDate = `${year}-${String(month).padStart(2, "0")}-01`;
-
-    const [[employee]] = await conn.query(
-      `SELECT e.id AS employee_id FROM employees e WHERE e.user_id = ? AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 LIMIT 1`,
-      [user_id, company_id]
-    );
-    if (!employee) return sendError(res, 404, "Employee not found");
-    const employee_id = employee.employee_id;
-
-    const [[salaryStructure]] = await conn.query(
-      `SELECT ss.id, ss.base_amount, ss.effective_from, ss.effective_to, ss.created_at
-       FROM salary_structures ss
-       WHERE ss.company_id = ? AND ss.employee_id = ? AND ss.is_deleted = 0 AND ss.is_active = 1
-         AND ss.effective_from <= LAST_DAY(?) AND (ss.effective_to IS NULL OR ss.effective_to >= ?)
-       ORDER BY ss.effective_from DESC, ss.id DESC LIMIT 1`,
-      [company_id, employee_id, targetDate, targetDate]
-    );
-    if (!salaryStructure) return sendError(res, 404, "Salary structure not found");
-
-    const [components] = await conn.query(
-      `SELECT esc.id, sc.id AS component_id, sc.code, sc.name, sc.type, sc.is_taxable, sc.is_statutory, esc.calc_type, esc.calc_value, esc.remark,
-              CASE WHEN esc.calc_type = 'fixed' THEN esc.calc_value WHEN esc.calc_type = 'percentage' THEN ROUND((ss.base_amount * esc.calc_value) / 100, 2) ELSE 0 END AS amount
-       FROM employee_salary_component esc
-       INNER JOIN salary_components sc ON sc.id = esc.component_id AND sc.is_deleted = 0 AND sc.is_active = 1
-       INNER JOIN salary_structures ss ON ss.id = esc.salary_id AND ss.is_deleted = 0 AND ss.is_active = 1
-       WHERE esc.company_id = ? AND esc.employee_id = ? AND esc.salary_id = ? AND esc.is_deleted = 0 AND esc.is_active = 1
-       ORDER BY sc.type ASC, sc.name ASC`,
-      [company_id, employee_id, salaryStructure.id]
-    );
-
-    let totalEarnings = 0, totalDeductions = 0;
-    const earnings = [], deductions = [];
-
-    for (const item of components) {
-      const component = {
-        component_id: item.component_id,
-        code: item.code,
-        name: item.name,
-        type: item.type,
-        is_taxable: item.is_taxable == 1,
-        is_statutory: item.is_statutory == 1,
-        calc_type: item.calc_type,
-        calc_value: Number(item.calc_value),
-        amount: Number(item.amount),
-        remark: item.remark,
-      };
-      if (item.type === "earning") { totalEarnings += Number(item.amount); earnings.push(component); }
-      else if (item.type === "deduction") { totalDeductions += Number(item.amount); deductions.push(component); }
-    }
-
-    return sendSuccess(res, 200, "Salary structure fetched successfully", {
-      salary_structure_id: salaryStructure.id,
-      month, year,
-      base_amount: Number(salaryStructure.base_amount),
-      effective_from: salaryStructure.effective_from,
-      effective_to: salaryStructure.effective_to,
-      total_earnings: totalEarnings,
-      total_deductions: totalDeductions,
-      net_salary: Number(salaryStructure.base_amount) + totalEarnings - totalDeductions,
-      earnings,
-      deductions,
-    });
-  } catch (error) {
-    console.error("❌ Salary Structure API Error:", error);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
+  if (req.query.month !== undefined) {
+    const parsedMonth = Number(req.query.month);
+    if (!Number.isInteger(parsedMonth) || parsedMonth < 1 || parsedMonth > 12) throw { status: 400, message: "Invalid month. Must be between 1-12" };
+    month = parsedMonth;
   }
-});
+  if (req.query.year !== undefined) {
+    const parsedYear = Number(req.query.year);
+    if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) throw { status: 400, message: "Invalid year. Must be between 2000-2100" };
+    year = parsedYear;
+  }
+
+  const targetDate = `${year}-${String(month).padStart(2, "0")}-01`;
+
+  const [[employee]] = await conn.query(
+    `SELECT e.id AS employee_id FROM employees e WHERE e.user_id = ? AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 LIMIT 1`,
+    [user_id, company_id]
+  );
+  if (!employee) throw { status: 404, message: "Employee not found" };
+  const employee_id = employee.employee_id;
+
+  const [[salaryStructure]] = await conn.query(
+    `SELECT ss.id, ss.base_amount, ss.effective_from, ss.effective_to, ss.created_at
+     FROM salary_structures ss
+     WHERE ss.company_id = ? AND ss.employee_id = ? AND ss.is_deleted = 0 AND ss.is_active = 1
+       AND ss.effective_from <= LAST_DAY(?) AND (ss.effective_to IS NULL OR ss.effective_to >= ?)
+     ORDER BY ss.effective_from DESC, ss.id DESC LIMIT 1`,
+    [company_id, employee_id, targetDate, targetDate]
+  );
+  if (!salaryStructure) throw { status: 404, message: "Salary structure not found" };
+
+  const [components] = await conn.query(
+    `SELECT esc.id, sc.id AS component_id, sc.code, sc.name, sc.type, sc.is_taxable, sc.is_statutory, esc.calc_type, esc.calc_value, esc.remark,
+            CASE WHEN esc.calc_type = 'fixed' THEN esc.calc_value WHEN esc.calc_type = 'percentage' THEN ROUND((ss.base_amount * esc.calc_value) / 100, 2) ELSE 0 END AS amount
+     FROM employee_salary_component esc
+     INNER JOIN salary_components sc ON sc.id = esc.component_id AND sc.is_deleted = 0 AND sc.is_active = 1
+     INNER JOIN salary_structures ss ON ss.id = esc.salary_id AND ss.is_deleted = 0 AND ss.is_active = 1
+     WHERE esc.company_id = ? AND esc.employee_id = ? AND esc.salary_id = ? AND esc.is_deleted = 0 AND esc.is_active = 1
+     ORDER BY sc.type ASC, sc.name ASC`,
+    [company_id, employee_id, salaryStructure.id]
+  );
+
+  let totalEarnings = 0, totalDeductions = 0;
+  const earnings = [], deductions = [];
+
+  for (const item of components) {
+    const component = {
+      component_id: item.component_id,
+      code: item.code,
+      name: item.name,
+      type: item.type,
+      is_taxable: item.is_taxable == 1,
+      is_statutory: item.is_statutory == 1,
+      calc_type: item.calc_type,
+      calc_value: Number(item.calc_value),
+      amount: Number(item.amount),
+      remark: item.remark,
+    };
+    if (item.type === "earning") { totalEarnings += Number(item.amount); earnings.push(component); }
+    else if (item.type === "deduction") { totalDeductions += Number(item.amount); deductions.push(component); }
+  }
+
+  return sendSuccess(res, 200, "Salary structure fetched successfully", {
+    salary_structure_id: salaryStructure.id,
+    month, year,
+    base_amount: Number(salaryStructure.base_amount),
+    effective_from: salaryStructure.effective_from,
+    effective_to: salaryStructure.effective_to,
+    total_earnings: totalEarnings,
+    total_deductions: totalDeductions,
+    net_salary: Number(salaryStructure.base_amount) + totalEarnings - totalDeductions,
+    earnings,
+    deductions,
+  });
+}));
 
 export default router;

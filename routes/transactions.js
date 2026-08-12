@@ -1157,112 +1157,109 @@ const buildEmployeeLedgerListItemDesc = (txn, runningBalanceRef, roleMap) => {
   };
 };
 
-router.get(
-  "/my-ledger",
-  auth([], { employee_only: true }),
-  async (req, res) => {
-    let conn;
+router.get("/my-ledger", auth([], { employee_only: true }), async (req, res) => {
+  let conn;
 
-    try {
-      const companyId = safeNumber(req.company?.id);
-      const employeeId = safeNumber(req.employee?.id);
-      const userId = safeNumber(req.user?.id);
+  try {
+    const companyId = safeNumber(req.company?.id);
+    const employeeId = safeNumber(req.employee?.id);
+    const userId = safeNumber(req.user?.id);
 
-      if (!companyId) {
-        return sendError(res, 400, "Company id is required in header");
-      }
+    if (!companyId) {
+      return sendError(res, 400, "Company id is required in header");
+    }
 
-      if (!userId || !employeeId) {
-        return sendError(
-          res,
-          403,
-          "User is not an employee of this company"
-        );
-      }
+    if (!userId || !employeeId) {
+      return sendError(
+        res,
+        403,
+        "User is not an employee of this company"
+      );
+    }
 
-      const {
-        from_date,
-        to_date,
-        search,
-        limit,
-        page_no,
-        transaction_type,
-      } = req.query;
+    const {
+      from_date,
+      to_date,
+      search,
+      limit,
+      page_no,
+      transaction_type,
+    } = req.query;
 
-      if (!hasQueryValue(limit)) {
-        return sendError(res, 400, "limit is required");
-      }
+    if (!hasQueryValue(limit)) {
+      return sendError(res, 400, "limit is required");
+    }
 
-      if (!hasQueryValue(page_no)) {
-        return sendError(res, 400, "page_no is required");
-      }
+    if (!hasQueryValue(page_no)) {
+      return sendError(res, 400, "page_no is required");
+    }
 
-      const hasFromDate = hasQueryValue(from_date);
-      const hasToDate = hasQueryValue(to_date);
+    const hasFromDate = hasQueryValue(from_date);
+    const hasToDate = hasQueryValue(to_date);
 
-      if (hasFromDate !== hasToDate) {
-        return sendError(
-          res,
-          400,
-          "from_date and to_date must be provided together"
-        );
-      }
+    if (hasFromDate !== hasToDate) {
+      return sendError(
+        res,
+        400,
+        "from_date and to_date must be provided together"
+      );
+    }
 
-      let page = safeNumber(page_no, 0);
-      let pageLimit = safeNumber(limit, 0);
+    let page = safeNumber(page_no, 0);
+    let pageLimit = safeNumber(limit, 0);
 
-      if (page < 1) {
-        return sendError(res, 400, "page_no must be greater than 0");
-      }
+    if (page < 1) {
+      return sendError(res, 400, "page_no must be greater than 0");
+    }
 
-      if (pageLimit < 1) {
-        return sendError(res, 400, "limit must be greater than 0");
-      }
+    if (pageLimit < 1) {
+      return sendError(res, 400, "limit must be greater than 0");
+    }
 
-      if (pageLimit > LEDGER_MAX_LIMIT) {
-        return sendError(
-          res,
-          400,
-          `limit cannot exceed ${LEDGER_MAX_LIMIT}`
-        );
-      }
+    if (pageLimit > LEDGER_MAX_LIMIT) {
+      return sendError(
+        res,
+        400,
+        `limit cannot exceed ${LEDGER_MAX_LIMIT}`
+      );
+    }
 
-      const offset = (page - 1) * pageLimit;
-      const today = getCurrentDate();
+    const offset = (page - 1) * pageLimit;
+    const today = getCurrentDate();
 
-      if (hasFromDate && !isValidDate(from_date)) {
-        return sendError(res, 400, "Invalid from_date");
-      }
+    if (hasFromDate && !isValidDate(from_date)) {
+      return sendError(res, 400, "Invalid from_date");
+    }
 
-      if (hasToDate && !isValidDate(to_date)) {
-        return sendError(res, 400, "Invalid to_date");
-      }
+    if (hasToDate && !isValidDate(to_date)) {
+      return sendError(res, 400, "Invalid to_date");
+    }
 
-      if (
-        (hasFromDate && isDateAfter(from_date, today)) ||
-        (hasToDate && isDateAfter(to_date, today))
-      ) {
-        return sendError(res, 400, "Future dates are not allowed");
-      }
+    if (
+      (hasFromDate && isDateAfter(from_date, today)) ||
+      (hasToDate && isDateAfter(to_date, today))
+    ) {
+      return sendError(res, 400, "Future dates are not allowed");
+    }
 
-      const txnType = hasQueryValue(transaction_type)
-        ? String(transaction_type).trim()
-        : null;
+    const txnType = hasQueryValue(transaction_type)
+      ? String(transaction_type).trim()
+      : null;
 
-      if (txnType && !ALLOWED_LEDGER_TRANSACTION_TYPES.includes(txnType)) {
-        return sendError(
-          res,
-          400,
-          `Invalid transaction_type. Allowed values: ${ALLOWED_LEDGER_TRANSACTION_TYPES.join(
-            ", "
-          )}`
-        );
-      }
+    if (txnType && !ALLOWED_LEDGER_TRANSACTION_TYPES.includes(txnType)) {
+      return sendError(
+        res,
+        400,
+        `Invalid transaction_type. Allowed values: ${ALLOWED_LEDGER_TRANSACTION_TYPES.join(
+          ", "
+        )}`
+      );
+    }
 
-      conn = await db.getConnection();
+    conn = await db.getConnection();
 
-      const [[employee]] = await conn.query(
-        `
+    const [[employee]] = await conn.query(
+      `
       SELECT
         e.id,
         e.joining_date
@@ -1278,61 +1275,61 @@ router.get(
         AND e.is_active = 1
       LIMIT 1
       `,
-        [employeeId, userId, companyId]
+      [employeeId, userId, companyId]
+    );
+
+    if (!employee) {
+      return sendError(
+        res,
+        403,
+        "User is not an employee of this company"
       );
+    }
 
-      if (!employee) {
-        return sendError(
-          res,
-          403,
-          "User is not an employee of this company"
-        );
-      }
+    const joiningDate = formatToDate(employee.joining_date);
+    let rangeFrom = hasFromDate ? from_date : joiningDate;
+    let rangeTo = hasToDate ? to_date : today;
 
-      const joiningDate = formatToDate(employee.joining_date);
-      let rangeFrom = hasFromDate ? from_date : joiningDate;
-      let rangeTo = hasToDate ? to_date : today;
+    if (isDateBefore(rangeFrom, joiningDate)) {
+      return sendError(
+        res,
+        400,
+        "Ledger cannot be viewed before joining date"
+      );
+    }
 
-      if (isDateBefore(rangeFrom, joiningDate)) {
-        return sendError(
-          res,
-          400,
-          "Ledger cannot be viewed before joining date"
-        );
-      }
+    if (isDateBefore(rangeTo, joiningDate)) {
+      return sendError(
+        res,
+        400,
+        "Ledger cannot be viewed before joining date"
+      );
+    }
 
-      if (isDateBefore(rangeTo, joiningDate)) {
-        return sendError(
-          res,
-          400,
-          "Ledger cannot be viewed before joining date"
-        );
-      }
+    if (isDateAfter(rangeFrom, rangeTo)) {
+      return sendError(res, 400, "from_date cannot be after to_date");
+    }
 
-      if (isDateAfter(rangeFrom, rangeTo)) {
-        return sendError(res, 400, "from_date cannot be after to_date");
-      }
+    const conditions = [
+      "t.company_id = ?",
+      "t.employee_id = ?",
+      "t.is_deleted = 0",
+      "e.is_deleted = 0",
+      "u.is_deleted = 0",
+      "t.transaction_date >= ?",
+      "t.transaction_date <= ?",
+    ];
 
-      const conditions = [
-        "t.company_id = ?",
-        "t.employee_id = ?",
-        "t.is_deleted = 0",
-        "e.is_deleted = 0",
-        "u.is_deleted = 0",
-        "t.transaction_date >= ?",
-        "t.transaction_date <= ?",
-      ];
+    const params = [companyId, employeeId, rangeFrom, rangeTo];
 
-      const params = [companyId, employeeId, rangeFrom, rangeTo];
+    if (txnType) {
+      conditions.push("t.transaction_type = ?");
+      params.push(txnType);
+    }
 
-      if (txnType) {
-        conditions.push("t.transaction_type = ?");
-        params.push(txnType);
-      }
-
-      if (hasQueryValue(search)) {
-        const searchValue = `%${String(search).trim()}%`;
-        conditions.push(`
+    if (hasQueryValue(search)) {
+      const searchValue = `%${String(search).trim()}%`;
+      conditions.push(`
         (
           t.transaction_id LIKE ?
           OR t.remark LIKE ?
@@ -1342,20 +1339,20 @@ router.get(
           OR u.email LIKE ?
         )
       `);
-        params.push(
-          searchValue,
-          searchValue,
-          searchValue,
-          searchValue,
-          searchValue,
-          searchValue
-        );
-      }
+      params.push(
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue
+      );
+    }
 
-      const whereClause = conditions.join(" AND ");
+    const whereClause = conditions.join(" AND ");
 
-      const [[openingResult]] = await conn.query(
-        `
+    const [[openingResult]] = await conn.query(
+      `
       SELECT
         COALESCE(
           SUM(
@@ -1374,30 +1371,30 @@ router.get(
         AND t.is_deleted = 0
         AND t.transaction_date < ?
       `,
-        [companyId, employeeId, rangeFrom]
-      );
+      [companyId, employeeId, rangeFrom]
+    );
 
-      const openingBalance = Number(
-        (Number(openingResult?.opening_balance) || 0).toFixed(2)
-      );
+    const openingBalance = Number(
+      (Number(openingResult?.opening_balance) || 0).toFixed(2)
+    );
 
-      let runningBalanceRef = { value: openingBalance };
+    let runningBalanceRef = { value: openingBalance };
 
-      const meta = await fetchLedgerSummaryMeta(
-        conn,
-        whereClause,
-        params,
-        "employee"
-      );
+    const meta = await fetchLedgerSummaryMeta(
+      conn,
+      whereClause,
+      params,
+      "employee"
+    );
 
-      const closingBalance = Number(
-        (openingBalance + meta.credit - meta.debit).toFixed(2)
-      );
-      runningBalanceRef.value = closingBalance;
+    const closingBalance = Number(
+      (openingBalance + meta.credit - meta.debit).toFixed(2)
+    );
+    runningBalanceRef.value = closingBalance;
 
-      if (offset > 0) {
-        const [[offsetResult]] = await conn.query(
-          `
+    if (offset > 0) {
+      const [[offsetResult]] = await conn.query(
+        `
         SELECT
           COALESCE(SUM(balance_amount), 0) AS offset_balance
         FROM (
@@ -1419,14 +1416,14 @@ router.get(
           LIMIT ?
         ) x
         `,
-          [...params, offset]
-        );
+        [...params, offset]
+      );
 
-        runningBalanceRef.value -= Number(offsetResult?.offset_balance) || 0;
-      }
+      runningBalanceRef.value -= Number(offsetResult?.offset_balance) || 0;
+    }
 
-      const [transactions] = await conn.query(
-        `
+    const [transactions] = await conn.query(
+      `
       SELECT
         t.id,
         t.transaction_date,
@@ -1463,39 +1460,39 @@ router.get(
         t.id DESC
       LIMIT ? OFFSET ?
       `,
-        [...params, pageLimit, offset]
-      );
+      [...params, pageLimit, offset]
+    );
 
-      const actorIds = transactions.flatMap((txn) => [
-        txn.create_by,
-        txn.modify_by,
-      ]);
+    const actorIds = transactions.flatMap((txn) => [
+      txn.create_by,
+      txn.modify_by,
+    ]);
 
-      const roleMap = await resolveLedgerUserRoles(conn, companyId, actorIds);
+    const roleMap = await resolveLedgerUserRoles(conn, companyId, actorIds);
 
-      const list = transactions.map((txn) =>
-        buildEmployeeLedgerListItemDesc(txn, runningBalanceRef, roleMap)
-      );
+    const list = transactions.map((txn) =>
+      buildEmployeeLedgerListItemDesc(txn, runningBalanceRef, roleMap)
+    );
 
-      return sendSuccess(
-        res,
-        200,
-        "Employee ledger fetched successfully",
-        {
-          opening_balance: openingBalance,
-          list,
-        },
-        meta
-      );
-    } catch (err) {
-      console.error("MY_LEDGER_ERROR:", err);
-      return sendError(res, 500, "Failed to fetch my ledger");
-    } finally {
-      if (conn) {
-        conn.release();
-      }
+    return sendSuccess(
+      res,
+      200,
+      "Employee ledger fetched successfully",
+      {
+        opening_balance: openingBalance,
+        list,
+      },
+      meta
+    );
+  } catch (err) {
+    console.error("MY_LEDGER_ERROR:", err);
+    return sendError(res, 500, "Failed to fetch my ledger");
+  } finally {
+    if (conn) {
+      conn.release();
     }
   }
+}
 );
 
 router.delete("/delete", auth(), async (req, res) => {
