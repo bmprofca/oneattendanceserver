@@ -1,1 +1,0 @@
-{"type":"signup_otp","payload":{"to":"port@gmail.com","userName":"port@gmail.com","otp":"510892","fromEmail":"contact@onesaas.in","fromName":"OneAttendance","replyTo":"contact@onesaas.in"},"attempts":3,"max_attempts":3,"created_at":1786544322765,"last_error":"text is not defined","last_attempt_at":1786544322778,"failed_at":1786544322785,"error":"text is not defined"}

@@ -2737,8 +2737,12 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
     leave_type = leave_type ? String(leave_type).trim().toLowerCase() : null;
     leave_type_value = leave_type_value ? String(leave_type_value).trim().toLowerCase() : null;
     notes = notes ? String(notes).trim() : null;
-    is_deductible = Number(is_deductible) === 1;
-    is_overtime = Number(is_overtime) === 1;
+    if (typeof is_deductible !== "boolean") {
+      return fail(400, "is_deductible must be a boolean (true/false)");
+    }
+    if (typeof is_overtime !== "boolean") {
+      return fail(400, "is_overtime must be a boolean (true/false)");
+    }
 
     const staticPaidLeaveValues = ["weekend", "holiday"];
 

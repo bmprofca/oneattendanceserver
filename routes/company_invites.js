@@ -82,11 +82,6 @@ const SOFT_DELETE_INVITE_PACKAGE = `
   WHERE id = ?
 `;
 
-const COUNT_EMPLOYEES_USING_PACKAGE = `
-  SELECT COUNT(*) as total
-  FROM employees
-  WHERE permission_package_id = ? AND company_id = ? AND is_deleted = 0
-`;
 
 const formatInvitePackage = (pkg, { permissions = [], salaryComponents = [] } = {}) => ({
   id: pkg.id,
@@ -163,10 +158,35 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
     employment_type = employment_type?.trim()?.toLowerCase() || null;
     remarks = remarks?.trim() || null;
 
-    auto_approve = auto_approve == 1 ? 1 : 0;
-    enable_overtime = enable_overtime == 1 ? 1 : 0;
-    enable_deduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
-    is_active = is_active == null ? 1 : (is_active == 1 ? 1 : 0);
+    // Validate types first (only if provided)
+    if (auto_approve !== undefined && typeof auto_approve !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "auto_approve must be a boolean (true/false)");
+    }
+    if (enable_overtime !== undefined && typeof enable_overtime !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "enable_overtime must be a boolean (true/false)");
+    }
+    if (enable_deduction !== undefined && typeof enable_deduction !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "enable_deduction must be a boolean (true/false)");
+    }
+    if (is_active !== undefined && typeof is_active !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "is_active must be a boolean (true/false)");
+    }
+
+    // Apply defaults (same as before)
+    if (auto_approve === undefined) auto_approve = false;
+    if (enable_overtime === undefined) enable_overtime = false;
+    if (enable_deduction === undefined) enable_deduction = true;
+    if (is_active === undefined) is_active = true;
+
+    // Convert to DB integer values
+    auto_approve = auto_approve ? 1 : 0;
+    enable_overtime = enable_overtime ? 1 : 0;
+    enable_deduction = enable_deduction ? 1 : 0;
+    is_active = is_active ? 1 : 0;
 
     if (!code || !name) {
       await conn.rollback();
@@ -338,10 +358,29 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
     if (employment_type !== undefined) employment_type = employment_type?.trim()?.toLowerCase() || null;
     if (remarks !== undefined) remarks = remarks?.trim() || null;
 
-    if (auto_approve !== undefined) auto_approve = auto_approve == 1 ? 1 : 0;
-    if (enable_overtime !== undefined) enable_overtime = enable_overtime == 1 ? 1 : 0;
-    if (enable_deduction !== undefined) enable_deduction = enable_deduction == null ? 1 : (enable_deduction == 1 ? 1 : 0);
-    if (is_active !== undefined) is_active = is_active == null ? 1 : (is_active == 1 ? 1 : 0);
+    // Validate types for provided fields only
+    if (auto_approve !== undefined && typeof auto_approve !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "auto_approve must be a boolean (true/false)");
+    }
+    if (enable_overtime !== undefined && typeof enable_overtime !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "enable_overtime must be a boolean (true/false)");
+    }
+    if (enable_deduction !== undefined && typeof enable_deduction !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "enable_deduction must be a boolean (true/false)");
+    }
+    if (is_active !== undefined && typeof is_active !== "boolean") {
+      await conn.rollback();
+      return sendError(res, 400, "is_active must be a boolean (true/false)");
+    }
+
+    // Convert to DB integer values (only if defined)
+    if (auto_approve !== undefined) auto_approve = auto_approve ? 1 : 0;
+    if (enable_overtime !== undefined) enable_overtime = enable_overtime ? 1 : 0;
+    if (enable_deduction !== undefined) enable_deduction = enable_deduction ? 1 : 0;
+    if (is_active !== undefined) is_active = is_active ? 1 : 0;
 
     const validations = [];
     if (designation !== undefined && designation !== null) validations.push({ field: "designation", value: designation, validator: designationValidation });
@@ -476,9 +515,14 @@ router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
       where += ` AND (ip.code LIKE ? OR ip.name LIKE ?)`;
       params.push(`%${search}%`, `%${search}%`);
     }
+
+    if (is_active !== undefined && !["true", "false"].includes(String(is_active))) {
+      return sendError(res, 400, "is_active query param must be true or false");
+    }
+
     if (is_active !== undefined) {
       where += ` AND ip.is_active = ?`;
-      params.push(is_active === "true" || is_active == 1 ? 1 : 0);
+      params.push(is_active === "true" ? 1 : 0);
     }
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) as total FROM invite_packages ip ${where}`, params);
@@ -569,12 +613,6 @@ router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
     if (pkg.is_deleted) {
       await conn.rollback();
       return sendError(res, 400, "Package already deleted");
-    }
-
-    const [[{ total }]] = await conn.query(COUNT_EMPLOYEES_USING_PACKAGE, [package_id, company_id]);
-    if (total > 0) {
-      await conn.rollback();
-      return sendError(res, 400, "Cannot delete package: assigned to employees");
     }
 
     await conn.query(SOFT_DELETE_INVITE_PACKAGE, [user_id || null, package_id]);
@@ -1174,9 +1212,26 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
       graceMinutes = resGrace.value;
     }
 
-    const isAuto = Boolean(auto_approve) ? 1 : 0;
-    const inviteEnableOvertime = Boolean(enable_overtime) ? 1 : 0;
-    const inviteEnableDeduction = enable_deduction == null ? 1 : (Boolean(enable_deduction) ? 1 : 0);
+    if (typeof auto_approve !== "boolean") {
+      errors.auto_approve = "auto_approve must be true or false.";
+    }
+
+    if (typeof enable_overtime !== "boolean") {
+      errors.enable_overtime = "enable_overtime must be true or false.";
+    }
+
+    if (enable_deduction !== undefined && enable_deduction !== null && typeof enable_deduction !== "boolean") {
+      errors.enable_deduction = "enable_deduction must be true or false.";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      await rollback();
+      return sendError(res, 422, "Please check the submitted information.", errors);
+    }
+
+    const isAuto = auto_approve ? 1 : 0;
+    const inviteEnableOvertime = enable_overtime ? 1 : 0;
+    const inviteEnableDeduction = enable_deduction == null ? 1 : (enable_deduction ? 1 : 0);
 
     const [[company]] = await conn.query(SELECT_COMPANY_BY_ID, [company_id]);
     if (!company) {
@@ -1819,6 +1874,16 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
       }
     }
 
+    if (auto_approve !== undefined && typeof auto_approve !== "boolean") {
+      return sendError(res, 400, "auto_approve must be a boolean (true/false)");
+    }
+    if (enable_overtime !== undefined && typeof enable_overtime !== "boolean") {
+      return sendError(res, 400, "enable_overtime must be a boolean (true/false)");
+    }
+    if (enable_deduction !== undefined && typeof enable_deduction !== "boolean") {
+      return sendError(res, 400, "enable_deduction must be a boolean (true/false)");
+    }
+
     if (attendance_methods !== undefined) {
       if (!Array.isArray(attendance_methods)) return sendError(res, 400, "attendance_methods must be an array");
       const methodSet = new Set();
@@ -1884,9 +1949,9 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
     if (grace_minutes !== undefined) addField("grace_minutes", graceMinutes);
     if (weekends !== undefined) addField("weekends", JSON.stringify(normalizeWeekends(weekends || [])));
     if (attendance_methods !== undefined) addField("attendance_methods", JSON.stringify(attendance_methods));
-    if (auto_approve !== undefined) addField("auto_approve", auto_approve == 1 ? 1 : 0);
-    if (enable_overtime !== undefined) addField("enable_overtime", enable_overtime == 1 ? 1 : 0);
-    if (enable_deduction !== undefined) addField("enable_deduction", enable_deduction == 1 ? 1 : 0);
+    if (auto_approve !== undefined) addField("auto_approve", auto_approve ? 1 : 0);
+    if (enable_overtime !== undefined) addField("enable_overtime", enable_overtime ? 1 : 0);
+    if (enable_deduction !== undefined) addField("enable_deduction", enable_deduction ? 1 : 0);
     if (joining_date !== undefined) addField("joining_date", joining_date);
     if (base_amount !== undefined) addField("base_amount", base_amount);
     if (effective_from !== undefined) addField("effective_from", effective_from);

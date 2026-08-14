@@ -20,7 +20,6 @@ import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 const router = express.Router();
 
 // --------------- GLOBAL HELPERS ---------------
-const toBool = (val) => (val === true || val === 1 || val === "1") ? 1 : 0;
 const isValidDate = (value) => !!parseDate(value);
 const formatDate = (date) => formatIST(date, "YYYY-MM-DD");
 const VALID_COMPONENT_TYPES = ["earning", "deduction", "employer_contribution"];
@@ -238,8 +237,15 @@ router.post("/components/create", auth(SAL_COMP.MNG), withTransaction(async (con
   type = type.trim().toLowerCase();
   calc_type = calc_type ? calc_type.trim().toLowerCase() : "fixed";
 
-  is_taxable = toBool(is_taxable);
-  is_statutory = toBool(is_statutory);
+  if (is_taxable !== undefined && typeof is_taxable !== 'boolean') {
+    throw { status: 400, message: "is_taxable must be true or false" };
+  }
+  if (is_statutory !== undefined && typeof is_statutory !== 'boolean') {
+    throw { status: 400, message: "is_statutory must be true or false" };
+  }
+
+  is_taxable = is_taxable === true ? 1 : 0;
+  is_statutory = is_statutory === true ? 1 : 0;
 
   if (!VALID_COMPONENT_TYPES.includes(type)) throw { status: 400, message: `Invalid type. Allowed: ${VALID_COMPONENT_TYPES.join(", ")}` };
   if (!VALID_CALC_TYPES.includes(calc_type)) throw { status: 400, message: `Invalid calc_type. Allowed: ${VALID_CALC_TYPES.join(", ")}` };
@@ -325,6 +331,16 @@ router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn
   if (type && !VALID_COMPONENT_TYPES.includes(type)) throw { status: 400, message: "Invalid type" };
   if (calc_type && !VALID_CALC_TYPES.includes(calc_type)) throw { status: 400, message: "Invalid calc_type" };
 
+  if (is_taxable !== undefined && typeof is_taxable !== 'boolean') {
+    throw { status: 400, message: "is_taxable must be true or false" };
+  }
+  if (is_statutory !== undefined && typeof is_statutory !== 'boolean') {
+    throw { status: 400, message: "is_statutory must be true or false" };
+  }
+  if (is_active !== undefined && typeof is_active !== 'boolean') {
+    throw { status: 400, message: "is_active must be true or false" };
+  }
+
   const [[existing]] = await conn.query(COMPONENT_EXISTS_BY_ID, [id, company_id]);
   if (!existing) throw { status: 404, message: "Salary component not found" };
 
@@ -345,23 +361,13 @@ router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn
   if (finalCalcType === "percentage" && (finalCalcValue <= 0 || finalCalcValue > 100)) throw { status: 400, message: "For percentage, calc_value must be between 0 and 100" };
   if (finalCalcType === "fixed" && finalCalcValue < 0) throw { status: 400, message: "Fixed amount cannot be negative" };
 
-  if (is_active !== undefined && !toBool(is_active)) {
+  if (is_active === false) {
     const [inUseRows] = await conn.query(
-      `
-      SELECT 1
-      FROM salary_component_package_items
-      WHERE component_id = ?
-        AND is_deleted = 0
-      LIMIT 1
-      `,
+      `SELECT 1 FROM salary_component_package_items WHERE component_id = ? AND is_deleted = 0 LIMIT 1`,
       [id]
     );
-
     if (inUseRows.length) {
-      throw {
-        status: 400,
-        message: "Cannot deactivate component. It is used in salary package",
-      };
+      throw { status: 400, message: "Cannot deactivate component. It is used in salary package" };
     }
   }
 
@@ -370,10 +376,10 @@ router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn
   if (name !== undefined) { updateFields.push("name = ?"); params.push(name); }
   if (type !== undefined) { updateFields.push("type = ?"); params.push(type); }
   if (calc_type !== undefined) { updateFields.push("calc_type = ?"); params.push(calc_type); }
-  if (calc_value !== undefined || calc_type !== undefined) { updateFields.push("calc_value = ?"); params.push(finalCalcValue); }
-  if (is_taxable !== undefined) { updateFields.push("is_taxable = ?"); params.push(toBool(is_taxable)); }
-  if (is_statutory !== undefined) { updateFields.push("is_statutory = ?"); params.push(toBool(is_statutory)); }
-  if (is_active !== undefined) { updateFields.push("is_active = ?"); params.push(toBool(is_active)); }
+  if (calc_value !== undefined || calc_type !== undefined) { updateFields.push("calc_value = ?"); params.push(finalCalcValue); }  
+  if (is_taxable !== undefined) { updateFields.push("is_taxable = ?"); params.push(is_taxable ? 1 : 0); }
+  if (is_statutory !== undefined) { updateFields.push("is_statutory = ?"); params.push(is_statutory ? 1 : 0); }
+  if (is_active !== undefined) { updateFields.push("is_active = ?"); params.push(is_active ? 1 : 0); }
   if (!updateFields.length) throw { status: 400, message: "No fields provided to update" };
   updateFields.push("updated_by = ?"); params.push(user_id || null);
   params.push(id, company_id);
@@ -401,7 +407,7 @@ router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (c
     };
   }
   let componentIds = [];
-  
+
   if (id !== undefined && ids === undefined) {
     const parsedId = parseInt(id);
 
