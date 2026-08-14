@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-12T14:15:29.083Z",
+  "generated_at": "2026-08-14T17:08:47.877Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -1982,7 +1982,7 @@
     "employees": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -5533,7 +5533,7 @@
     "salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 8,
+      "estimated_rows": 9,
       "comment": null,
       "columns": [
         {
@@ -5750,7 +5750,7 @@
     "salary_component_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 4,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {
@@ -5922,7 +5922,7 @@
     "salary_component_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 12,
+      "estimated_rows": 21,
       "comment": null,
       "columns": [
         {
@@ -6078,7 +6078,7 @@
     "salary_structures": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -6274,7 +6274,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 23,
+      "estimated_rows": 25,
       "comment": null,
       "columns": [
         {
@@ -7575,7 +7575,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 8,
+      "estimated_rows": 9,
       "comment": null,
       "columns": [
         {

@@ -126,17 +126,31 @@ const withTransaction = (handler) => async (req, res) => {
 };
 
 // --------------- VALIDATION HELPERS ---------------
-function parsePackageComponentIds(components) {
+function parseComponentIds(components) {
   const idsSet = new Set();
   const ids = [];
+
   components.forEach((item, index) => {
-    if (!item.component_id) throw { status: 400, message: `component_id required at index ${index}` };
-    const compId = parseInt(item.component_id);
-    if (isNaN(compId) || compId <= 0) throw { status: 400, message: `Invalid component_id at index ${index}` };
-    if (idsSet.has(compId)) throw { status: 400, message: `Duplicate component_id: ${compId}` };
+    const compId = Number(item);
+
+    if (!Number.isInteger(compId) || compId <= 0) {
+      throw {
+        status: 400,
+        message: `Invalid component_id at index ${index}. Must be a positive integer.`,
+      };
+    }
+
+    if (idsSet.has(compId)) {
+      throw {
+        status: 400,
+        message: `Duplicate component_id: ${compId}`,
+      };
+    }
+
     idsSet.add(compId);
     ids.push(compId);
   });
+
   return ids;
 }
 
@@ -209,7 +223,7 @@ async function getPackageItems(conn, package_id) {
   return items;
 }
 
-// --------------- ROUTES ---------------
+// --------------- Salary Component Routes ---------------
 
 // 1. Create salary component
 router.post("/components/create", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
@@ -330,6 +344,26 @@ router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn
 
   if (finalCalcType === "percentage" && (finalCalcValue <= 0 || finalCalcValue > 100)) throw { status: 400, message: "For percentage, calc_value must be between 0 and 100" };
   if (finalCalcType === "fixed" && finalCalcValue < 0) throw { status: 400, message: "Fixed amount cannot be negative" };
+
+  if (is_active !== undefined && !toBool(is_active)) {
+    const [inUseRows] = await conn.query(
+      `
+      SELECT 1
+      FROM salary_component_package_items
+      WHERE component_id = ?
+        AND is_deleted = 0
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    if (inUseRows.length) {
+      throw {
+        status: 400,
+        message: "Cannot deactivate component. It is used in salary package",
+      };
+    }
+  }
 
   let updateFields = [], params = [];
   if (code !== undefined) { updateFields.push("code = ?"); params.push(code); }
@@ -503,6 +537,10 @@ router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (c
 })
 );
 
+
+// -------------==- Salary Package Routes -------------
+
+
 // 5. Create salary package
 router.post("/components/create-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
   let { name, code, description, components } = req.body;
@@ -517,7 +555,7 @@ router.post("/components/create-package", auth(SAL_COMP.MNG), withTransaction(as
   if (!name) throw { status: 400, message: "name is required" };
   if (!Array.isArray(components) || components.length === 0) throw { status: 400, message: "components array is required" };
 
-  const componentIds = parsePackageComponentIds(components);
+  const componentIds = parseComponentIds(components);
 
   const [existing] = await conn.query(PACKAGE_EXISTS_BY_NAME, [company_id, name]);
   if (existing.length) throw { status: 409, message: "Package name already exists" };
@@ -617,7 +655,7 @@ router.put("/components/update-package", auth(SAL_COMP.MNG), withTransaction(asy
   if (code !== undefined) code = code.trim().toUpperCase();
   if (description !== undefined) description = description?.trim() || null;
 
-  const newIds = parsePackageComponentIds(components);
+  const newIds = parseComponentIds(components);
 
   const [[pkg]] = await conn.query(PACKAGE_EXISTS_BY_ID, [package_id, company_id]);
   if (!pkg) throw { status: 404, message: "Package not found" };
@@ -667,23 +705,118 @@ router.put("/components/update-package", auth(SAL_COMP.MNG), withTransaction(asy
   return sendSuccess(res, 200, "Salary package updated successfully", formatSalaryPackage(updatedPkg, items));
 }));
 
-// 8. Delete salary package
+// 8. Delete salary package (single or bulk)
 router.delete("/components/delete-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
-  let { package_id } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
-  package_id = parseInt(package_id);
+  let { id, ids } = req.body;
 
-  if (!company_id || isNaN(package_id) || package_id <= 0) throw { status: 400, message: "Valid company_id and package_id are required" };
+  if (!company_id) {
+    throw { status: 400, message: "Valid company_id is required" };
+  }
 
-  const [[pkg]] = await conn.query(PACKAGE_EXISTS_BY_ID, [package_id, company_id]);
-  if (!pkg) throw { status: 404, message: "Package not found or already deleted" };
+  let packageIds = [];
 
-  await conn.query(`UPDATE salary_component_packages SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ? AND is_deleted = 0`, [user_id || null, package_id, company_id]);
-  await conn.query(`UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id = ? AND is_deleted = 0`, [user_id || null, package_id]);
+  // Determine the list of package IDs from id or ids
+  if (id !== undefined && ids === undefined) {
+    const parsedId = parseInt(id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      throw { status: 400, message: "Valid package id is required" };
+    }
+    packageIds = [parsedId];
+  } else if (ids !== undefined) {
+    if (ids === "all") {
+      // Optionally support deleting all packages (use with caution)
+      const [rows] = await conn.query(
+        `SELECT id FROM salary_component_packages WHERE company_id = ? AND is_deleted = 0`,
+        [company_id]
+      );
+      packageIds = rows.map((row) => row.id);
+    } else if (Array.isArray(ids)) {
+      packageIds = [
+        ...new Set(
+          ids
+            .map((value) => parseInt(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+        ),
+      ];
 
-  return sendSuccess(res, 200, "Salary package deleted successfully");
+      if (packageIds.length === 0) {
+        throw { status: 400, message: "Valid package ids are required" };
+      }
+    } else {
+      throw { status: 400, message: "ids must be an array or 'all'" };
+    }
+  } else {
+    throw { status: 400, message: "id or ids is required" };
+  }
+
+  if (packageIds.length === 0) {
+    return sendSuccess(res, 200, "No salary packages to delete");
+  }
+
+  const placeholders = packageIds.map(() => "?").join(", ");
+
+  // Check if all packages exist and are not deleted
+  const [existingRows] = await conn.query(
+    `SELECT id FROM salary_component_packages WHERE company_id = ? AND id IN (${placeholders}) AND is_deleted = 0`,
+    [company_id, ...packageIds]
+  );
+
+  const existingIds = new Set(existingRows.map((row) => row.id));
+  const missingIds = packageIds.filter((packageId) => !existingIds.has(packageId));
+
+  if (missingIds.length > 0) {
+    throw {
+      status: 404,
+      message: "One or more salary packages not found or already deleted",
+      data: { ids: missingIds },
+    };
+  }
+
+  // Check if any package is in use (referenced in invite_packages)
+  const [inUseRows] = await conn.query(
+    `SELECT DISTINCT component_package FROM invite_packages WHERE company_id = ? AND component_package IN (${placeholders}) AND is_deleted = 0`,
+    [company_id, ...packageIds]
+  );
+
+  if (inUseRows.length > 0) {
+    const inUseIds = inUseRows.map((row) => row.component_package);
+    throw {
+      status: 400,
+      message: "Cannot delete package(s). They are used in invite templates",
+      data: { ids: inUseIds },
+    };
+  }
+
+  // Soft delete packages
+  const [result] = await conn.query(
+    `UPDATE salary_component_packages SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE company_id = ? AND id IN (${placeholders}) AND is_deleted = 0`,
+    [user_id || null, company_id, ...packageIds]
+  );
+
+  // Soft delete package items
+  await conn.query(
+    `UPDATE salary_component_package_items SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE package_id IN (${placeholders}) AND is_deleted = 0`,
+    [user_id || null, ...packageIds]
+  );
+
+  return sendSuccess(
+    res,
+    200,
+    packageIds.length === 1
+      ? "Salary package deleted successfully"
+      : "Salary packages deleted successfully",
+    {
+      deleted_count: result.affectedRows,
+      ids: packageIds,
+    }
+  );
 }));
+
+
+// -------------------- Employee Salary Management Routes --------------------
+
 
 // 9. Assign salary to employee
 router.post("/assign-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
