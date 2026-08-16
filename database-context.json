@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-08-14T21:18:13.735Z",
+  "generated_at": "2026-08-16T13:02:43.755Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 10,
+      "estimated_rows": 12,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 26,
+      "estimated_rows": 38,
       "comment": null,
       "columns": [
         {
@@ -5533,7 +5533,7 @@
     "salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 9,
+      "estimated_rows": 11,
       "comment": null,
       "columns": [
         {

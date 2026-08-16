@@ -216,9 +216,6 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
     return sanitized;
   };
 
-  const parseBoolean = (value) =>
-    value === true || value === 1 || value === "1" || value === "true";
-
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
@@ -255,7 +252,15 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
     ifsc_code = sanitizeString(ifsc_code, { upper: true });
     branch_name = sanitizeString(branch_name);
     upi_id = sanitizeString(upi_id, { lower: true });
-    is_primary = parseBoolean(is_primary);
+    if (typeof is_primary !== "boolean") {
+      await conn.rollback();
+      responseSent = true;
+      return sendError(
+        res,
+        400,
+        "is_primary must be a boolean (true or false)"
+      );
+    }
 
     const allowedOwnerTypes = ["company", "employee"];
     if (!allowedOwnerTypes.includes(bank_owner_type)) {
@@ -455,9 +460,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
     return sanitized;
   };
 
-  const parseBoolean = (value) =>
-    value === true || value === 1 || value === "1" || value === "true";
-
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
@@ -472,20 +474,17 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
     }
 
     // bank_id is always required
-    let bank_id = safeNumber(req.body.bank_id);
+    const bank_id = safeNumber(req.body.bank_id);
     if (!bank_id) {
       await conn.rollback();
       responseSent = true;
       return sendError(res, 400, "bank_id is required");
     }
 
-    // No longer sanitize all fields here – we'll handle with patch semantics
-
     const allowedStatuses = ["active", "inactive"];
-    const companyAccountTypes = ["cash", "current", "savings", "loan", "upi"];
+    const companyAccountTypes = ["cash", "current", "savings", "loan", "upi",];
     const employeeAccountTypes = ["current", "savings", "upi"];
 
-    // User & company validation
     const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
     if (!user || user.is_deleted) {
       await conn.rollback();
@@ -510,7 +509,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       return sendError(res, 403, "Company inactive");
     }
 
-    // Fetch existing account for update
     const [[existingAccount]] = await conn.query(
       `SELECT * FROM bank_accounts WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
       [bank_id, company_id]
@@ -521,7 +519,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       return sendError(res, 404, "Bank account not found");
     }
 
-    // Permission checks
     const permissionResult = await checkCompanyPermissions({
       conn,
       user_id,
@@ -581,40 +578,44 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       }
     }
 
-    // Helper for PATCH semantics: only change if key is present in req.body
     const patchField = (fieldName, existingValue, transform = (v) => v) => {
-      if (!(fieldName in req.body)) return existingValue; // not provided → keep old
+      if (!(fieldName in req.body)) { return existingValue; }
       const raw = req.body[fieldName];
-      if (raw === null) return null; // explicit clear
-      if (typeof raw === 'string') {
+      if (raw === null) { return null; }
+      if (typeof raw === "string") {
         const sanitized = sanitizeString(raw);
-        // empty string after trim → clear (null)
         return sanitized !== null ? transform(sanitized) : null;
       }
-      return transform(raw); // for booleans/numbers
+      return transform(raw);
     };
 
-    // Build final object using PATCH semantics
     const final = {
-      account_type:        patchField('account_type', existingAccount.account_type, (v) => v.toLowerCase()),
-      bank_name:           patchField('bank_name', existingAccount.bank_name),
-      account_holder_name: patchField('account_holder_name', existingAccount.account_holder_name),
-      account_number:      patchField('account_number', existingAccount.account_number),
-      ifsc_code:           patchField('ifsc_code', existingAccount.ifsc_code, (v) => v.toUpperCase()),
-      branch_name:         patchField('branch_name', existingAccount.branch_name),
-      upi_id:              patchField('upi_id', existingAccount.upi_id, (v) => v.toLowerCase()),
-      is_primary:          patchField('is_primary', existingAccount.is_primary, (v) => parseBoolean(v) ? 1 : 0),
-      status:              patchField('status', existingAccount.status, (v) => v.toLowerCase()),
+      account_type: patchField("account_type", existingAccount.account_type, (v) => v.toLowerCase()),
+      bank_name: patchField("bank_name", existingAccount.bank_name),
+      account_holder_name: patchField("account_holder_name", existingAccount.account_holder_name),
+      account_number: patchField("account_number", existingAccount.account_number),
+      ifsc_code: patchField("ifsc_code", existingAccount.ifsc_code, (v) => v.toUpperCase()),
+      branch_name: patchField("branch_name", existingAccount.branch_name),
+      upi_id: patchField("upi_id", existingAccount.upi_id, (v) => v.toLowerCase()),
+      is_primary: existingAccount.is_primary,
+
+      status: patchField("status", existingAccount.status, (v) => v.toLowerCase()),
     };
 
-    // Validate status if provided
-    if ('status' in req.body && final.status && !allowedStatuses.includes(final.status)) {
+    if ("is_primary" in req.body) {
+      if (typeof req.body.is_primary !== "boolean") {
+        await conn.rollback();
+        responseSent = true;
+        return sendError(res, 400, "is_primary must be a boolean (true or false)");
+      }
+      final.is_primary = req.body.is_primary ? 1 : 0;
+    }
+
+    if ("status" in req.body && final.status && !allowedStatuses.includes(final.status)) {
       await conn.rollback();
       responseSent = true;
       return sendError(res, 400, `status must be one of: ${allowedStatuses.join(", ")}`);
     }
-
-    // Check allowed account types for owner type
     if (bank_owner_type === "employee" && !employeeAccountTypes.includes(final.account_type)) {
       await conn.rollback();
       responseSent = true;
@@ -625,20 +626,17 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       responseSent = true;
       return sendError(res, 400, `Company account_type must be one of: ${companyAccountTypes.join(", ")}`);
     }
-
-    // Prevent primary becoming inactive
-    if (final.is_primary == 1 && final.status === "inactive") {
+    if (final.is_primary === 1 && final.status === "inactive") {
       await conn.rollback();
       responseSent = true;
       return sendError(res, 400, "Primary account cannot be inactive");
     }
-    if (existingAccount.is_primary == 1 && final.status === "inactive") {
+    if (existingAccount.is_primary === 1 && final.status === "inactive") {
       await conn.rollback();
       responseSent = true;
       return sendError(res, 400, "Cannot deactivate primary account");
     }
 
-    // Cash account logic
     if (final.account_type === "cash") {
       final.bank_name = null;
       final.account_holder_name = null;
@@ -654,14 +652,13 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       }
     }
 
-    // Bank account validation (current/savings/loan)
     if (["current", "savings", "loan"].includes(final.account_type)) {
       if (!final.bank_name || !final.account_holder_name || !final.account_number || !final.ifsc_code) {
         await conn.rollback();
         responseSent = true;
         return sendError(res, 400, "bank_name, account_holder_name, account_number and ifsc_code are required");
       }
-      final.upi_id = null; // UPI not relevant for bank accounts
+      final.upi_id = null;
       if (final.account_number.length < 6 || final.account_number.length > 50) {
         await conn.rollback();
         responseSent = true;
@@ -678,8 +675,8 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
       const duplicateQuery = DUPLICATE_BANK_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const duplicateParams = bank_owner_type === "employee"
-        ? [company_id, existingAccount.employee_id, final.account_number, final.ifsc_code, bank_id]
-        : [company_id, final.account_number, final.ifsc_code, bank_id];
+        ? [company_id, existingAccount.employee_id, final.account_number, final.ifsc_code, bank_id,]
+        : [company_id, final.account_number, final.ifsc_code, bank_id,];
       const [[duplicate]] = await conn.query(duplicateQuery, duplicateParams);
       if (duplicate) {
         await conn.rollback();
@@ -688,7 +685,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       }
     }
 
-    // UPI account validation
     if (final.account_type === "upi") {
       if (!final.upi_id) {
         await conn.rollback();
@@ -708,8 +704,8 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
       const upiQuery = DUPLICATE_UPI_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const upiParams = bank_owner_type === "employee"
-        ? [company_id, existingAccount.employee_id, final.upi_id, bank_id]
-        : [company_id, final.upi_id, bank_id];
+        ? [company_id, existingAccount.employee_id, final.upi_id, bank_id,]
+        : [company_id, final.upi_id, bank_id,];
       const [[existingUpi]] = await conn.query(upiQuery, upiParams);
       if (existingUpi) {
         await conn.rollback();
@@ -718,19 +714,17 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       }
     }
 
-    // Handle primary switching
-    if (final.is_primary == 1) {
+    if (final.is_primary === 1) {
       const updateQuery = UPDATE_PRIMARY_TO_ZERO_QUERY[bank_owner_type] + " AND id != ?";
       const updateParams = bank_owner_type === "employee"
-        ? [user_id, existingAccount.employee_id, bank_id]
-        : [user_id, company_id, bank_id];
+        ? [user_id, existingAccount.employee_id, bank_id,]
+        : [user_id, company_id, bank_id,];
       await conn.query(updateQuery, updateParams);
     }
 
-    // Update the record
     await conn.query(
       `UPDATE bank_accounts SET account_type = ?, bank_name = ?, account_holder_name = ?, account_number = ?, ifsc_code = ?, branch_name = ?, upi_id = ?, is_primary = ?, status = ?, is_active = ?, updated_by = ? WHERE id = ?`,
-      [final.account_type, final.bank_name, final.account_holder_name, final.account_number, final.ifsc_code, final.branch_name, final.upi_id, final.is_primary, final.status, final.status === "active" ? 1 : 0, user_id, bank_id]
+      [final.account_type, final.bank_name, final.account_holder_name, final.account_number, final.ifsc_code, final.branch_name, final.upi_id, final.is_primary, final.status, final.status === "active" ? 1 : 0, user_id, bank_id,]
     );
 
     const [[updatedAccount]] = await conn.query(BANK_SELECT_BY_ID, [bank_id]);
@@ -742,12 +736,14 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
     return sendSuccess(res, 200, "Bank account updated successfully", formatted);
   } catch (error) {
     if (!responseSent) {
-      if (conn && transactionStarted) await conn.rollback();
+      if (conn && transactionStarted) { await conn.rollback(); }
       console.error("Update bank account error:", error);
       return sendError(res, 500, "Internal server error");
     }
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      conn.release();
+    }
   }
 });
 
@@ -933,11 +929,11 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
     if (status) { where.push("ba.status = ?"); params.push(status); }
     if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
     if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).toLowerCase();
-      if (!["true", "false", "1", "0"].includes(normalized))
-        return sendError(res, 400, "Invalid is_primary filter");
-      const primaryValue = ["true", "1"].includes(normalized) ? 1 : 0;
-      where.push("ba.is_primary = ?"); params.push(primaryValue);
+      const normalized = String(is_primary).trim().toLowerCase();
+      if (!["true", "false"].includes(normalized))
+        return sendError(res, 400, "is_primary must be true or false");
+      where.push("ba.is_primary = ?");
+      params.push(normalized === "true" ? 1 : 0);
     }
     if (search) {
       const sv = `%${search}%`;
@@ -1044,10 +1040,13 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
     if (status) { where.push("ba.status = ?"); params.push(status); }
     if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
     if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).toLowerCase();
-      if (!["true", "false", "1", "0"].includes(normalized)) return sendError(res, 400, "Invalid is_primary filter");
-      const primaryValue = ["true", "1"].includes(normalized) ? 1 : 0;
-      where.push("ba.is_primary = ?"); params.push(primaryValue);
+      const normalized = String(is_primary).trim().toLowerCase();
+
+      if (!["true", "false"].includes(normalized))
+        return sendError(res, 400, "is_primary must be true or false");
+
+      where.push("ba.is_primary = ?");
+      params.push(normalized === "true" ? 1 : 0);
     }
     if (search) {
       const sv = `%${search}%`;
@@ -1153,10 +1152,13 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
     if (status) { where.push("ba.status = ?"); params.push(status); }
     if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
     if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).toLowerCase();
-      if (!["true", "false", "1", "0"].includes(normalized)) return sendError(res, 400, "Invalid is_primary filter");
-      const primaryValue = ["true", "1"].includes(normalized) ? 1 : 0;
-      where.push("ba.is_primary = ?"); params.push(primaryValue);
+      const normalized = String(is_primary).trim().toLowerCase();
+
+      if (!["true", "false"].includes(normalized))
+        return sendError(res, 400, "is_primary must be true or false");
+
+      where.push("ba.is_primary = ?");
+      params.push(normalized === "true" ? 1 : 0);
     }
     if (search) {
       const sv = `%${search}%`;
