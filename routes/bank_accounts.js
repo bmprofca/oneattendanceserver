@@ -6,10 +6,10 @@ import axios from "axios";
 import { checkCompanyPermissions } from "../utils/checkPermissions.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
-import { DESIGNATIONS, EMPLOYMENT_TYPES, } from "../constants/constants_values.js";
+import { DESIGNATIONS, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
 import { CMP_BANK, EMP_BANK } from "../constants/permissions.js";
 import { formatUTCToIST } from "../utils/time.js";
-import { sendSuccess, sendError, buildMeta, safeNumber, sanitizeText, } from "../utils/sendResponse.js";
+import { sendSuccess, sendError, buildMeta, safeNumber, sanitizeText } from "../utils/sendResponse.js";
 
 const router = express.Router();
 
@@ -64,6 +64,24 @@ const UPDATE_PRIMARY_TO_ZERO_QUERY = {
 
 const INSERT_BANK_QUERY = `INSERT INTO bank_accounts (company_id, employee_id, account_type, bank_name, account_holder_name, account_number, ifsc_code, branch_name, upi_id, is_primary, created_by, updated_by)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+
+const ALLOWED_STATUSES = ["active", "inactive"];
+const ALLOWED_ACCOUNT_TYPES = ["cash", "current", "savings", "loan", "upi"];
+const COMPANY_ACCOUNT_TYPES = ["cash", "current", "savings", "loan", "upi"];
+const EMPLOYEE_ACCOUNT_TYPES = ["current", "savings", "upi"];
+const BANK_OWNER_TYPES = ["company", "employee"];
+const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+const UPI_REGEX = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+const ALLOWED_SORT_BY = {
+  created_at: "ba.created_at",
+  updated_at: "ba.updated_at",
+  bank_name: "ba.bank_name",
+  account_holder_name: "ba.account_holder_name",
+  account_type: "ba.account_type",
+};
+const ALLOWED_SORT_ORDER = ["ASC", "DESC"];
+
 
 const maskAccountNumber = (value) => {
   if (!value) return null;
@@ -163,13 +181,112 @@ const formatBankAccount = (account, options = {}) => {
   return base;
 };
 
+const sanitizeString = (value, { lower = false, upper = false } = {}) => {
+  if (typeof value !== "string") return null;
+  let sanitized = value.trim();
+  if (!sanitized) return null;
+  if (lower) sanitized = sanitized.toLowerCase();
+  if (upper) sanitized = sanitized.toUpperCase();
+  return sanitized;
+};
+
+async function validateUserActive(conn, userId) {
+  const [[user]] = await conn.query(USER_EXISTS_QUERY, [userId]);
+  if (!user || user.is_deleted) {
+    return { error: { status: 404, message: "User not found" } };
+  }
+  if (!user.is_active) {
+    return { error: { status: 403, message: "User inactive" } };
+  }
+  return { user };
+}
+
+async function validateCompanyActive(conn, companyId) {
+  const [[company]] = await conn.query(COMPANY_EXISTS_QUERY, [companyId]);
+  if (!company || company.is_deleted) {
+    return { error: { status: 404, message: "Company not found" } };
+  }
+  if (!company.is_active) {
+    return { error: { status: 403, message: "Company inactive" } };
+  }
+  return { company };
+}
+
+async function validateEmployeeActive(conn, employeeId, companyId) {
+  const [[employee]] = await conn.query(EMPLOYEE_EXISTS_QUERY, [employeeId, companyId]);
+  if (!employee || employee.is_deleted) {
+    return { error: { status: 404, message: "Employee not found" } };
+  }
+  if (!employee.is_active) {
+    return { error: { status: 403, message: "Employee inactive" } };
+  }
+  return { employee };
+}
+
+function parseListQuery(query, { allowedSortBy, allowedAccountTypes, allowedStatuses }) {
+  const errors = [];
+
+  const page = Math.max(1, safeNumber(query.page, 1));
+  const limit = Math.min(100, Math.max(1, safeNumber(query.limit, 10)));
+  const offset = (page - 1) * limit;
+
+  let search = sanitizeText(query.search) || "";
+  const status = query.status ? String(query.status).toLowerCase() : null;
+  const account_type = query.account_type ? String(query.account_type).toLowerCase() : null;
+
+  let is_primary = null;
+  if (query.is_primary !== undefined && query.is_primary !== null && query.is_primary !== "") {
+    const normalized = String(query.is_primary).trim().toLowerCase();
+    if (!["true", "false"].includes(normalized)) {
+      errors.push("is_primary must be true or false");
+    } else {
+      is_primary = normalized === "true" ? 1 : 0;
+    }
+  }
+
+  let sort_by = query.sort_by;
+  if (!allowedSortBy[sort_by]) sort_by = "created_at";
+  let sort_order = String(query.sort_order || "DESC").toUpperCase();
+  if (!ALLOWED_SORT_ORDER.includes(sort_order)) sort_order = "DESC";
+
+  if (status && !allowedStatuses.includes(status)) errors.push("Invalid status filter");
+  if (account_type && !allowedAccountTypes.includes(account_type)) errors.push("Invalid account type filter");
+
+  if (errors.length) {
+    return { error: { status: 400, message: errors[0] } };
+  }
+
+  return { page, limit, offset, search, status, account_type, is_primary, sort_by, sort_order };
+}
+
+function applyBankFilters(filters, conditions, params, searchFields = []) {
+  if (filters.status) {
+    conditions.push("ba.status = ?");
+    params.push(filters.status);
+  }
+  if (filters.account_type) {
+    conditions.push("ba.account_type = ?");
+    params.push(filters.account_type);
+  }
+  if (filters.is_primary !== null) {
+    conditions.push("ba.is_primary = ?");
+    params.push(filters.is_primary);
+  }
+  if (filters.search && searchFields.length) {
+    const sv = `%${filters.search}%`;
+    const likeClauses = searchFields.map(field => `${field} LIKE ?`);
+    conditions.push(`(${likeClauses.join(" OR ")})`);
+    params.push(...Array(searchFields.length).fill(sv));
+  }
+}
+
+
 router.get("/ifsc/:ifsc_code", auth(), async (req, res) => {
   try {
     let { ifsc_code } = req.params;
     if (!ifsc_code) return sendError(res, 400, "IFSC code is required");
 
     ifsc_code = ifsc_code.trim().toUpperCase();
-    const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
     if (!IFSC_REGEX.test(ifsc_code))
       return sendError(res, 400, "Invalid IFSC format (e.g. SBIN0001234)");
 
@@ -206,15 +323,6 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
   let transactionStarted = false;
   let responseSent = false;
   const ENABLE_ACCOUNT_MASKING = false;
-
-  const sanitizeString = (value, { lower = false, upper = false } = {}) => {
-    if (typeof value !== "string") return null;
-    let sanitized = value.trim();
-    if (!sanitized) return null;
-    if (lower) sanitized = sanitized.toLowerCase();
-    if (upper) sanitized = sanitized.toUpperCase();
-    return sanitized;
-  };
 
   try {
     conn = await db.getConnection();
@@ -262,38 +370,23 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
       );
     }
 
-    const allowedOwnerTypes = ["company", "employee"];
-    if (!allowedOwnerTypes.includes(bank_owner_type)) {
+    if (!BANK_OWNER_TYPES.includes(bank_owner_type)) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 400, `bank_owner_type must be one of: ${allowedOwnerTypes.join(", ")}`);
+      return sendError(res, 400, `bank_owner_type must be one of: ${BANK_OWNER_TYPES.join(", ")}`);
     }
 
-    const companyAccountTypes = ["cash", "current", "savings", "loan", "upi"];
-    const employeeAccountTypes = ["current", "savings", "upi"];
-
-    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
-    if (!user || user.is_deleted) {
+    const userCheck = await validateUserActive(conn, user_id);
+    if (userCheck.error) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 404, "User not found");
+      return sendError(res, userCheck.error.status, userCheck.error.message);
     }
-    if (!user.is_active) {
+    const companyCheck = await validateCompanyActive(conn, company_id);
+    if (companyCheck.error) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 403, "User inactive");
-    }
-
-    const [[company]] = await conn.query(COMPANY_EXISTS_QUERY, [company_id]);
-    if (!company || company.is_deleted) {
-      await conn.rollback();
-      responseSent = true;
-      return sendError(res, 404, "Company not found");
-    }
-    if (!company.is_active) {
-      await conn.rollback();
-      responseSent = true;
-      return sendError(res, 403, "Company inactive");
+      return sendError(res, companyCheck.error.status, companyCheck.error.message);
     }
 
     const permissionResult = await checkCompanyPermissions({
@@ -310,21 +403,16 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
         responseSent = true;
         return sendError(res, 400, "employee_id is required when bank_owner_type is employee");
       }
-      if (!employeeAccountTypes.includes(account_type)) {
+      if (!EMPLOYEE_ACCOUNT_TYPES.includes(account_type)) {
         await conn.rollback();
         responseSent = true;
-        return sendError(res, 400, `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}`);
+        return sendError(res, 400, `Employee account_type must be one of: ${EMPLOYEE_ACCOUNT_TYPES.join(", ")}`);
       }
-      const [[employee]] = await conn.query(EMPLOYEE_EXISTS_QUERY, [employee_id, company_id]);
-      if (!employee || employee.is_deleted) {
+      const employeeCheck = await validateEmployeeActive(conn, employee_id, company_id);
+      if (employeeCheck.error) {
         await conn.rollback();
         responseSent = true;
-        return sendError(res, 404, "Employee not found");
-      }
-      if (!employee.is_active) {
-        await conn.rollback();
-        responseSent = true;
-        return sendError(res, 403, "Employee inactive");
+        return sendError(res, employeeCheck.error.status, employeeCheck.error.message);
       }
     } else {
       if (!isOwner) {
@@ -337,10 +425,10 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
         responseSent = true;
         return sendError(res, 400, "employee_id is not allowed for company bank accounts");
       }
-      if (!companyAccountTypes.includes(account_type)) {
+      if (!COMPANY_ACCOUNT_TYPES.includes(account_type)) {
         await conn.rollback();
         responseSent = true;
-        return sendError(res, 400, `Company account_type must be one of: ${companyAccountTypes.join(", ")}`);
+        return sendError(res, 400, `Company account_type must be one of: ${COMPANY_ACCOUNT_TYPES.join(", ")}`);
       }
     }
 
@@ -364,7 +452,6 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
         responseSent = true;
         return sendError(res, 400, "Invalid account number");
       }
-      const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
       if (!IFSC_REGEX.test(ifsc_code)) {
         await conn.rollback();
         responseSent = true;
@@ -393,7 +480,6 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
         responseSent = true;
         return sendError(res, 400, "upi_id is required");
       }
-      const UPI_REGEX = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
       if (!UPI_REGEX.test(upi_id)) {
         await conn.rollback();
         responseSent = true;
@@ -451,15 +537,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
   let responseSent = false;
   const ENABLE_ACCOUNT_MASKING = false;
 
-  const sanitizeString = (value, { lower = false, upper = false } = {}) => {
-    if (typeof value !== "string") return undefined;
-    let sanitized = value.trim();
-    if (!sanitized) return null;
-    if (lower) sanitized = sanitized.toLowerCase();
-    if (upper) sanitized = sanitized.toUpperCase();
-    return sanitized;
-  };
-
   try {
     conn = await db.getConnection();
     await conn.beginTransaction();
@@ -473,7 +550,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       return sendError(res, 401, "Unauthorized");
     }
 
-    // bank_id is always required
     const bank_id = safeNumber(req.body.bank_id);
     if (!bank_id) {
       await conn.rollback();
@@ -481,32 +557,17 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       return sendError(res, 400, "bank_id is required");
     }
 
-    const allowedStatuses = ["active", "inactive"];
-    const companyAccountTypes = ["cash", "current", "savings", "loan", "upi",];
-    const employeeAccountTypes = ["current", "savings", "upi"];
-
-    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
-    if (!user || user.is_deleted) {
+    const userCheck = await validateUserActive(conn, user_id);
+    if (userCheck.error) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 404, "User not found");
+      return sendError(res, userCheck.error.status, userCheck.error.message);
     }
-    if (!user.is_active) {
+    const companyCheck = await validateCompanyActive(conn, company_id);
+    if (companyCheck.error) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 403, "User inactive");
-    }
-
-    const [[company]] = await conn.query(COMPANY_EXISTS_QUERY, [company_id]);
-    if (!company || company.is_deleted) {
-      await conn.rollback();
-      responseSent = true;
-      return sendError(res, 404, "Company not found");
-    }
-    if (!company.is_active) {
-      await conn.rollback();
-      responseSent = true;
-      return sendError(res, 403, "Company inactive");
+      return sendError(res, companyCheck.error.status, companyCheck.error.message);
     }
 
     const [[existingAccount]] = await conn.query(
@@ -598,7 +659,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       branch_name: patchField("branch_name", existingAccount.branch_name),
       upi_id: patchField("upi_id", existingAccount.upi_id, (v) => v.toLowerCase()),
       is_primary: existingAccount.is_primary,
-
       status: patchField("status", existingAccount.status, (v) => v.toLowerCase()),
     };
 
@@ -611,20 +671,20 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       final.is_primary = req.body.is_primary ? 1 : 0;
     }
 
-    if ("status" in req.body && final.status && !allowedStatuses.includes(final.status)) {
+    if ("status" in req.body && final.status && !ALLOWED_STATUSES.includes(final.status)) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 400, `status must be one of: ${allowedStatuses.join(", ")}`);
+      return sendError(res, 400, `status must be one of: ${ALLOWED_STATUSES.join(", ")}`);
     }
-    if (bank_owner_type === "employee" && !employeeAccountTypes.includes(final.account_type)) {
+    if (bank_owner_type === "employee" && !EMPLOYEE_ACCOUNT_TYPES.includes(final.account_type)) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 400, `Employee account_type must be one of: ${employeeAccountTypes.join(", ")}`);
+      return sendError(res, 400, `Employee account_type must be one of: ${EMPLOYEE_ACCOUNT_TYPES.join(", ")}`);
     }
-    if (bank_owner_type === "company" && !companyAccountTypes.includes(final.account_type)) {
+    if (bank_owner_type === "company" && !COMPANY_ACCOUNT_TYPES.includes(final.account_type)) {
       await conn.rollback();
       responseSent = true;
-      return sendError(res, 400, `Company account_type must be one of: ${companyAccountTypes.join(", ")}`);
+      return sendError(res, 400, `Company account_type must be one of: ${COMPANY_ACCOUNT_TYPES.join(", ")}`);
     }
     if (final.is_primary === 1 && final.status === "inactive") {
       await conn.rollback();
@@ -664,7 +724,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
         responseSent = true;
         return sendError(res, 400, "Invalid account number");
       }
-      const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
       if (!IFSC_REGEX.test(final.ifsc_code)) {
         await conn.rollback();
         responseSent = true;
@@ -675,8 +734,8 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
       const duplicateQuery = DUPLICATE_BANK_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const duplicateParams = bank_owner_type === "employee"
-        ? [company_id, existingAccount.employee_id, final.account_number, final.ifsc_code, bank_id,]
-        : [company_id, final.account_number, final.ifsc_code, bank_id,];
+        ? [company_id, existingAccount.employee_id, final.account_number, final.ifsc_code, bank_id]
+        : [company_id, final.account_number, final.ifsc_code, bank_id];
       const [[duplicate]] = await conn.query(duplicateQuery, duplicateParams);
       if (duplicate) {
         await conn.rollback();
@@ -695,7 +754,6 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       final.account_number = null;
       final.ifsc_code = null;
       final.branch_name = null;
-      const UPI_REGEX = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
       if (!UPI_REGEX.test(final.upi_id)) {
         await conn.rollback();
         responseSent = true;
@@ -704,8 +762,8 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
       const upiQuery = DUPLICATE_UPI_QUERY[bank_owner_type] + " AND id != ? LIMIT 1";
       const upiParams = bank_owner_type === "employee"
-        ? [company_id, existingAccount.employee_id, final.upi_id, bank_id,]
-        : [company_id, final.upi_id, bank_id,];
+        ? [company_id, existingAccount.employee_id, final.upi_id, bank_id]
+        : [company_id, final.upi_id, bank_id];
       const [[existingUpi]] = await conn.query(upiQuery, upiParams);
       if (existingUpi) {
         await conn.rollback();
@@ -717,14 +775,14 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
     if (final.is_primary === 1) {
       const updateQuery = UPDATE_PRIMARY_TO_ZERO_QUERY[bank_owner_type] + " AND id != ?";
       const updateParams = bank_owner_type === "employee"
-        ? [user_id, existingAccount.employee_id, bank_id,]
-        : [user_id, company_id, bank_id,];
+        ? [user_id, existingAccount.employee_id, bank_id]
+        : [user_id, company_id, bank_id];
       await conn.query(updateQuery, updateParams);
     }
 
     await conn.query(
       `UPDATE bank_accounts SET account_type = ?, bank_name = ?, account_holder_name = ?, account_number = ?, ifsc_code = ?, branch_name = ?, upi_id = ?, is_primary = ?, status = ?, is_active = ?, updated_by = ? WHERE id = ?`,
-      [final.account_type, final.bank_name, final.account_holder_name, final.account_number, final.ifsc_code, final.branch_name, final.upi_id, final.is_primary, final.status, final.status === "active" ? 1 : 0, user_id, bank_id,]
+      [final.account_type, final.bank_name, final.account_holder_name, final.account_number, final.ifsc_code, final.branch_name, final.upi_id, final.is_primary, final.status, final.status === "active" ? 1 : 0, user_id, bank_id]
     );
 
     const [[updatedAccount]] = await conn.query(BANK_SELECT_BY_ID, [bank_id]);
@@ -749,120 +807,399 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
 
 router.delete("/delete", auth(BANK.ALL), async (req, res) => {
   let conn;
+  let transactionStarted = false;
   let responseSent = false;
+
   try {
     conn = await db.getConnection();
+
     const userId = Number(req.user?.id);
     const companyId = Number(req.company?.id);
 
-    if (!userId) {
+    if (!Number.isInteger(userId) || userId <= 0) {
       responseSent = true;
       return sendError(res, 401, "Unauthorized");
     }
-    if (!companyId) {
+
+    if (!Number.isInteger(companyId) || companyId <= 0) {
       responseSent = true;
       return sendError(res, 400, "Company context missing");
     }
 
-    const bank_id = safeNumber(req.body.bank_id);
-    if (!bank_id) {
+    const { ids } = req.body;
+
+    if (ids === undefined || ids === null) {
       responseSent = true;
-      return sendError(res, 400, "bank_id is required");
+      return sendError(res, 400, "Valid bank ids are required");
+    }
+
+    let bankIds = [];
+
+    if (
+      typeof ids === "number" ||
+      (typeof ids === "string" && ids.trim() !== "" && ids !== "all")
+    ) {
+      const parsedId = Number(ids);
+
+      if (!Number.isInteger(parsedId) || parsedId <= 0) {
+        responseSent = true;
+        return sendError(res, 400, "Valid bank ids are required");
+      }
+
+      bankIds = [parsedId];
+    }
+
+    else if (ids === "all") {
+      const [rows] = await conn.query(
+        `
+          SELECT id
+          FROM bank_accounts
+          WHERE company_id = ?
+            AND is_deleted = 0
+        `,
+        [companyId]
+      );
+
+      bankIds = rows.map((row) => Number(row.id));
+    }
+
+    else if (Array.isArray(ids)) {
+      bankIds = [
+        ...new Set(
+          ids
+            .map((value) => {
+              if (
+                typeof value !== "number" &&
+                typeof value !== "string"
+              ) {
+                return null;
+              }
+
+              const parsed = Number(value);
+
+              return Number.isInteger(parsed) && parsed > 0
+                ? parsed
+                : null;
+            })
+            .filter((value) => value !== null)
+        ),
+      ];
+
+      if (bankIds.length === 0) {
+        responseSent = true;
+        return sendError(res, 400, "Valid bank ids are required");
+      }
+    }else {
+      responseSent = true;
+      return sendError(
+        res,
+        400,
+        "ids must be a number, array, or 'all'"
+      );
+    }
+
+    if (bankIds.length === 0) {
+      responseSent = true;
+      return sendSuccess(
+        res,
+        200,
+        "No bank accounts to delete",
+        {
+          deleted_count: 0,
+          ids: [],
+        }
+      );
     }
 
     await conn.beginTransaction();
-
-    const [[account]] = await conn.query(
-      `SELECT * FROM bank_accounts WHERE id = ? AND is_deleted = 0 FOR UPDATE`,
-      [bank_id]
-    );
-    if (!account) {
-      await conn.rollback();
-      responseSent = true;
-      return sendError(res, 404, "Bank account not found");
-    }
+    transactionStarted = true;
 
     const [[company]] = await conn.query(
-      `SELECT owner_user_id FROM companies WHERE id = ? AND is_deleted = 0 FOR UPDATE`,
-      [account.company_id]
+      `
+        SELECT owner_user_id
+        FROM companies
+        WHERE id = ?
+          AND is_deleted = 0
+        FOR UPDATE
+      `,
+      [companyId]
     );
+
     if (!company) {
       await conn.rollback();
+      transactionStarted = false;
+
       responseSent = true;
       return sendError(res, 404, "Company not found");
     }
 
-    let isOwner = company.owner_user_id === userId;
+    const isOwner =
+      Number(company.owner_user_id) === userId;
+
+    let employeeId = null;
+
     if (!isOwner) {
       const [[employee]] = await conn.query(
-        `SELECT id, is_active FROM employees WHERE user_id = ? AND company_id = ? AND is_deleted = 0 FOR UPDATE`,
-        [userId, account.company_id]
+        `
+          SELECT id, is_active
+          FROM employees
+          WHERE user_id = ?
+            AND company_id = ?
+            AND is_deleted = 0
+          FOR UPDATE
+        `,
+        [userId, companyId]
       );
+
       if (!employee) {
         await conn.rollback();
+        transactionStarted = false;
+
         responseSent = true;
         return sendError(res, 403, "Not authorized");
       }
+
       if (!employee.is_active) {
         await conn.rollback();
+        transactionStarted = false;
+
         responseSent = true;
         return sendError(res, 403, "Employee inactive");
       }
-      if (account.employee_id !== employee.id) {
-        await conn.rollback();
-        responseSent = true;
-        return sendError(res, 403, "Cannot delete others' accounts");
-      }
+
+      employeeId = Number(employee.id);
     }
 
-    if (!account.employee_id) {
-      const [[count]] = await conn.query(
-        `SELECT COUNT(*) as total FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND is_deleted = 0`,
-        [account.company_id]
+    const placeholders = bankIds.map(() => "?").join(", ");
+
+    const [existingAccounts] = await conn.query(
+      `
+        SELECT
+          id,
+          company_id,
+          employee_id,
+          is_primary,
+          is_deleted
+        FROM bank_accounts
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+        FOR UPDATE
+      `,
+      [companyId, ...bankIds]
+    );
+
+    const existingIds = new Set(
+      existingAccounts.map((account) => Number(account.id))
+    );
+
+    const missingIds = bankIds.filter(
+      (bankId) => !existingIds.has(bankId)
+    );
+
+    if (missingIds.length > 0) {
+      await conn.rollback();
+      transactionStarted = false;
+
+      responseSent = true;
+
+      return sendError(
+        res,
+        404,
+        `One or more bank accounts not found or already deleted: ${missingIds.join(
+          ", "
+        )}`
       );
-      if (count.total <= 1) {
+    }
+    if (!isOwner) {
+      const unauthorizedIds = existingAccounts
+        .filter(
+          (account) =>
+            Number(account.employee_id) !== employeeId
+        )
+        .map((account) => account.id);
+
+      if (unauthorizedIds.length > 0) {
         await conn.rollback();
+        transactionStarted = false;
+
         responseSent = true;
-        return sendError(res, 400, "Cannot delete last company account");
+
+        return sendError(
+          res,
+          403,
+          `Cannot delete others' accounts: ${unauthorizedIds.join(
+            ", "
+          )}`
+        );
       }
     }
+    const companyAccountIdsToDelete = existingAccounts
+      .filter((account) => account.employee_id === null)
+      .map((account) => Number(account.id));
 
-    if (account.is_primary) {
-      let nextPrimary = null;
-      if (account.employee_id) {
-        const [[other]] = await conn.query(
-          `SELECT id FROM bank_accounts WHERE employee_id = ? AND id != ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
-          [account.employee_id, bank_id]
+    if (companyAccountIdsToDelete.length > 0) {
+      const [[companyAccountCount]] = await conn.query(
+        `
+          SELECT COUNT(*) AS totalCompanyAccounts
+          FROM bank_accounts
+          WHERE company_id = ?
+            AND employee_id IS NULL
+            AND is_deleted = 0
+        `,
+        [companyId]
+      );
+
+      const totalCompanyAccounts = Number(
+        companyAccountCount.totalCompanyAccounts
+      );
+
+      const remainingCompanyAccounts =
+        totalCompanyAccounts -
+        companyAccountIdsToDelete.length;
+
+      if (remainingCompanyAccounts < 1) {
+        await conn.rollback();
+        transactionStarted = false;
+
+        responseSent = true;
+
+        return sendError(
+          res,
+          400,
+          "Cannot delete last company account"
         );
-        nextPrimary = other;
+      }
+    }
+    for (const account of existingAccounts) {
+      if (!account.is_primary) {
+        continue;
+      }
+
+      let replacementId = null;
+      if (account.employee_id !== null) {
+        const [[replacement]] = await conn.query(
+          `
+            SELECT id
+            FROM bank_accounts
+            WHERE employee_id = ?
+              AND id != ?
+              AND is_deleted = 0
+              AND id NOT IN (${placeholders})
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [
+            account.employee_id,
+            account.id,
+            ...bankIds,
+          ]
+        );
+
+        replacementId = replacement?.id ?? null;
       } else {
-        const [[other]] = await conn.query(
-          `SELECT id FROM bank_accounts WHERE company_id = ? AND employee_id IS NULL AND id != ? AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
-          [account.company_id, bank_id]
+        const [[replacement]] = await conn.query(
+          `
+            SELECT id
+            FROM bank_accounts
+            WHERE company_id = ?
+              AND employee_id IS NULL
+              AND id != ?
+              AND is_deleted = 0
+              AND id NOT IN (${placeholders})
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [
+            account.company_id,
+            account.id,
+            ...bankIds,
+          ]
         );
-        nextPrimary = other;
+
+        replacementId = replacement?.id ?? null;
       }
-      if (nextPrimary) {
-        await conn.query(`UPDATE bank_accounts SET is_primary = 1 WHERE id = ?`, [nextPrimary.id]);
+
+      if (replacementId) {
+        await conn.query(
+          `
+            UPDATE bank_accounts
+            SET is_primary = 1,
+                updated_by = ?
+            WHERE id = ?
+          `,
+          [userId, replacementId]
+        );
       }
     }
-
-    await conn.query(
-      `UPDATE bank_accounts SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?, updated_by = ? WHERE id = ?`,
-      [userId, userId, bank_id]
+    const [result] = await conn.query(
+      `
+        UPDATE bank_accounts
+        SET
+          is_deleted = 1,
+          deleted_at = NOW(),
+          deleted_by = ?,
+          updated_by = ?
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+      `,
+      [
+        userId,
+        userId,
+        companyId,
+        ...bankIds,
+      ]
     );
 
     await conn.commit();
+    transactionStarted = false;
+
     responseSent = true;
-    return sendSuccess(res, 200, "Bank account deleted successfully");
+
+    return sendSuccess(
+      res,
+      200,
+      bankIds.length === 1
+        ? "Bank account deleted successfully"
+        : "Bank accounts deleted successfully",
+      {
+        deleted_count: result.affectedRows,
+        ids: bankIds,
+      }
+    );
   } catch (err) {
+    if (transactionStarted && conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "Rollback error:",
+          rollbackError
+        );
+      }
+    }
+
     if (!responseSent) {
-      if (conn) await conn.rollback();
-      console.error("Delete bank account error:", err);
-      return sendError(res, 500, "Internal server error");
+      console.error(
+        "Delete bank account error:",
+        err
+      );
+
+      responseSent = true;
+
+      return sendError(
+        res,
+        500,
+        "Internal server error"
+      );
     }
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      conn.release();
+    }
   }
 });
 
@@ -898,49 +1235,21 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
 
     const employee_id = Number(employee.id);
 
-    let { page, limit, search, status, account_type, is_primary, sort_by, sort_order } = req.query;
-    page = Math.max(1, safeNumber(page, 1));
-    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
-    const offset = (page - 1) * limit;
-    search = sanitizeText(search) || "";
+    const parsed = parseListQuery(req.query, {
+      allowedSortBy: ALLOWED_SORT_BY,
+      allowedAccountTypes: ALLOWED_ACCOUNT_TYPES,
+      allowedStatuses: ALLOWED_STATUSES,
+    });
+    if (parsed.error) return sendError(res, parsed.error.status, parsed.error.message);
 
-    const allowedStatuses = ["active", "inactive"];
-    const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
-    const allowedSortBy = {
-      created_at: "ba.created_at",
-      updated_at: "ba.updated_at",
-      bank_name: "ba.bank_name",
-      account_holder_name: "ba.account_holder_name",
-      account_type: "ba.account_type",
-    };
-    const allowedSortOrder = ["ASC", "DESC"];
+    const { page, limit, offset, search, status, account_type, is_primary, sort_by, sort_order } = parsed;
 
-    if (status && !allowedStatuses.includes(status))
-      return sendError(res, 400, "Invalid status filter");
-    if (account_type && !allowedAccountTypes.includes(account_type))
-      return sendError(res, 400, "Invalid account type filter");
-    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
-    sort_order = String(sort_order).toUpperCase();
-    if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
-
-    const where = ["ba.company_id = ?", "ba.employee_id = ?", "ba.is_deleted = 0"];
+    const conditions = ["ba.company_id = ?", "ba.employee_id = ?", "ba.is_deleted = 0"];
     const params = [company_id, employee_id];
-
-    if (status) { where.push("ba.status = ?"); params.push(status); }
-    if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
-    if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).trim().toLowerCase();
-      if (!["true", "false"].includes(normalized))
-        return sendError(res, 400, "is_primary must be true or false");
-      where.push("ba.is_primary = ?");
-      params.push(normalized === "true" ? 1 : 0);
-    }
-    if (search) {
-      const sv = `%${search}%`;
-      where.push(`(ba.bank_name LIKE ? OR ba.account_holder_name LIKE ? OR ba.account_number LIKE ? OR ba.ifsc_code LIKE ? OR ba.branch_name LIKE ? OR ba.upi_id LIKE ?)`);
-      params.push(sv, sv, sv, sv, sv, sv);
-    }
-    const whereClause = where.join(" AND ");
+    applyBankFilters({ status, account_type, is_primary, search }, conditions, params, [
+      "ba.bank_name", "ba.account_holder_name", "ba.account_number", "ba.ifsc_code", "ba.branch_name", "ba.upi_id"
+    ]);
+    const whereClause = conditions.join(" AND ");
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM bank_accounts ba WHERE ${whereClause}`, params);
 
@@ -949,7 +1258,7 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
        FROM bank_accounts ba
        INNER JOIN employees e ON e.id = ba.employee_id AND e.is_deleted = 0
        WHERE ${whereClause}
-       ORDER BY ba.is_primary DESC, ${allowedSortBy[sort_by]} ${sort_order}, ba.id DESC
+       ORDER BY ba.is_primary DESC, ${ALLOWED_SORT_BY[sort_by]} ${sort_order}, ba.id DESC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
@@ -1008,52 +1317,26 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
     if (companyUser.company_is_deleted) return sendError(res, 403, "Company deleted");
     if (!companyUser.company_is_active) return sendError(res, 403, "Company inactive");
 
-    let { page, limit, search, employee_id, status, account_type, is_primary, sort_by, sort_order } = req.query;
-    page = Math.max(1, safeNumber(page, 1));
-    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
-    const offset = (page - 1) * limit;
-    employee_id = employee_id !== undefined ? safeNumber(employee_id) : null;
+    const parsed = parseListQuery(req.query, {
+      allowedSortBy: ALLOWED_SORT_BY,
+      allowedAccountTypes: ALLOWED_ACCOUNT_TYPES,
+      allowedStatuses: ALLOWED_STATUSES,
+    });
+    if (parsed.error) return sendError(res, parsed.error.status, parsed.error.message);
+
+    const { page, limit, offset, search, status, account_type, is_primary, sort_by, sort_order } = parsed;
+    const employee_id = req.query.employee_id !== undefined ? safeNumber(req.query.employee_id) : null;
     if (employee_id !== null && (!Number.isInteger(employee_id) || employee_id <= 0))
       return sendError(res, 400, "Invalid employee_id filter");
-    search = sanitizeText(search) || "";
 
-    const allowedStatuses = ["active", "inactive"];
-    const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
-    const allowedSortBy = {
-      created_at: "ba.created_at",
-      updated_at: "ba.updated_at",
-      bank_name: "ba.bank_name",
-      account_holder_name: "ba.account_holder_name",
-      account_type: "ba.account_type",
-    };
-    const allowedSortOrder = ["ASC", "DESC"];
-
-    if (status && !allowedStatuses.includes(status)) return sendError(res, 400, "Invalid status filter");
-    if (account_type && !allowedAccountTypes.includes(account_type)) return sendError(res, 400, "Invalid account type filter");
-    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
-    sort_order = String(sort_order).toUpperCase();
-    if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
-
-    const where = ["ba.company_id = ?", "ba.employee_id IS NOT NULL", "ba.is_deleted = 0", "e.is_deleted = 0", "u.is_deleted = 0"];
+    const conditions = ["ba.company_id = ?", "ba.employee_id IS NOT NULL", "ba.is_deleted = 0", "e.is_deleted = 0", "u.is_deleted = 0"];
     const params = [company_id];
-    if (employee_id) { where.push("ba.employee_id = ?"); params.push(employee_id); }
-    if (status) { where.push("ba.status = ?"); params.push(status); }
-    if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
-    if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).trim().toLowerCase();
-
-      if (!["true", "false"].includes(normalized))
-        return sendError(res, 400, "is_primary must be true or false");
-
-      where.push("ba.is_primary = ?");
-      params.push(normalized === "true" ? 1 : 0);
-    }
-    if (search) {
-      const sv = `%${search}%`;
-      where.push(`(ba.bank_name LIKE ? OR ba.account_holder_name LIKE ? OR ba.account_number LIKE ? OR ba.ifsc_code LIKE ? OR ba.branch_name LIKE ? OR ba.upi_id LIKE ? OR e.employee_code LIKE ? OR e.designation LIKE ? OR u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)`);
-      params.push(sv, sv, sv, sv, sv, sv, sv, sv, sv, sv, sv);
-    }
-    const whereClause = where.join(" AND ");
+    if (employee_id) { conditions.push("ba.employee_id = ?"); params.push(employee_id); }
+    applyBankFilters({ status, account_type, is_primary, search }, conditions, params, [
+      "ba.bank_name", "ba.account_holder_name", "ba.account_number", "ba.ifsc_code", "ba.branch_name", "ba.upi_id",
+      "e.employee_code", "e.designation", "u.name", "u.email", "u.phone"
+    ]);
+    const whereClause = conditions.join(" AND ");
 
     const [[{ total }]] = await conn.query(
       `SELECT COUNT(*) AS total FROM bank_accounts ba INNER JOIN employees e ON e.id = ba.employee_id INNER JOIN users u ON u.id = e.user_id WHERE ${whereClause}`,
@@ -1068,7 +1351,7 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
        INNER JOIN employees e ON e.id = ba.employee_id AND e.is_deleted = 0
        INNER JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
        WHERE ${whereClause}
-       ORDER BY ba.is_primary DESC, ${allowedSortBy[sort_by]} ${sort_order}, ba.id DESC
+       ORDER BY ba.is_primary DESC, ${ALLOWED_SORT_BY[sort_by]} ${sort_order}, ba.id DESC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
@@ -1114,64 +1397,34 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
     const company_id = Number(req.company?.id);
     if (!user_id || !company_id) return sendError(res, 401, "Unauthorized");
 
-    const [[user]] = await conn.query(USER_EXISTS_QUERY, [user_id]);
-    if (!user) return sendError(res, 404, "User not found");
-    if (!user.is_active) return sendError(res, 403, "User inactive");
-
-    const [[company]] = await conn.query(`SELECT id, is_active FROM companies WHERE id = ? AND is_deleted = 0 LIMIT 1`, [company_id]);
-    if (!company) return sendError(res, 404, "Company not found");
-    if (!company.is_active) return sendError(res, 403, "Company inactive");
+    const userCheck = await validateUserActive(conn, user_id);
+    if (userCheck.error) return sendError(res, userCheck.error.status, userCheck.error.message);
+    const companyCheck = await validateCompanyActive(conn, company_id);
+    if (companyCheck.error) return sendError(res, companyCheck.error.status, companyCheck.error.message);
 
     await checkCompanyPermissions({ conn, user_id, company_id, permissions: ["emp_bnk_view"] });
 
-    let { page, limit, search, status, account_type, is_primary, sort_by, sort_order } = req.query;
-    page = Math.max(1, safeNumber(page, 1));
-    limit = Math.min(100, Math.max(1, safeNumber(limit, 10)));
-    const offset = (page - 1) * limit;
-    search = sanitizeText(search) || "";
+    const parsed = parseListQuery(req.query, {
+      allowedSortBy: ALLOWED_SORT_BY,
+      allowedAccountTypes: ALLOWED_ACCOUNT_TYPES,
+      allowedStatuses: ALLOWED_STATUSES,
+    });
+    if (parsed.error) return sendError(res, parsed.error.status, parsed.error.message);
 
-    const allowedStatuses = ["active", "inactive"];
-    const allowedAccountTypes = ["cash", "current", "savings", "loan", "upi"];
-    const allowedSortBy = {
-      created_at: "ba.created_at",
-      updated_at: "ba.updated_at",
-      bank_name: "ba.bank_name",
-      account_holder_name: "ba.account_holder_name",
-      account_type: "ba.account_type",
-    };
-    const allowedSortOrder = ["ASC", "DESC"];
+    const { page, limit, offset, search, status, account_type, is_primary, sort_by, sort_order } = parsed;
 
-    if (status && !allowedStatuses.includes(status)) return sendError(res, 400, "Invalid status filter");
-    if (account_type && !allowedAccountTypes.includes(account_type)) return sendError(res, 400, "Invalid account type filter");
-    sort_by = allowedSortBy[sort_by] ? sort_by : "created_at";
-    sort_order = String(sort_order).toUpperCase();
-    if (!allowedSortOrder.includes(sort_order)) sort_order = "DESC";
-
-    const where = ["ba.company_id = ?", "ba.employee_id IS NULL", "ba.is_deleted = 0"];
+    const conditions = ["ba.company_id = ?", "ba.employee_id IS NULL", "ba.is_deleted = 0"];
     const params = [company_id];
-    if (status) { where.push("ba.status = ?"); params.push(status); }
-    if (account_type) { where.push("ba.account_type = ?"); params.push(account_type); }
-    if (is_primary !== undefined && is_primary !== null && is_primary !== "") {
-      const normalized = String(is_primary).trim().toLowerCase();
-
-      if (!["true", "false"].includes(normalized))
-        return sendError(res, 400, "is_primary must be true or false");
-
-      where.push("ba.is_primary = ?");
-      params.push(normalized === "true" ? 1 : 0);
-    }
-    if (search) {
-      const sv = `%${search}%`;
-      where.push(`(ba.bank_name LIKE ? OR ba.account_holder_name LIKE ? OR ba.account_number LIKE ? OR ba.ifsc_code LIKE ? OR ba.branch_name LIKE ? OR ba.upi_id LIKE ?)`);
-      params.push(sv, sv, sv, sv, sv, sv);
-    }
-    const whereClause = where.join(" AND ");
+    applyBankFilters({ status, account_type, is_primary, search }, conditions, params, [
+      "ba.bank_name", "ba.account_holder_name", "ba.account_number", "ba.ifsc_code", "ba.branch_name", "ba.upi_id"
+    ]);
+    const whereClause = conditions.join(" AND ");
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM bank_accounts ba WHERE ${whereClause}`, params);
 
     const [rows] = await conn.query(
       `SELECT ${BANK_ACCOUNT_BASE_FIELDS} FROM bank_accounts ba WHERE ${whereClause}
-       ORDER BY ba.is_primary DESC, ${allowedSortBy[sort_by]} ${sort_order}, ba.id DESC
+       ORDER BY ba.is_primary DESC, ${ALLOWED_SORT_BY[sort_by]} ${sort_order}, ba.id DESC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
