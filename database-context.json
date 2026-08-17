@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-17T13:37:07.742Z",
+  "generated_at": "2026-08-17T18:22:12.246Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -2372,7 +2372,7 @@
     "employee_leaves": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 6,
       "comment": null,
       "columns": [
         {
@@ -4593,7 +4593,7 @@
     "payroll_entries": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -7345,7 +7345,7 @@
     "transactions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {

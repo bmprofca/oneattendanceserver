@@ -926,45 +926,70 @@ router.put("/update-salary", auth(SAL.MNG), withTransaction(async (conn, req, re
 router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
-  let { employee_id, base_amount, components = [] } = req.body;
+  let { employee_id, base_amount, components = [], effective_from } = req.body;
 
   if (!company_id || !employee_id || !base_amount) throw { status: 400, message: "Required fields missing" };
   employee_id = Number(employee_id);
   base_amount = Number(base_amount);
   if (!employee_id || isNaN(base_amount) || base_amount <= 0) throw { status: 400, message: "Invalid values supplied" };
 
+  let effectiveFrom = effective_from ? new Date(effective_from) : new Date();
+  if (isNaN(effectiveFrom.getTime())) throw { status: 400, message: "Invalid effective_from" };
+  if (effectiveFrom < new Date(new Date().toDateString())) {
+    throw { status: 400, message: "effective_from cannot be in the past" };
+  }
+  effectiveFrom = formatDate(effectiveFrom);
+
   const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
   if (!employee) throw { status: 404, message: "Employee not found" };
 
   const [[currentSalary]] = await conn.query(
-    `SELECT * FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
-       AND EXTRACT(YEAR_MONTH FROM effective_from) <= EXTRACT(YEAR_MONTH FROM CURDATE())
-       AND (effective_to IS NULL OR EXTRACT(YEAR_MONTH FROM effective_to) >= EXTRACT(YEAR_MONTH FROM CURDATE()))
+    `SELECT * FROM salary_structures 
+     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+       AND effective_from <= CURDATE() AND (effective_to IS NULL OR effective_to >= CURDATE())
      ORDER BY effective_from DESC LIMIT 1`,
     [employee_id, company_id]
   );
-  if (!currentSalary) throw { status: 400, message: "No salary assigned for the current month. Please assign salary first." };
+  if (!currentSalary) throw { status: 400, message: "No active salary found for the current date. Please assign a salary first." };
 
   const validatedComponents = validateEmployeeComponents(components);
   const compIds = validatedComponents.map(c => c.component_id);
   await validateComponentIdsInDB(conn, company_id, compIds, false);
 
-  const today = new Date();
-  const effectiveFrom = formatDate(today);
-  const prevEndDate = formatDate(addDays(today, -1));
+  await checkSalaryOverlap(conn, employee_id, company_id, effectiveFrom, null, currentSalary.id);
 
-  await conn.query(`UPDATE salary_structures SET effective_to = ?, is_active = 0, updated_by = ? WHERE id = ?`, [prevEndDate, user_id || null, currentSalary.id]);
+  const prevEndDate = formatDate(addDays(new Date(effectiveFrom), -1));
+  await conn.query(
+    `UPDATE salary_structures 
+     SET effective_to = ?, is_active = CASE WHEN CURDATE() <= ? THEN 1 ELSE 0 END, updated_by = ?
+     WHERE id = ?`,
+    [prevEndDate, prevEndDate, user_id || null, currentSalary.id]
+  );
 
   const [salaryInsert] = await conn.query(
-    `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by) VALUES (?, ?, ?, ?, NULL, 1, ?)`,
+    `INSERT INTO salary_structures (company_id, employee_id, base_amount, effective_from, effective_to, is_active, created_by)
+     VALUES (?, ?, ?, ?, NULL, 1, ?)`,
     [company_id, employee_id, base_amount, effectiveFrom, user_id || null]
   );
   const newSalaryId = salaryInsert.insertId;
 
   const compRows = validatedComponents.map(c => [company_id, employee_id, newSalaryId, c.component_id, c.calc_type, c.calc_value, c.remark, 1, user_id || null]);
   await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
+  await conn.query(`UPDATE salary_structures SET is_active = 0 WHERE employee_id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
+  await conn.query(
+    `UPDATE salary_structures SET is_active = 1 
+     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0
+       AND effective_from <= CURDATE() AND (effective_to IS NULL OR effective_to >= CURDATE())
+       ORDER BY effective_from DESC LIMIT 1`,
+    [employee_id, company_id]
+  );
 
-  return sendSuccess(res, 201, "Salary revised successfully");
+  return sendSuccess(res, 201, "Salary revision scheduled successfully", {
+    new_salary_id: newSalaryId,
+    effective_from: effectiveFrom,
+    previous_salary_id: currentSalary.id,
+    previous_salary_end: prevEndDate
+  });
 }));
 
 // 12. Delete salary
