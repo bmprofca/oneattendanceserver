@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-16T20:33:40.561Z",
+  "generated_at": "2026-08-17T13:13:48.397Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -3991,7 +3991,7 @@
     "leave_configs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 6,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {

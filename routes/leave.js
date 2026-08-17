@@ -138,23 +138,55 @@ function formatLeaveApplication(row) {
   };
 }
 
+const parseBoolean = (value, field) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (value === true) return 1;
+  if (value === false) return 0;
+  throw new Error(`${field} must be true or false`);
+};
+
 // ============= Leave Config Routes ==============
 
 router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
   try {
-    const { code, name, is_paid, allow_half_day, max_balance, carry_forward_limit, exclude_weekends } = req.body;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
+    const { code, name, is_paid, allow_half_day, max_balance, carry_forward_limit, exclude_weekends, } = req.body;
+    const company_id = Number(req.company?.id);
+    const user_id = req.user?.id ? Number(req.user.id) : null;
 
-    if (!company_id) return sendError(res, 400, "Company context missing");
-    if (!code || !name) return sendError(res, 400, "Code and name are required");
+    if (!company_id) { return sendError(res, 400, "Company context missing"); }
+    if (!code || !name) { return sendError(res, 400, "Code and name are required"); }
 
     const normalizedCode = code.trim().toUpperCase();
     const normalizedName = name.trim();
 
-    if (max_balance !== undefined && max_balance !== null && isNaN(max_balance))
+    let normalizedIsPaid;
+    let normalizedAllowHalfDay;
+    let normalizedExcludeWeekends;
+
+    try {
+      normalizedIsPaid = is_paid === undefined ? 1 : parseBoolean(is_paid, "is_paid");
+      normalizedAllowHalfDay = allow_half_day === undefined ? 1 : parseBoolean(allow_half_day, "allow_half_day");
+      normalizedExcludeWeekends = exclude_weekends === undefined ? 1 : parseBoolean(exclude_weekends, "exclude_weekends");
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+
+    if (max_balance !== undefined && max_balance !== null && isNaN(Number(max_balance))) {
       return sendError(res, 400, "Invalid max_balance");
+    }
+    if (carry_forward_limit !== undefined && carry_forward_limit !== null && isNaN(Number(carry_forward_limit))) {
+      return sendError(res, 400, "Invalid carry_forward_limit");
+    }
+    if (max_balance !== undefined && max_balance !== null && Number(max_balance) < 0) {
+      return sendError(res, 400, "max_balance cannot be negative");
+    }
+
+    if (carry_forward_limit !== undefined && carry_forward_limit !== null && Number(carry_forward_limit) < 0) {
+      return sendError(res, 400, "carry_forward_limit cannot be negative");
+    }
 
     conn = await db.getConnection();
     await conn.beginTransaction();
@@ -163,6 +195,7 @@ router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
       `SELECT id FROM leave_configs WHERE company_id = ? AND code = ? AND is_deleted = 0 LIMIT 1`,
       [company_id, normalizedCode]
     );
+
     if (existing.length) {
       await conn.rollback();
       return sendError(res, 409, "Leave code already exists");
@@ -171,18 +204,286 @@ router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
     await conn.query(
       `INSERT INTO leave_configs (company_id, code, name, is_paid, allow_half_day, max_balance, carry_forward_limit, exclude_weekends, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [company_id, normalizedCode, normalizedName, is_paid ?? 1, allow_half_day ?? 1, max_balance ?? null, carry_forward_limit || 0, exclude_weekends ?? 1, user_id || null]
+      [company_id, normalizedCode, normalizedName, normalizedIsPaid, normalizedAllowHalfDay, max_balance ?? null, carry_forward_limit ?? 0, normalizedExcludeWeekends, user_id,]
     );
 
     await conn.commit();
+
     return sendSuccess(res, 201, "Leave config created");
   } catch (err) {
     if (conn) await conn.rollback();
+
     console.error("Create Leave Config Error:", err);
-    if (err.code === "ER_DUP_ENTRY") return sendError(res, 409, "Duplicate leave code");
+
+    if (err.code === "ER_DUP_ENTRY") {
+      return sendError(res, 409, "Duplicate leave code");
+    }
+
     return sendError(res, 500, "Internal server error");
   } finally {
     if (conn) conn.release();
+  }
+});
+
+router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
+  let conn;
+
+  try {
+    const company_id = Number(req.company?.id);
+    const user_id = req.user?.id ? Number(req.user.id) : null;
+    const id = Number(req.body?.id);
+
+    if (!company_id) {
+      return sendError(res, 401, "Company context missing");
+    }
+
+    if (!user_id) {
+      return sendError(res, 401, "Unauthorized user");
+    }
+
+    if (!id || isNaN(id)) {
+      return sendError(
+        res,
+        400,
+        "Valid leave config id is required"
+      );
+    }
+
+    let {
+      code,
+      name,
+      is_paid,
+      allow_half_day,
+      max_balance,
+      carry_forward_limit,
+      exclude_weekends,
+      is_active,
+    } = req.body;
+
+    if (typeof code === "string") {
+      code = code.trim().toUpperCase();
+    }
+
+    if (typeof name === "string") {
+      name = name.trim();
+    }
+
+    let normalizedIsPaid;
+    let normalizedAllowHalfDay;
+    let normalizedExcludeWeekends;
+    let normalizedIsActive;
+
+    try {
+      if (is_paid !== undefined) {
+        normalizedIsPaid = parseBoolean(
+          is_paid,
+          "is_paid"
+        );
+      }
+
+      if (allow_half_day !== undefined) {
+        normalizedAllowHalfDay = parseBoolean(
+          allow_half_day,
+          "allow_half_day"
+        );
+      }
+
+      if (exclude_weekends !== undefined) {
+        normalizedExcludeWeekends = parseBoolean(
+          exclude_weekends,
+          "exclude_weekends"
+        );
+      }
+
+      if (is_active !== undefined) {
+        normalizedIsActive = parseBoolean(
+          is_active,
+          "is_active"
+        );
+      }
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+
+    if (code !== undefined) {
+      if (typeof code !== "string" || !code) {
+        return sendError(
+          res,
+          400,
+          "code must be a valid string"
+        );
+      }
+
+      if (code.length > 20) {
+        return sendError(
+          res,
+          400,
+          "code cannot exceed 20 characters"
+        );
+      }
+    }
+
+    if (name !== undefined) {
+      if (typeof name !== "string" || !name) {
+        return sendError(
+          res,
+          400,
+          "name must be a valid string"
+        );
+      }
+
+      if (name.length > 50) {
+        return sendError(
+          res,
+          400,
+          "name cannot exceed 50 characters"
+        );
+      }
+    }
+
+
+    if (max_balance !== undefined && max_balance !== null && isNaN(Number(max_balance))) {
+      return sendError(
+        res,
+        400,
+        "Invalid max_balance"
+      );
+    }
+
+    if (carry_forward_limit !== undefined && carry_forward_limit !== null && isNaN(Number(carry_forward_limit))) {
+      return sendError(
+        res,
+        400,
+        "Invalid carry_forward_limit"
+      );
+    }
+
+    if (
+      [max_balance, carry_forward_limit].some(
+        (value) =>
+          value !== undefined &&
+          value !== null &&
+          Number(value) < 0
+      )) {
+      return sendError(
+        res,
+        400,
+        "Value cannot be negative"
+      );
+    }
+
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    const [[existing]] = await conn.query(
+      `
+        SELECT id
+        FROM leave_configs
+        WHERE id = ?
+          AND company_id = ?
+          AND is_deleted = 0
+        LIMIT 1
+      `,
+      [id, company_id]
+    );
+
+    if (!existing) {
+      await conn.rollback();
+      return sendError(res, 404, "Leave config not found");
+    }
+
+    if (code !== undefined) {
+      const [[dup]] = await conn.query(
+        `
+          SELECT id
+          FROM leave_configs
+          WHERE company_id = ?
+            AND code = ?
+            AND id != ?
+            AND is_deleted = 0
+          LIMIT 1
+        `,
+        [company_id, code, id]
+      );
+
+      if (dup) {
+        await conn.rollback();
+        return sendError(res, 409, "Leave code already exists");
+      }
+    }
+
+    const fields = [];
+    const values = [];
+
+    if (code !== undefined) { fields.push("code = ?"); values.push(code); }
+    if (name !== undefined) { fields.push("name = ?"); values.push(name); }
+    if (is_paid !== undefined) { fields.push("is_paid = ?"); values.push(normalizedIsPaid); }
+    if (allow_half_day !== undefined) { fields.push("allow_half_day = ?"); values.push(normalizedAllowHalfDay); }
+    if (max_balance !== undefined) { fields.push("max_balance = ?"); values.push(max_balance === null ? null : Number(max_balance)); }
+    if (carry_forward_limit !== undefined) { fields.push("carry_forward_limit = ?"); values.push(carry_forward_limit === null ? null : Number(carry_forward_limit)); }
+    if (exclude_weekends !== undefined) { fields.push("exclude_weekends = ?"); values.push(normalizedExcludeWeekends); }
+    if (is_active !== undefined) { fields.push("is_active = ?"); values.push(normalizedIsActive); }
+
+    if (!fields.length) { await conn.rollback(); return sendError(res, 400, "No fields provided for update"); }
+
+    fields.push("updated_by = ?");
+    values.push(user_id);
+
+    await conn.query(
+      `
+        UPDATE leave_configs
+        SET ${fields.join(", ")}
+        WHERE id = ?
+          AND company_id = ?
+          AND is_deleted = 0
+      `,
+      [
+        ...values,
+        id,
+        company_id,
+      ]
+    );
+
+    const [[updatedConfig]] = await conn.query(
+      `
+        SELECT
+          ${LEAVE_CONFIG_FIELDS},
+          creator.name AS created_by_name,
+          updater.name AS updated_by_name
+        FROM leave_configs lc
+        LEFT JOIN users creator
+          ON creator.id = lc.created_by
+        LEFT JOIN users updater
+          ON updater.id = lc.updated_by
+        WHERE lc.id = ?
+          AND lc.company_id = ?
+          AND lc.is_deleted = 0
+        LIMIT 1
+      `,
+      [id, company_id]
+    );
+
+    await conn.commit();
+
+    const message =
+      is_active !== undefined
+        ? updatedConfig.is_active == 1
+          ? "Leave config activated successfully"
+          : "Leave config deactivated successfully"
+        : "Leave config updated successfully";
+
+    return sendSuccess(res, 200, message);
+  } catch (err) {
+    if (conn) {
+      await conn.rollback();
+    }
+
+    console.error("Update Leave Config Error:", err);
+    return sendError(res, 500, "Internal server error");
+  } finally {
+    if (conn) {
+      conn.release();
+    }
   }
 });
 
@@ -201,19 +502,19 @@ router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
     const is_paid = req.query.is_paid;
 
     const normalizeBoolean = (value) => {
-      if (value === true || value === 1 || value === "1" || value === "true") return 1;
-      if (value === false || value === 0 || value === "0" || value === "false") return 0;
+      if (value === "true") return 1;
+      if (value === "false") return 0;
       return null;
     };
 
     let normalizedIsActive = undefined, normalizedIsPaid = undefined;
     if (is_active !== undefined) {
       normalizedIsActive = normalizeBoolean(is_active);
-      if (normalizedIsActive === null) return sendError(res, 400, "is_active must be 1, 0, true, or false");
+      if (normalizedIsActive === null) return sendError(res, 400, "is_active must be true, or false");
     }
     if (is_paid !== undefined) {
       normalizedIsPaid = normalizeBoolean(is_paid);
-      if (normalizedIsPaid === null) return sendError(res, 400, "is_paid must be 1, 0, true, or false");
+      if (normalizedIsPaid === null) return sendError(res, 400, "is_paid must be true, or false");
     }
 
     let query = `SELECT ${LEAVE_CONFIG_FIELDS} FROM leave_configs lc WHERE lc.company_id = ? AND lc.is_deleted = 0`;
@@ -256,119 +557,202 @@ router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
-  let conn;
-  try {
-    const company_id = Number(req.company?.id);
-    const user_id = req.user?.id ? Number(req.user.id) : null;
-    const id = Number(req.body?.id);
-    if (!company_id) return sendError(res, 401, "Company context missing");
-    if (!user_id) return sendError(res, 401, "Unauthorized user");
-    if (!id || isNaN(id)) return sendError(res, 400, "Valid leave config id is required");
-
-    let { code, name, is_paid, allow_half_day, max_balance, carry_forward_limit, exclude_weekends, is_active } = req.body;
-    if (typeof code === "string") code = code.trim().toUpperCase();
-    if (typeof name === "string") name = name.trim();
-
-    const isBooleanLike = (v) => [true, false, 1, 0, "1", "0", "true", "false"].includes(v);
-    const toBooleanNumber = (v) => (v === true || v === 1 || v === "1" || v === "true" ? 1 : 0);
-
-    for (const [field, val] of Object.entries({ is_paid, allow_half_day, exclude_weekends, is_active })) {
-      if (val !== undefined && !isBooleanLike(val)) return sendError(res, 400, `${field} must be true/false or 0/1`);
-    }
-    if (code !== undefined) {
-      if (typeof code !== "string" || !code) return sendError(res, 400, "code must be a valid string");
-      if (code.length > 20) return sendError(res, 400, "code cannot exceed 20 characters");
-    }
-    if (name !== undefined) {
-      if (typeof name !== "string" || !name) return sendError(res, 400, "name must be a valid string");
-      if (name.length > 50) return sendError(res, 400, "name cannot exceed 50 characters");
-    }
-    if (max_balance !== undefined && max_balance !== null && isNaN(Number(max_balance))) return sendError(res, 400, "Invalid max_balance");
-    if (carry_forward_limit !== undefined && carry_forward_limit !== null && isNaN(Number(carry_forward_limit))) return sendError(res, 400, "Invalid carry_forward_limit");
-    if ([max_balance, carry_forward_limit].some(v => v !== undefined && v !== null && Number(v) < 0)) return sendError(res, 400, "Value cannot be negative");
-
-    conn = await db.getConnection();
-    await conn.beginTransaction();
-
-    const [[existing]] = await conn.query(
-      `SELECT id FROM leave_configs WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
-      [id, company_id]
-    );
-    if (!existing) { await conn.rollback(); return sendError(res, 404, "Leave config not found"); }
-
-    if (code !== undefined) {
-      const [[dup]] = await conn.query(`SELECT id FROM leave_configs WHERE company_id = ? AND code = ? AND id != ? AND is_deleted = 0 LIMIT 1`, [company_id, code, id]);
-      if (dup) { await conn.rollback(); return sendError(res, 409, "Leave code already exists"); }
-    }
-
-    const fields = [], values = [];
-    if (code !== undefined) { fields.push("code = ?"); values.push(code); }
-    if (name !== undefined) { fields.push("name = ?"); values.push(name); }
-    if (is_paid !== undefined) { fields.push("is_paid = ?"); values.push(toBooleanNumber(is_paid)); }
-    if (allow_half_day !== undefined) { fields.push("allow_half_day = ?"); values.push(toBooleanNumber(allow_half_day)); }
-    if (max_balance !== undefined) { fields.push("max_balance = ?"); values.push(max_balance === null ? null : Number(max_balance)); }
-    if (carry_forward_limit !== undefined) { fields.push("carry_forward_limit = ?"); values.push(carry_forward_limit === null ? null : Number(carry_forward_limit)); }
-    if (exclude_weekends !== undefined) { fields.push("exclude_weekends = ?"); values.push(toBooleanNumber(exclude_weekends)); }
-    if (is_active !== undefined) { fields.push("is_active = ?"); values.push(toBooleanNumber(is_active)); }
-    if (!fields.length) { await conn.rollback(); return sendError(res, 400, "No fields provided for update"); }
-    fields.push("updated_by = ?"); values.push(user_id);
-
-    await conn.query(
-      `UPDATE leave_configs SET ${fields.join(", ")} WHERE id = ? AND company_id = ? AND is_deleted = 0`,
-      [...values, id, company_id]
-    );
-
-    const [[updatedConfig]] = await conn.query(
-      `SELECT ${LEAVE_CONFIG_FIELDS}, creator.name AS created_by_name, updater.name AS updated_by_name
-       FROM leave_configs lc
-       LEFT JOIN users creator ON creator.id = lc.created_by
-       LEFT JOIN users updater ON updater.id = lc.updated_by
-       WHERE lc.id = ? AND lc.company_id = ? AND lc.is_deleted = 0 LIMIT 1`,
-      [id, company_id]
-    );
-
-    await conn.commit();
-    const message = is_active !== undefined
-      ? (updatedConfig.is_active == 1 ? "Leave config activated successfully" : "Leave config deactivated successfully")
-      : "Leave config updated successfully";
-
-    return sendSuccess(res, 200, message);
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Update Leave Config Error:", err);
-    return sendError(res, 500, "Internal server error");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
 router.delete("/delete", auth(LEAVE_CFG.MNG), async (req, res) => {
   let conn;
+  let transactionStarted = false;
+  let responseSent = false;
+
   try {
     conn = await db.getConnection();
+
+    const userId = Number(req.user?.id);
+    const companyId = Number(req.company?.id);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      responseSent = true;
+      return sendError(res, 401, "Unauthorized");
+    }
+
+    if (!Number.isInteger(companyId) || companyId <= 0) {
+      responseSent = true;
+      return sendError(res, 400, "Company context missing");
+    }
+
+    const { ids } = req.body;
+
+    if (ids === undefined || ids === null) {
+      responseSent = true;
+      return sendError(res, 400, "Valid leave config ids are required");
+    }
+
+    let leaveConfigIds = [];
+
+    if (typeof ids === "number" || (typeof ids === "string" && ids.trim() !== "" && ids !== "all")) {
+      const parsedId = Number(ids);
+      if (!Number.isInteger(parsedId) || parsedId <= 0) {
+        responseSent = true;
+        return sendError(res, 400, "Valid leave config ids are required");
+      }
+      leaveConfigIds = [parsedId];
+    } else if (ids === "all") {
+      const [rows] = await conn.query(
+        `
+          SELECT id
+          FROM leave_configs
+          WHERE company_id = ?
+            AND is_deleted = 0
+        `,
+        [companyId]
+      );
+
+      leaveConfigIds = rows.map((row) => Number(row.id));
+    } else if (Array.isArray(ids)) {
+      leaveConfigIds = [
+        ...new Set(
+          ids
+            .map((value) => {
+              if (typeof value !== "number" && typeof value !== "string") {
+                return null;
+              }
+              const parsedId = Number(value);
+              return Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
+            })
+            .filter((value) => value !== null)
+        ),
+      ];
+
+      if (leaveConfigIds.length === 0) {
+        responseSent = true;
+        return sendError(res, 400, "Valid leave config ids are required");
+      }
+    } else {
+      responseSent = true;
+      return sendError(res, 400, "ids must be a number, array, or 'all'");
+    }
+
+    if (leaveConfigIds.length === 0) {
+      responseSent = true;
+      return sendSuccess(res, 200, "No leave configs to delete", { deleted_count: 0, ids: [], });
+    }
+
     await conn.beginTransaction();
-    const id = req.body.id;
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    if (!company_id) return sendError(res, 400, "Company context missing");
-    if (!id) return sendError(res, 400, "Leave config id is required");
+    transactionStarted = true;
+    const placeholders = leaveConfigIds.map(() => "?").join(", ");
 
-    const [existing] = await conn.query(`SELECT id FROM leave_configs WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`, [id, company_id]);
-    if (!existing.length) { await conn.rollback(); return sendError(res, 404, "Leave config not found"); }
+    const [existingConfigs] = await conn.query(
+      `
+        SELECT
+          id,
+          company_id,
+          is_deleted,
+          is_active
+        FROM leave_configs
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+        FOR UPDATE
+      `,
+      [companyId, ...leaveConfigIds]
+    );
 
-    const [used] = await conn.query(`SELECT id FROM employee_leaves WHERE leave_config_id = ? LIMIT 1`, [id]);
-    if (used.length) { await conn.rollback(); return sendError(res, 400, "Cannot delete, already used in leaves"); }
+    const existingIds = new Set(existingConfigs.map((config) => Number(config.id)));
+    const missingIds = leaveConfigIds.filter((id) => !existingIds.has(id));
 
-    await conn.query(`UPDATE leave_configs SET is_deleted = 1, is_active = 0, deleted_at = NOW(), deleted_by = ? WHERE id = ? AND company_id = ?`, [user_id || null, id, company_id]);
+    if (missingIds.length > 0) {
+      await conn.rollback();
+      transactionStarted = false;
+      responseSent = true;
+
+      return sendError(res, 404, `One or more leave configs not found or already deleted: ${missingIds.join(", ")}`);
+    }
+
+    const [usedConfigs] = await conn.query(
+      `
+        SELECT DISTINCT leave_config_id
+        FROM employee_leaves
+        WHERE leave_config_id IN (${placeholders})
+      `,
+      leaveConfigIds
+    );
+
+    if (usedConfigs.length > 0) {
+      const usedIds = usedConfigs.map((row) =>
+        Number(row.leave_config_id)
+      );
+
+      await conn.rollback();
+      transactionStarted = false;
+
+      responseSent = true;
+
+      return sendError(res, 400, `Cannot delete leave configs already used in leaves: ${usedIds.join(", ")}`);
+    }
+
+    const [result] = await conn.query(
+      `
+        UPDATE leave_configs
+        SET
+          is_deleted = 1,
+          is_active = 0,
+          deleted_at = NOW(),
+          deleted_by = ?
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+      `,
+      [
+        userId,
+        companyId,
+        ...leaveConfigIds,
+      ]
+    );
+
     await conn.commit();
-    return sendSuccess(res, 200, "Leave config deleted successfully");
+    transactionStarted = false;
+
+    responseSent = true;
+
+    return sendSuccess(
+      res,
+      200,
+      leaveConfigIds.length === 1
+        ? "Leave config deleted successfully"
+        : "Leave configs deleted successfully",
+      {
+        deleted_count: result.affectedRows,
+        ids: leaveConfigIds,
+      }
+    );
   } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("Delete Leave Config Error:", err);
-    return sendError(res, 500, "Internal server error");
+    if (transactionStarted && conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "Rollback error:",
+          rollbackError
+        );
+      }
+    }
+
+    if (!responseSent) {
+      console.error(
+        "Delete Leave Config Error:",
+        err
+      );
+
+      responseSent = true;
+
+      return sendError(
+        res,
+        500,
+        "Internal server error"
+      );
+    }
   } finally {
-    if (conn) conn.release();
+    if (conn) {
+      conn.release();
+    }
   }
 });
 
