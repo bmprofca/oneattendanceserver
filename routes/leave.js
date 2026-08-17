@@ -1385,12 +1385,12 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
 
     let {
       employee_id, leave_config_id, start_date, end_date,
-      is_half_day = 0, half_day_type = null, reason = null, remarks = null, attachments = []
+      is_half_day = false, half_day_type = null, reason = null, remarks = null, attachments = []
     } = req.body;
 
     employee_id = Number(employee_id);
     leave_config_id = Number(leave_config_id);
-    is_half_day = (is_half_day === true || is_half_day === 1 || is_half_day === "1" || is_half_day === "true") ? 1 : 0;
+    is_half_day = is_half_day === undefined ? false : parseBoolean(is_half_day, "is_half_day");
     half_day_type = typeof half_day_type === "string" ? half_day_type.trim().toLowerCase() : null;
     reason = typeof reason === "string" ? reason.trim() : null;
     remarks = typeof remarks === "string" ? remarks.trim() : null;
@@ -1548,9 +1548,9 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
     const company_id = Number(req.company?.id);
     if (!Number.isInteger(approver_id) || approver_id <= 0 || !Number.isInteger(company_id) || company_id <= 0) return sendError(res, 401, "Unauthorized access");
 
-    let { id, start_date = null, end_date = null, is_half_day = null, half_day_type = null, remarks = null } = req.body;
+    let { id, start_date = null, end_date = null, is_half_day = false, half_day_type = null, remarks = null } = req.body;
     id = Number(id);
-    if (is_half_day !== null) is_half_day = (is_half_day === true || is_half_day === 1 || is_half_day === "1" || is_half_day === "true") ? 1 : 0;
+    is_half_day = is_half_day === undefined ? false : parseBoolean(is_half_day, "is_half_day");
     half_day_type = typeof half_day_type === "string" ? half_day_type.trim().toLowerCase() : null;
 
     if (!Number.isInteger(id) || id <= 0) return sendError(res, 400, "Valid leave id required");
@@ -1997,11 +1997,11 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
 
     let {
       leave_config_id, start_date, end_date,
-      is_half_day = 0, half_day_type = null, reason = null, attachments = []
+      is_half_day = false, half_day_type = null, reason = null, attachments = []
     } = req.body;
 
     leave_config_id = Number(leave_config_id);
-    is_half_day = (is_half_day === true || is_half_day === 1 || is_half_day === "1" || is_half_day === "true") ? 1 : 0;
+    is_half_day = is_half_day === undefined ? false : parseBoolean(is_half_day, "is_half_day");
     half_day_type = typeof half_day_type === "string" ? half_day_type.trim().toLowerCase() : null;
     reason = typeof reason === "string" ? reason.trim() : null;
     attachments = Array.isArray(attachments) ? attachments : [];
@@ -2250,7 +2250,7 @@ router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
     const leave_id = req.body.id;
     const user_id = req.user?.id;
     const company_id = req.company?.id;
-    const { leave_config_id, start_date, end_date, is_half_day = 0, half_day_type, reason, attachments = [], deleted_attachments = [] } = req.body;
+    const { leave_config_id, start_date, end_date, is_half_day = false, half_day_type, reason, attachments = [], deleted_attachments = [] } = req.body;
 
     if (!leave_id) return sendError(res, 400, "Leave ID is required");
     if (!user_id || !company_id) return sendError(res, 400, "Invalid user/company context");
@@ -2272,7 +2272,7 @@ router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
     if (!parseDate(newStartDate) || !parseDate(newEndDate)) return sendError(res, 400, "Invalid date format. Use YYYY-MM-DD");
     if (isDateAfter(newStartDate, newEndDate)) return sendError(res, 400, "Start date cannot be after end date");
 
-    const halfDay = (is_half_day === true || is_half_day === 1 || is_half_day === "1" || is_half_day === "true") ? 1 : 0;
+    const halfDay = is_half_day === undefined ? false : parseBoolean(is_half_day, "is_half_day");
     if (halfDay) {
       if (!isSameDate(newStartDate, newEndDate)) return sendError(res, 400, "Half day must be single day");
       if (!["first_half", "second_half"].includes(half_day_type)) return sendError(res, 400, "Invalid half_day_type");
