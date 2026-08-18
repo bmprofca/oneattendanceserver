@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-17T18:22:12.246Z",
+  "generated_at": "2026-08-18T12:28:05.981Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -3099,7 +3099,7 @@
     "employee_salary_component": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 7,
+      "estimated_rows": 11,
       "comment": null,
       "columns": [
         {
@@ -6078,7 +6078,7 @@
     "salary_structures": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {

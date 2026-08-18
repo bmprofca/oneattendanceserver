@@ -13,7 +13,8 @@ import {
   isDateBefore,
   parseDate,
   weekendInfo,
-  formatIST
+  formatIST,
+  getYearFromDate
 } from "../utils/time.js";
 import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
@@ -22,12 +23,6 @@ import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/const
 import { SHIFT } from "../constants/permissions.js";
 
 const router = express.Router();
-
-// local helpers for functions removed from time.js
-const getYearFromDate = (date) => {
-  const d = parseDate(date);
-  return d ? d.year() : null;
-};
 
 const formatToDate = (date) => formatIST(date, "YYYY-MM-DD");
 
