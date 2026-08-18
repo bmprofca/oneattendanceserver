@@ -36,6 +36,19 @@ export async function generatePayslipPdf(data = {}) {
       maximumFractionDigits: 2
     });
 
+  const buildSummaryValue = (totalValue, ...parts) => {
+    const total = Number(totalValue || 0);
+    const breakdown = parts
+      .filter((part) => Number(part || 0) > 0)
+      .map((part) => fmt(part));
+
+    if (total <= 0 || breakdown.length <= 1) {
+      return fmt(total);
+    }
+
+    return `${fmt(total)} (${breakdown.join(" + ")})`;
+  };
+
   const mins = (value) => Number(value || 0);
   const hrs = (value) => (Number(value || 0) / 60).toFixed(2);
 
@@ -64,6 +77,7 @@ export async function generatePayslipPdf(data = {}) {
   // Separate components
   const earnings = components.filter(item => item.component_type === "earning");
   const deductions = components.filter(item => item.component_type === "deduction");
+  const hasSalaryComponents = earnings.length > 0 || deductions.length > 0;
   const rowCount = Math.max(earnings.length, deductions.length, 1);
 
   const padRows = (rows) => {
@@ -445,6 +459,7 @@ export async function generatePayslipPdf(data = {}) {
     </div>
     ` : ""}
 
+    ${isDetailed && hasSalaryComponents ? `
     <!-- SALARY COMPONENTS -->
     <div class="section avoid-break">
       <div class="section-title">Salary Details</div>
@@ -464,52 +479,35 @@ export async function generatePayslipPdf(data = {}) {
         </tr>
         `).join("")}
       </table>
-
-      ${!isDetailed ? `
-      <div class="summary-box">
-        <div class="summary-line">
-          <span>Total Earnings</span>
-          <span>
-            ${fmt(payroll.total_earnings)}
-            ${Number(payroll.total_earnings) > 0
-        ? ` (${[
-          Number(payroll.component_earnings) > 0
-            ? fmt(payroll.component_earnings)
-            : null,
-          Number(payroll.attendance_pay) > 0
-            ? fmt(payroll.attendance_pay)
-            : null,
-          Number(payroll.bonus_adjustments) > 0
-            ? fmt(payroll.bonus_adjustments)
-            : null
-        ].filter(Boolean).join(" + ")})`
-        : ""}
-          </span>
-        </div>
-
-        <div class="summary-line">
-          <span>Total Deductions</span>
-          <span>
-            ${fmt(payroll.total_deductions)}
-            ${Number(payroll.total_deductions) > 0
-        ? ` (${[
-          Number(payroll.fine_adjustments) > 0
-            ? fmt(payroll.fine_adjustments)
-            : null,
-          Number(payroll.component_deductions) > 0
-            ? fmt(payroll.component_deductions)
-            : null
-        ].filter(Boolean).join(" + ")})`
-        : ""}
-          </span>
-        </div>
-        <div class="summary-line net">
-          <span>Net Salary</span>
-          <span>${fmt(payroll.net_salary)}</span>
-        </div>
-      </div>
-      ` : ""}
     </div>
+    ` : ""}
+
+    ${!isDetailed ? `
+    <div class="summary-box" style="margin-top:12px;">
+      <div class="summary-line">
+        <span>Total Earnings</span>
+        <span>${buildSummaryValue(
+          payroll.total_earnings,
+          payroll.component_earnings,
+          payroll.attendance_pay,
+          payroll.bonus_adjustments
+        )}</span>
+      </div>
+
+      <div class="summary-line">
+        <span>Total Deductions</span>
+        <span>${buildSummaryValue(
+          payroll.total_deductions,
+          payroll.fine_adjustments,
+          payroll.component_deductions
+        )}</span>
+      </div>
+      <div class="summary-line net">
+        <span>Net Salary</span>
+        <span>${fmt(payroll.net_salary)}</span>
+      </div>
+    </div>
+    ` : ""}
 
     <!-- DAILY BREAKDOWN (only when detailed) -->
     ${isDetailed ? `
@@ -576,42 +574,20 @@ export async function generatePayslipPdf(data = {}) {
     <div class="summary-box" style="margin-top:12px;">
       <div class="summary-line">
         <span>Total Earnings</span>
-        <span>
-          ${fmt(payroll.total_earnings)}
-          ${Number(payroll.total_earnings) > 0
-        ? ` (${[
-          Number(payroll.component_earnings) > 0
-            ? fmt(payroll.component_earnings)
-            : null,
-          Number(payroll.attendance_pay) > 0
-            ? fmt(payroll.attendance_pay)
-            : null,
-          Number(payroll.bonus_adjustments) > 0
-            ? fmt(payroll.bonus_adjustments)
-            : null
-        ]
-          .filter(Boolean)
-          .join(" + ")})`
-        : ""}
-        </span>
+        <span>${buildSummaryValue(
+          payroll.total_earnings,
+          payroll.component_earnings,
+          payroll.attendance_pay,
+          payroll.bonus_adjustments
+        )}</span>
       </div>
       <div class="summary-line">
         <span>Total Deductions</span>
-        <span>
-          ${fmt(payroll.total_deductions)}
-          ${Number(payroll.total_deductions) > 0
-        ? ` (${[
-          Number(payroll.fine_adjustments) > 0
-            ? fmt(payroll.fine_adjustments)
-            : null,
-          Number(payroll.component_deductions) > 0
-            ? fmt(payroll.component_deductions)
-            : null
-        ]
-          .filter(Boolean)
-          .join(" + ")})`
-        : ""}
-        </span>
+        <span>${buildSummaryValue(
+          payroll.total_deductions,
+          payroll.fine_adjustments,
+          payroll.component_deductions
+        )}</span>
       </div>
       <div class="summary-line net">
         <span>Net Salary</span>

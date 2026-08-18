@@ -104,6 +104,99 @@ function formatAdjustment(row) {
   };
 }
 
+function getPayrollPeriodRange(month, year) {
+  const payrollPeriod = `${year}-${String(month).padStart(2, "0")}`;
+  const payrollStartDate = new Date(year, month - 1, 1);
+  const payrollEndDate = new Date(year, month, 0);
+  return { payrollPeriod, payrollStartDate, payrollEndDate };
+}
+
+async function checkEmployeeExists(conn, companyId, employeeId) {
+  const [employees] = await conn.query(
+    `SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
+    [employeeId, companyId]
+  );
+  return employees.length > 0;
+}
+
+async function recalcPayrollIfExists(conn, companyId, employeeId, userId) {
+  const existingPayroll = await payrollExists({ conn, companyId, employeeId });
+  if (existingPayroll) {
+    await upsertPayroll({ conn, companyId, employeeId, createdBy: userId });
+  }
+}
+
+function formatEmployeeBasic(employee) {
+  return {
+    id: employee.id,
+    name: employee.name,
+    email: employee.email,
+    profile_picture: buildFileUrl(employee.profile_picture),
+    employee_code: employee.employee_code,
+    designation: getEnumObject(DESIGNATIONS, employee.designation),
+    employment_type: getEnumObject(EMPLOYMENT_TYPES, employee.employment_type),
+    salary_type: getEnumObject(SALARY_TYPES, employee.salary_type),
+  };
+}
+
+async function fetchPayrollComponentsMap(conn, entryIds) {
+  if (!entryIds?.length) return {};
+  const [rows] = await conn.query(
+    `SELECT entry_id, component_id, component_name, component_type, amount
+     FROM payroll_entry_components
+     WHERE entry_id IN (?) AND is_active = 1`,
+    [entryIds]
+  );
+  return rows.reduce((acc, row) => {
+    if (!acc[row.entry_id]) acc[row.entry_id] = { earnings: [], deductions: [] };
+    const comp = { name: row.component_name, amount: row.amount };
+    if (row.component_type === "earning") acc[row.entry_id].earnings.push(comp);
+    if (row.component_type === "deduction") acc[row.entry_id].deductions.push(comp);
+    return acc;
+  }, {});
+}
+
+async function fetchPayrollAdjustmentsMap(conn, companyId, employeeIds, startDate, endDate) {
+  const [adjustments] = await conn.query(
+    `SELECT * FROM payroll_adjustments
+     WHERE company_id = ? AND employee_id IN (?) AND adjustment_period BETWEEN ? AND ? AND is_deleted = 0`,
+    [companyId, employeeIds, startDate, endDate]
+  );
+  return adjustments.reduce((acc, row) => {
+    if (!acc[row.employee_id]) acc[row.employee_id] = [];
+    acc[row.employee_id].push(row);
+    return acc;
+  }, {});
+}
+
+async function sendPayrollEmailForEntry({ conn, companyId, payrollEntryId, employeeId, replyTo }) {
+  try {
+    const payslipDetails = await getPayslipData({ conn, payrollEntryId, companyId });
+    if (!payslipDetails) {
+      return { failed: { payroll_entry_id: payrollEntryId, employee_id: employeeId, error: "Payslip not found" } };
+    }
+    const { payroll } = payslipDetails;
+    const receiverEmail = payroll?.employee_email?.trim();
+    if (!receiverEmail) {
+      return { failed: { payroll_entry_id: payrollEntryId, employee_id: employeeId, employee_name: payroll?.employee_name, error: "Employee email not found" } };
+    }
+    await queuePayrollEmail({
+      to: receiverEmail,
+      subject: `Salary Slip - ${payroll.company_name || "OneAttendance"}`,
+      fromEmail: EMAIL_USER,
+      fromName: payroll.company_name || "OneAttendance",
+      replyTo,
+      payroll,
+      components: payslipDetails.components,
+      adjustments: payslipDetails.adjustments,
+    });
+    return { sent: { payroll_entry_id: payrollEntryId, employee_id: employeeId, employee_name: payroll.employee_name, email: receiverEmail } };
+  } catch (error) {
+    console.error(`[PAYROLL_EMAIL_ERROR][${payrollEntryId}]`, error);
+    return { failed: { payroll_entry_id: payrollEntryId, employee_id: employeeId, error: error.message } };
+  }
+}
+
 // --------------- ROUTES ---------------
 
 // 1. Generate Payroll
@@ -113,8 +206,8 @@ router.post("/generate-payroll", auth(PAY.MNG), async (req, res) => {
     conn = await db.getConnection();
     await conn.beginTransaction();
 
-    const companyId = Number(req.company?.id);
-    const createdBy = Number(req.user?.id);
+    const companyId = req.company?.id;
+    const createdBy = req.user?.id;
     if (!companyId || !createdBy) return sendError(res, 401, "Unauthorized access");
 
     let { employee_id = [], all_employees = false, send_pdf = false } = req.body;
@@ -167,38 +260,19 @@ router.post("/generate-payroll", auth(PAY.MNG), async (req, res) => {
 
     await conn.commit();
 
-    // Email sending (same logic)
     const emailSent = [];
     const emailFailed = [];
     if (send_pdf && payrolls.length > 0) {
       for (const info of payrolls) {
-        try {
-          const payslipDetails = await getPayslipData({ conn, payrollEntryId: info.payroll_entry_id, companyId });
-          if (!payslipDetails) {
-            emailFailed.push({ payroll_entry_id: info.payroll_entry_id, employee_id: info.employee_id, error: "Payslip not found" });
-            continue;
-          }
-          const { payroll } = payslipDetails;
-          const receiverEmail = payroll?.employee_email?.trim();
-          if (!receiverEmail) {
-            emailFailed.push({ payroll_entry_id: info.payroll_entry_id, employee_id: info.employee_id, employee_name: payroll?.employee_name, error: "Employee email not found" });
-            continue;
-          }
-          await queuePayrollEmail({
-            to: receiverEmail,
-            subject: `Salary Slip - ${payroll.company_name || "OneAttendance"}`,
-            fromEmail: EMAIL_USER,
-            fromName: payroll.company_name || "OneAttendance",
-            replyTo: req.user?.email || EMAIL_USER,
-            payroll,
-            components: payslipDetails.components,
-            adjustments: payslipDetails.adjustments,
-          });
-          emailSent.push({ payroll_entry_id: info.payroll_entry_id, employee_id: info.employee_id, employee_name: payroll.employee_name, email: receiverEmail });
-        } catch (error) {
-          console.error(`[PAYROLL_EMAIL_ERROR][${info.payroll_entry_id}]`, error);
-          emailFailed.push({ payroll_entry_id: info.payroll_entry_id, employee_id: info.employee_id, error: error.message });
-        }
+        const result = await sendPayrollEmailForEntry({
+          conn,
+          companyId,
+          payrollEntryId: info.payroll_entry_id,
+          employeeId: info.employee_id,
+          replyTo: req.user?.email || EMAIL_USER,
+        });
+        if (result.sent) emailSent.push(result.sent);
+        if (result.failed) emailFailed.push(result.failed);
       }
     }
 
@@ -221,7 +295,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-    const companyId = Number(req.company?.id);
+    const companyId = req.company?.id;
 
     let { month, year, employee_id, page = 1, limit = 10 } = req.query;
     month = Number(month);
@@ -233,9 +307,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
     if (!companyId) return sendError(res, 400, "Invalid company");
     if (!month || !year || month < 1 || month > 12) return sendError(res, 400, "Valid month & year required");
 
-    const payrollPeriod = `${year}-${String(month).padStart(2, "0")}`;
-    const payrollStartDate = new Date(year, month - 1, 1);
-    const payrollEndDate = new Date(year, month, 0);
+    const { payrollPeriod, payrollStartDate, payrollEndDate } = getPayrollPeriodRange(month, year);
 
     let whereClause = `e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 AND e.joining_date IS NOT NULL AND e.joining_date <= ?`;
     const whereParams = [companyId, payrollEndDate];
@@ -260,31 +332,8 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
     const payrollMap = payrollRows.reduce((acc, row) => { acc[row.employee_id] = row; return acc; }, {});
 
     const payrollEntryIds = payrollRows.map(r => r.id);
-    let payrollComponents = [];
-    if (payrollEntryIds.length) {
-      const [rows] = await conn.query(
-        `SELECT entry_id, component_id, component_name, component_type, amount FROM payroll_entry_components WHERE entry_id IN (?) AND is_active = 1`,
-        [payrollEntryIds]
-      );
-      payrollComponents = rows;
-    }
-    const componentMap = payrollComponents.reduce((acc, row) => {
-      if (!acc[row.entry_id]) acc[row.entry_id] = { earnings: [], deductions: [] };
-      const comp = { name: row.component_name, amount: row.amount };
-      if (row.component_type === "earning") acc[row.entry_id].earnings.push(comp);
-      if (row.component_type === "deduction") acc[row.entry_id].deductions.push(comp);
-      return acc;
-    }, {});
-
-    const [adjustments] = await conn.query(
-      `SELECT * FROM payroll_adjustments WHERE company_id = ? AND employee_id IN (?) AND adjustment_period BETWEEN ? AND ? AND is_deleted = 0`,
-      [companyId, employeeIds, payrollStartDate, payrollEndDate]
-    );
-    const adjustmentMap = adjustments.reduce((acc, row) => {
-      if (!acc[row.employee_id]) acc[row.employee_id] = [];
-      acc[row.employee_id].push(row);
-      return acc;
-    }, {});
+    const componentMap = await fetchPayrollComponentsMap(conn, payrollEntryIds);
+    const adjustmentMap = await fetchPayrollAdjustmentsMap(conn, companyId, employeeIds, payrollStartDate, payrollEndDate);
 
     const generatedPayrolls = [];
     for (const employee of employees) {
@@ -292,16 +341,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
       if (!payrollEntry) continue;
 
       generatedPayrolls.push({
-        employee: {
-          id: employee.id,
-          name: employee.name,
-          email: employee.email,
-          profile_picture: buildFileUrl(employee.profile_picture),
-          employee_code: employee.employee_code,
-          designation: getEnumObject(DESIGNATIONS, employee.designation),
-          employment_type: getEnumObject(EMPLOYMENT_TYPES, employee.employment_type),
-          salary_type: getEnumObject(SALARY_TYPES, employee.salary_type),
-        },
+        employee: formatEmployeeBasic(employee),
         payroll: {
           ...formatPayrollEntry(payrollEntry),
           components_breakdown: componentMap[payrollEntry.id] || { earnings: [], deductions: [] },
@@ -323,16 +363,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
           const payroll = await calculatePayroll({ conn, companyId, employeeId: employee.id, upsertPeriod: payrollPeriod });
           if (!payroll) return null;
           return {
-            employee: {
-              id: employee.id,
-              name: employee.name,
-              email: employee.email,
-              profile_picture: buildFileUrl(employee.profile_picture),
-              employee_code: employee.employee_code,
-              designation: getEnumObject(DESIGNATIONS, employee.designation),
-              employment_type: getEnumObject(EMPLOYMENT_TYPES, employee.employment_type),
-              salary_type: getEnumObject(SALARY_TYPES, employee.salary_type),
-            },
+            employee: formatEmployeeBasic(employee),
             payroll: {
               month,
               year,
@@ -473,8 +504,8 @@ router.post("/adjustments", auth(PAY_ADJ.MNG), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-    const company_id = Number(req.company?.id);
-    const user_id = Number(req.user?.id);
+    const company_id = req.company?.id;
+    const user_id = req.user?.id;
 
     let { employee_id, adjustment_type, usage_type, name, remark, amount, adjustment_period } = req.body;
     employee_id = Number(employee_id);
@@ -490,8 +521,8 @@ router.post("/adjustments", auth(PAY_ADJ.MNG), async (req, res) => {
     const periodDate = new Date(adjustment_period);
     if (isNaN(periodDate.getTime())) return sendError(res, 400, "Invalid adjustment_period");
 
-    const [employees] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`, [employee_id, company_id]);
-    if (!employees.length) return sendError(res, 404, "Employee not found");
+    const employeeExists = await checkEmployeeExists(conn, company_id, employee_id);
+    if (!employeeExists) return sendError(res, 404, "Employee not found");
 
     if (usage_type === "payroll") {
       const transaction_id = `TXN-${Date.now()}`;
@@ -504,9 +535,7 @@ router.post("/adjustments", auth(PAY_ADJ.MNG), async (req, res) => {
         [transaction_id, user_id, amount, employee_id, company_id, adjustment_period, adjustment_type, remark?.trim() || name.trim(), payroll.insertId]
       );
 
-      // re-calc payroll if exists
-      const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-      if (existingPayroll) await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
+      await recalcPayrollIfExists(conn, company_id, employee_id, user_id);
 
       return sendSuccess(res, 201, "Payroll adjustment created successfully");
     }
@@ -602,8 +631,8 @@ router.put("/adjustments/update", auth(PAY_ADJ.MNG), async (req, res) => {
 
     const employee_id = existing[0].employee_id;
     if (employee_id) {
-      const [emp] = await conn.query(`SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
-      if (!emp.length) return sendError(res, 404, "Employee not found");
+      const employeeExists = await checkEmployeeExists(conn, company_id, employee_id);
+      if (!employeeExists) return sendError(res, 404, "Employee not found");
     }
 
     let updates = [], values = [];
@@ -628,8 +657,7 @@ router.put("/adjustments/update", auth(PAY_ADJ.MNG), async (req, res) => {
     updates.push("updated_by = ?"); values.push(user_id);
     await conn.query(`UPDATE payroll_adjustments SET ${updates.join(", ")} WHERE id = ? AND company_id = ?`, [...values, id, company_id]);
 
-    const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
-    if (existingPayroll) await upsertPayroll({ conn, companyId: company_id, employeeId: employee_id, createdBy: user_id });
+    await recalcPayrollIfExists(conn, company_id, employee_id, user_id);
 
     return sendSuccess(res, 200, "Adjustment updated successfully");
   } catch (error) {
@@ -667,8 +695,7 @@ router.delete("/adjustments/delete", auth(PAY_ADJ.MNG), async (req, res) => {
     await conn.query(`UPDATE payroll_adjustments SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE company_id = ? AND id IN (?)`, [user_id, company_id, validIds]);
 
     for (const employeeId of employeeIds) {
-      const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId });
-      if (existingPayroll) await upsertPayroll({ conn, companyId: company_id, employeeId, createdBy: user_id });
+      await recalcPayrollIfExists(conn, company_id, employeeId, user_id);
     }
 
     await conn.commit();
@@ -687,8 +714,8 @@ router.post("/send-email", auth(PAY.MNG), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-    const companyId = Number(req.company?.id);
-    const userId = Number(req.user?.id);
+    const companyId = req.company?.id;
+    const userId = req.user?.id;
     const { payroll_entry_id, email, type } = req.body || {};
 
     if (!companyId || !userId) return sendError(res, 401, "Unauthorized access");
@@ -746,8 +773,8 @@ router.post("/download", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-    const companyId = Number(req.company?.id);
-    const userId = Number(req.user?.id);
+    const companyId = req.company?.id;
+    const userId = req.user?.id;
     const { payroll_entry_id, type } = req.body || {};
 
     if (!companyId || !userId) return sendError(res, 401, "Unauthorized access");
