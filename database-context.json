@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-18T16:58:58.729Z",
+  "generated_at": "2026-08-18T20:16:26.605Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -4371,7 +4371,7 @@
     "payroll_adjustments": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -7345,7 +7345,7 @@
     "transactions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 5,
       "comment": null,
       "columns": [
         {

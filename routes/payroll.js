@@ -197,6 +197,23 @@ async function sendPayrollEmailForEntry({ conn, companyId, payrollEntryId, emplo
   }
 }
 
+const withTransaction = (handler) => async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const result = await handler(conn, req, res);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    if (conn) await conn.rollback();
+    console.error("Transaction Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
 // --------------- ROUTES ---------------
 
 // 1. Generate Payroll
