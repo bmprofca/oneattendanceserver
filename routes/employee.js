@@ -989,6 +989,7 @@ router.get("/all-list", auth(EMP.MNG), async (req, res) => {
   }
 });
 
+
 const ALLOWED_INCLUDES = new Set([
   "basic", "permissions", "attendance", "salary", "payroll", "leaves", "shifts", "banks"
 ]);
@@ -1025,7 +1026,6 @@ router.get("/:id(\\d+)", auth(PROFILE.MNG), async (req, res) => {
   }
 });
 
-
 class EmployeeSectionService {
   static async getSection(conn, employeeId, companyId, include, query) {
     const [[exists]] = await conn.query(
@@ -1049,38 +1049,38 @@ class EmployeeSectionService {
     return handlers[include](conn, employeeId, companyId, query);
   }
 
-  // -- basic (FIXED: now receives and uses companyId) ----------------
+  // -- basic ---------------------------------------------------------
   static async _basic(conn, employeeId, companyId) {
     const [rows] = await conn.query(
       `SELECT ${FULL_EMPLOYEE_SELECT}
        FROM employees e
-       ${USER_INNER_JOIN}
-       ${PACKAGE_INNER_JOIN}
+       ${USER_LEFT_JOIN}
+       ${PACKAGE_LEFT_JOIN}
        WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
-      [employeeId, companyId]   // <-- second parameter added
+      [employeeId, companyId]
     );
     const data = rows[0] ? formatEmployee(rows[0]) : null;
     return { data: { basic: data }, meta: { basic: { total: data ? 1 : 0 } } };
   }
 
   // -- permissions --------------------------------------------------
-  static async _permissions(conn, employeeId, _companyId, query) {
+  static async _permissions(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 50, 200);
     const [[{ total }]] = await conn.query(
       `SELECT COUNT(*) AS total FROM employees e
        JOIN permission_package_items ppi ON ppi.package_id = e.permission_package_id AND ppi.is_deleted = 0 AND ppi.is_active = 1
-       WHERE e.id = ? AND e.is_deleted = 0`,
-      [employeeId]
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0`,
+      [employeeId, companyId]
     );
     const [rows] = await conn.query(
       `SELECT ppi.permission_id AS id, p.code, p.name, p.action
        FROM employees e
        JOIN permission_package_items ppi ON ppi.package_id = e.permission_package_id AND ppi.is_deleted = 0 AND ppi.is_active = 1
        JOIN permissions p ON p.id = ppi.permission_id
-       WHERE e.id = ? AND e.is_deleted = 0
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0
        ORDER BY p.code ASC
        LIMIT ? OFFSET ?`,
-      [employeeId, limit, offset]
+      [employeeId, companyId, limit, offset]
     );
     return {
       data: { permissions: rows },
@@ -1178,11 +1178,11 @@ class EmployeeSectionService {
   }
 
   // -- salary -------------------------------------------------------
-  static async _salary(conn, employeeId, _companyId, query) {
+  static async _salary(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 10, 50);
     const dateFilter = buildDateFilter(query, "ss.effective_from");
-    let where = "ss.employee_id = ? AND ss.is_deleted = 0";
-    const params = [employeeId];
+    let where = "ss.employee_id = ? AND ss.company_id = ? AND ss.is_deleted = 0";
+    const params = [employeeId, companyId];
     if (dateFilter.clause) { where += ` AND ${dateFilter.clause}`; params.push(...dateFilter.params); }
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM salary_structures ss WHERE ${where}`, params);
@@ -1254,11 +1254,11 @@ class EmployeeSectionService {
   }
 
   // -- payroll ------------------------------------------------------
-  static async _payroll(conn, employeeId, _companyId, query) {
+  static async _payroll(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 12, 24);
     const dateFilter = buildDateFilter(query, "pe.payroll_period");
-    let where = "pe.employee_id = ? AND pe.is_deleted = 0";
-    const params = [employeeId];
+    let where = "pe.employee_id = ? AND pe.company_id = ? AND pe.is_deleted = 0";
+    const params = [employeeId, companyId];
     if (dateFilter.clause) { where += ` AND ${dateFilter.clause}`; params.push(...dateFilter.params); }
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) AS total FROM payroll_entries pe WHERE ${where}`, params);
@@ -1326,12 +1326,12 @@ class EmployeeSectionService {
   }
 
   // -- leaves -------------------------------------------------------
-  static async _leaves(conn, employeeId, _companyId, query) {
+  static async _leaves(conn, employeeId, companyId, query) {
     const { page, limit, offset } = getPagination(query, 20, 100);
     const year = parseInt(query.year, 10) || new Date().getFullYear();
     const dateFilter = buildDateFilter(query, "el.start_date");
-    let where = "el.employee_id = ? AND el.is_deleted = 0";
-    const params = [employeeId];
+    let where = "el.employee_id = ? AND el.company_id = ? AND el.is_deleted = 0";
+    const params = [employeeId, companyId];
     if (dateFilter.clause) { where += ` AND ${dateFilter.clause}`; params.push(...dateFilter.params); }
     if (query.status) { where += " AND el.status = ?"; params.push(query.status); }
     if (query.leave_code) { where += " AND lc.code = ?"; params.push(query.leave_code); }
@@ -1385,10 +1385,11 @@ class EmployeeSectionService {
       `SELECT elb.leave_config_id, lc.code, lc.name, lc.is_paid, elb.year,
               elb.total_allocated, elb.used, elb.remaining
        FROM employee_leave_balances elb
-       JOIN leave_configs lc ON lc.id = elb.leave_config_id AND lc.is_deleted = 0
-       WHERE elb.employee_id = ? AND elb.year = ? AND elb.is_deleted = 0 AND elb.is_active = 1
+       JOIN leave_configs lc ON lc.id = elb.leave_config_id
+         AND lc.company_id = elb.company_id AND lc.is_deleted = 0
+       WHERE elb.employee_id = ? AND elb.company_id = ? AND elb.year = ? AND elb.is_deleted = 0 AND elb.is_active = 1
        ORDER BY lc.name ASC`,
-      [employeeId, year]
+      [employeeId, companyId, year]
     );
 
     return {
@@ -1477,6 +1478,7 @@ class EmployeeSectionService {
     };
   }
 }
+
 
 // Face enrollment routes 
 const handleFaceEnrollCheck = async (req, res) => {
