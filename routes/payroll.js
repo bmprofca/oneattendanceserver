@@ -669,45 +669,184 @@ router.put("/adjustments/update", auth(PAY_ADJ.MNG), async (req, res) => {
 });
 
 // 7. Delete Adjustments (bulk)
-router.delete("/adjustments/delete", auth(PAY_ADJ.MNG), async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    await conn.beginTransaction();
+router.delete("/adjustments/delete", auth(PAY_ADJ.MNG), withTransaction(async (conn, req, res) => {
+  const company_id = req.company?.id;
+  const user_id = req.user?.id;
 
-    const company_id = req.company?.id;
-    const user_id = req.user?.id;
-    let { ids } = req.body;
+  let { id, ids } = req.body;
 
-    if (!company_id || !user_id || !Array.isArray(ids) || !ids.length) return sendError(res, 400, "Invalid request. 'ids' must be a non-empty array");
-    ids = ids.map(id => parseInt(id)).filter(id => !isNaN(id));
-    if (!ids.length) return sendError(res, 400, "No valid IDs provided");
+  if (!company_id) {
+    throw {
+      status: 400,
+      message: "Valid company_id is required",
+    };
+  }
 
-    const [adjustments] = await conn.query(
-      `SELECT id, employee_id FROM payroll_adjustments WHERE company_id = ? AND is_deleted = 0 AND id IN (?)`,
-      [company_id, ids]
-    );
-    if (!adjustments.length) return sendError(res, 404, "No valid adjustments found to delete");
+  let adjustmentIds = [];
 
-    const validIds = adjustments.map(a => a.id);
-    const employeeIds = [...new Set(adjustments.map(a => a.employee_id))];
+  if (id !== undefined && ids === undefined) {
+    const parsedId = parseInt(id, 10);
 
-    await conn.query(`UPDATE payroll_adjustments SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE company_id = ? AND id IN (?)`, [user_id, company_id, validIds]);
-
-    for (const employeeId of employeeIds) {
-      await recalcPayrollIfExists(conn, company_id, employeeId, user_id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      throw {
+        status: 400,
+        message: "Valid adjustment id is required",
+      };
     }
 
-    await conn.commit();
-    return sendSuccess(res, 200, "Adjustments deleted successfully");
-  } catch (error) {
-    if (conn) await conn.rollback();
-    console.error("Bulk Delete Adjustment Error:", error);
-    return sendError(res, 500, error.message || "Internal server error");
-  } finally {
-    if (conn) conn.release();
+    adjustmentIds = [parsedId];
   }
-});
+
+  else if (ids !== undefined) {
+    if (ids === "all") {
+      const [rows] = await conn.query(
+        `
+            SELECT id
+            FROM payroll_adjustments
+            WHERE company_id = ?
+              AND is_deleted = 0
+          `,
+        [company_id]
+      );
+
+      adjustmentIds = rows.map((row) => row.id);
+    }
+
+    else if (Array.isArray(ids)) {
+      adjustmentIds = [
+        ...new Set(
+          ids
+            .map((value) => parseInt(value, 10))
+            .filter(
+              (value) =>
+                Number.isInteger(value) && value > 0
+            )
+        ),
+      ];
+
+      if (adjustmentIds.length === 0) {
+        throw {
+          status: 400,
+          message: "Valid adjustment ids are required",
+        };
+      }
+    } else {
+      throw {
+        status: 400,
+        message: "ids must be an array or 'all'",
+      };
+    }
+  }
+
+  // Neither id nor ids supplied
+  else {
+    throw {
+      status: 400,
+      message: "id or ids is required",
+    };
+  }
+
+  if (adjustmentIds.length === 0) {
+    return sendSuccess(
+      res,
+      200,
+      "No payroll adjustments to delete",
+      {
+        deleted_count: 0,
+        ids: [],
+      }
+    );
+  }
+
+  const placeholders = adjustmentIds
+    .map(() => "?")
+    .join(", ");
+
+  const [adjustments] = await conn.query(
+    `
+        SELECT
+          id,
+          employee_id
+        FROM payroll_adjustments
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+      `,
+    [company_id, ...adjustmentIds]
+  );
+
+  const existingIds = new Set(
+    adjustments.map((row) => row.id)
+  );
+
+  const missingIds = adjustmentIds.filter(
+    (adjustmentId) => !existingIds.has(adjustmentId)
+  );
+
+  if (missingIds.length > 0) {
+    throw {
+      status: 404,
+      message:
+        "One or more payroll adjustments not found or already deleted",
+      data: {
+        ids: missingIds,
+      },
+    };
+  }
+
+  const employeeIds = [
+    ...new Set(
+      adjustments
+        .map((adjustment) => adjustment.employee_id)
+        .filter(
+          (employeeId) =>
+            employeeId !== null &&
+            employeeId !== undefined
+        )
+    ),
+  ];
+
+  const [result] = await conn.query(
+    `
+        UPDATE payroll_adjustments
+        SET
+          is_deleted = 1,
+          deleted_at = NOW(),
+          deleted_by = ?
+        WHERE company_id = ?
+          AND id IN (${placeholders})
+          AND is_deleted = 0
+      `,
+    [
+      user_id || null,
+      company_id,
+      ...adjustmentIds,
+    ]
+  );
+
+  for (const employeeId of employeeIds) {
+    await recalcPayrollIfExists(
+      conn,
+      company_id,
+      employeeId,
+      user_id
+    );
+  }
+
+  return sendSuccess(
+    res,
+    200,
+    adjustmentIds.length === 1
+      ? "Payroll adjustment deleted successfully"
+      : "Payroll adjustments deleted successfully",
+    {
+      deleted_count: result.affectedRows,
+      ids: adjustmentIds,
+    }
+  );
+})
+);
+
 
 // 8. Send Payroll Email
 router.post("/send-email", auth(PAY.MNG), async (req, res) => {
