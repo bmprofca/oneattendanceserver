@@ -675,4 +675,158 @@ router.put("/transfer-packages", auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
+router.get("/user-package/:userId", auth(PERM_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+
+    const companyId = safeNumber(req.company?.id, 0);
+    const userId = safeNumber(req.params.userId, 0);
+
+    if (!companyId || !userId) {
+      return sendError(res, 400, "Invalid company context or user ID");
+    }
+
+    // Find the employee's assigned permission package
+    const [empRows] = await conn.query(
+      `SELECT permission_package_id
+       FROM employees
+       WHERE user_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+       LIMIT 1`,
+      [userId, companyId]
+    );
+
+    if (!empRows.length) {
+      return sendError(res, 404, "Employee not found or inactive");
+    }
+
+    const packageId = empRows[0].permission_package_id;
+
+    // Fetch package details (only required fields)
+    const [pkgRows] = await conn.query(
+      `SELECT id, package_name, group_code, description, is_active
+       FROM permission_packages
+       WHERE id = ? AND company_id = ? AND is_deleted = 0
+       LIMIT 1`,
+      [packageId, companyId]
+    );
+
+    if (!pkgRows.length) {
+      return sendError(res, 404, "Permission package not found");
+    }
+
+    const pkg = pkgRows[0];
+
+    // Fetch all active permissions for this package
+    const [permissionRows] = await conn.query(
+      `SELECT p.id, p.code, p.name, p.action, p.category
+       FROM permission_package_items ppi
+       JOIN permissions p ON p.id = ppi.permission_id
+       WHERE ppi.package_id = ? AND ppi.is_deleted = 0 AND ppi.is_active = 1
+       ORDER BY p.id ASC`,
+      [packageId]
+    );
+
+    const permissions = permissionRows.map(formatPermission);
+
+    return sendSuccess(res, 200, "User permission package fetched successfully", {
+      package: {
+        id: pkg.id,
+        package_name: pkg.package_name,
+        group_code: pkg.group_code,
+        description: pkg.description,
+        is_active: !!pkg.is_active,
+      },
+      permissions,
+    });
+  } catch (error) {
+    console.error("User package error:", { message: error.message, stack: error.stack });
+    return sendError(
+      res,
+      500,
+      "Failed to fetch user package",
+      NODE_ENV === "development" ? error.message : undefined
+    );
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.get("/employee-package/:employeeId", auth(PERM_PKG.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+
+    const companyId = safeNumber(req.company?.id, 0);
+    const employeeId = safeNumber(req.params.employeeId, 0);
+
+    if (!companyId || !employeeId) {
+      return sendError(res, 400, "Invalid company context or employee ID");
+    }
+
+    // Directly get the permission_package_id for this employee
+    const [empRows] = await conn.query(
+      `SELECT permission_package_id
+       FROM employees
+       WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+       LIMIT 1`,
+      [employeeId, companyId]
+    );
+
+    if (!empRows.length) {
+      return sendError(res, 404, "Employee not found or inactive");
+    }
+
+    const packageId = empRows[0].permission_package_id;
+
+    // Rest of the code remains the same...
+    const [pkgRows] = await conn.query(
+      `SELECT id, package_name, group_code, description, is_active
+       FROM permission_packages
+       WHERE id = ? AND company_id = ? AND is_deleted = 0
+       LIMIT 1`,
+      [packageId, companyId]
+    );
+
+    if (!pkgRows.length) {
+      return sendError(res, 404, "Permission package not found");
+    }
+
+    const pkg = pkgRows[0];
+
+    const [permissionRows] = await conn.query(
+      `SELECT p.id, p.code, p.name, p.action, p.category
+       FROM permission_package_items ppi
+       JOIN permissions p ON p.id = ppi.permission_id
+       WHERE ppi.package_id = ? AND ppi.is_deleted = 0 AND ppi.is_active = 1
+       ORDER BY p.id ASC`,
+      [packageId]
+    );
+
+    const permissions = permissionRows.map(formatPermission);
+
+    return sendSuccess(res, 200, "Employee permission package fetched successfully", {
+      package: {
+        id: pkg.id,
+        package_name: pkg.package_name,
+        group_code: pkg.group_code,
+        description: pkg.description,
+        is_active: !!pkg.is_active,
+      },
+      permissions,
+    });
+  } catch (error) {
+    console.error("Employee package error:", { message: error.message, stack: error.stack });
+    return sendError(
+      res,
+      500,
+      "Failed to fetch employee package",
+      NODE_ENV === "development" ? error.message : undefined
+    );
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
 export default router;
