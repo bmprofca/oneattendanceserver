@@ -943,9 +943,10 @@ router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, r
   const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
   if (!employee) throw { status: 404, message: "Employee not found" };
 
+  // Find the current salary that is effective today (based on dates, not is_active)
   const [[currentSalary]] = await conn.query(
     `SELECT * FROM salary_structures 
-     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
+     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0
        AND effective_from <= CURDATE() AND (effective_to IS NULL OR effective_to >= CURDATE())
      ORDER BY effective_from DESC LIMIT 1`,
     [employee_id, company_id]
@@ -959,11 +960,12 @@ router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, r
   await checkSalaryOverlap(conn, employee_id, company_id, effectiveFrom, null, currentSalary.id);
 
   const prevEndDate = formatDate(addDays(new Date(effectiveFrom), -1));
+  // Update only effective_to of current salary; leave is_active untouched
   await conn.query(
     `UPDATE salary_structures 
-     SET effective_to = ?, is_active = CASE WHEN CURDATE() <= ? THEN 1 ELSE 0 END, updated_by = ?
+     SET effective_to = ?, updated_by = ?
      WHERE id = ?`,
-    [prevEndDate, prevEndDate, user_id || null, currentSalary.id]
+    [prevEndDate, user_id || null, currentSalary.id]
   );
 
   const [salaryInsert] = await conn.query(
@@ -975,14 +977,8 @@ router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, r
 
   const compRows = validatedComponents.map(c => [company_id, employee_id, newSalaryId, c.component_id, c.calc_type, c.calc_value, c.remark, 1, user_id || null]);
   await conn.query(`INSERT INTO employee_salary_component (company_id, employee_id, salary_id, component_id, calc_type, calc_value, remark, is_active, created_by) VALUES ?`, [compRows]);
-  await conn.query(`UPDATE salary_structures SET is_active = 0 WHERE employee_id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
-  await conn.query(
-    `UPDATE salary_structures SET is_active = 1 
-     WHERE employee_id = ? AND company_id = ? AND is_deleted = 0
-       AND effective_from <= CURDATE() AND (effective_to IS NULL OR effective_to >= CURDATE())
-       ORDER BY effective_from DESC LIMIT 1`,
-    [employee_id, company_id]
-  );
+
+  // Note: No deactivation of other salaries; date ranges handle selection.
 
   return sendSuccess(res, 201, "Salary revision scheduled successfully", {
     new_salary_id: newSalaryId,
@@ -1019,6 +1015,7 @@ router.delete("/delete-salary", auth(SAL.MNG), withTransaction(async (conn, req,
   );
 
   await conn.query(`UPDATE employee_salary_component SET is_deleted = 1, deleted_at = NOW(), deleted_by = ? WHERE salary_id = ? AND is_deleted = 0`, [user_id, salary_id]);
+  // Soft delete the salary structure (is_active can be left as 1 but we set to 0 for consistency)
   await conn.query(`UPDATE salary_structures SET is_deleted = 1, deleted_at = NOW(), deleted_by = ?, is_active = 0 WHERE id = ?`, [user_id, salary_id]);
 
   if (prevSalary && nextSalary) {
@@ -1027,14 +1024,7 @@ router.delete("/delete-salary", auth(SAL.MNG), withTransaction(async (conn, req,
     await conn.query(`UPDATE salary_structures SET effective_to = NULL, updated_by = ? WHERE id = ?`, [user_id, prevSalary.id]);
   }
 
-  await conn.query(`UPDATE salary_structures SET is_active = 0 WHERE employee_id = ? AND company_id = ? AND is_deleted = 0`, [employee_id, company_id]);
-  const [[currentSalary]] = await conn.query(
-    `SELECT id FROM salary_structures WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 AND CURDATE() >= effective_from AND (effective_to IS NULL OR CURDATE() <= effective_to) ORDER BY effective_from DESC LIMIT 1`,
-    [employee_id, company_id]
-  );
-  if (currentSalary) {
-    await conn.query(`UPDATE salary_structures SET is_active = 1, updated_by = ? WHERE id = ?`, [user_id, currentSalary.id]);
-  }
+  // No reactivation of remaining salaries; their is_active flags are unchanged.
 
   return sendSuccess(res, 200, "Salary deleted successfully");
 }));
@@ -1063,13 +1053,15 @@ router.get("/employees-salaries", auth(SAL.MNG), withConnection(async (conn, req
     const end = new Date(Date.UTC(year, month, 0)).toISOString().split("T")[0];
     dateCondition = `AND ss.effective_from <= ? AND (ss.effective_to IS NULL OR ss.effective_to >= ?)`;
     dateParams.push(end, start);
+  } else {
+    // Default: salaries effective today (no is_active filter)
+    dateCondition = `AND ss.effective_from <= CURDATE() AND (ss.effective_to IS NULL OR ss.effective_to >= CURDATE())`;
   }
 
-  const activeCondition = dateCondition ? "" : "AND ss.is_active = 1";
   const searchCondition = search ? "AND (u.name LIKE ? OR u.email LIKE ? OR e.employee_code LIKE ?)" : "";
   const searchParams = search ? [`%${search}%`, `%${search}%`, `%${search}%`] : [];
 
-  const fromJoins = `FROM employees e JOIN users u ON u.id = e.user_id INNER JOIN salary_structures ss ON ss.employee_id = e.id AND ss.company_id = e.company_id AND ss.is_deleted = 0 ${activeCondition} ${dateCondition} LEFT JOIN (SELECT DISTINCT salary_id FROM payroll_entries WHERE is_deleted = 0) pe_used ON pe_used.salary_id = ss.id WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 ${searchCondition}`;
+  const fromJoins = `FROM employees e JOIN users u ON u.id = e.user_id INNER JOIN salary_structures ss ON ss.employee_id = e.id AND ss.company_id = e.company_id AND ss.is_deleted = 0 ${dateCondition} LEFT JOIN (SELECT DISTINCT salary_id FROM payroll_entries WHERE is_deleted = 0) pe_used ON pe_used.salary_id = ss.id WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1 ${searchCondition}`;
   const baseParams = [...dateParams, company_id, ...searchParams];
 
   const countQuery = `SELECT COUNT(*) AS total ${fromJoins}`;
@@ -1217,7 +1209,7 @@ router.get("/my-salary", auth(SAL.EMP), withConnection(async (conn, req, res) =>
   const [[salaryStructure]] = await conn.query(
     `SELECT ss.id, ss.base_amount, ss.effective_from, ss.effective_to, ss.created_at
      FROM salary_structures ss
-     WHERE ss.company_id = ? AND ss.employee_id = ? AND ss.is_deleted = 0 AND ss.is_active = 1
+     WHERE ss.company_id = ? AND ss.employee_id = ? AND ss.is_deleted = 0
        AND ss.effective_from <= LAST_DAY(?) AND (ss.effective_to IS NULL OR ss.effective_to >= ?)
      ORDER BY ss.effective_from DESC, ss.id DESC LIMIT 1`,
     [company_id, employee_id, targetDate, targetDate]
@@ -1229,7 +1221,7 @@ router.get("/my-salary", auth(SAL.EMP), withConnection(async (conn, req, res) =>
             CASE WHEN esc.calc_type = 'fixed' THEN esc.calc_value WHEN esc.calc_type = 'percentage' THEN ROUND((ss.base_amount * esc.calc_value) / 100, 2) ELSE 0 END AS amount
      FROM employee_salary_component esc
      INNER JOIN salary_components sc ON sc.id = esc.component_id AND sc.is_deleted = 0 AND sc.is_active = 1
-     INNER JOIN salary_structures ss ON ss.id = esc.salary_id AND ss.is_deleted = 0 AND ss.is_active = 1
+     INNER JOIN salary_structures ss ON ss.id = esc.salary_id AND ss.is_deleted = 0
      WHERE esc.company_id = ? AND esc.employee_id = ? AND esc.salary_id = ? AND esc.is_deleted = 0 AND esc.is_active = 1
      ORDER BY sc.type ASC, sc.name ASC`,
     [company_id, employee_id, salaryStructure.id]
