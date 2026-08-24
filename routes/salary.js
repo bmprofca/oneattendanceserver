@@ -548,7 +548,7 @@ router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (c
 
 
 // 5. Create salary package
-router.post("/components/create-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.post("/components/create-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
   let { name, code, description, components } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
@@ -589,7 +589,7 @@ router.post("/components/create-package", auth(SAL_COMP.MNG), withTransaction(as
 }));
 
 // 6. List salary packages
-router.get("/components/packages", auth(SAL_COMP.MNG), withConnection(async (conn, req, res) => {
+router.get("/components/packages", auth(SAL_PKG.MNG), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   if (!company_id) throw { status: 400, message: "Company not found" };
 
@@ -649,7 +649,7 @@ router.get("/components/packages", auth(SAL_COMP.MNG), withConnection(async (con
 }));
 
 // 7. Update salary package
-router.put("/components/update-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.put("/components/update-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   let { package_id, name, code, description, components } = req.body;
@@ -712,7 +712,7 @@ router.put("/components/update-package", auth(SAL_COMP.MNG), withTransaction(asy
 }));
 
 // 8. Delete salary package (single or bulk)
-router.delete("/components/delete-package", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.delete("/components/delete-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   let { id, ids } = req.body;
@@ -1132,48 +1132,108 @@ router.get("/employees-salaries", auth(SAL.MNG), withConnection(async (conn, req
   return sendSuccess(res, 200, "Employee salaries fetched successfully", results, buildMeta(page, limit, total, results.length));
 }));
 
-// 14. Employee salary history
-router.get("/employee-salary-history", auth(SAL.MNG), withConnection(async (conn, req, res) => {
+// 14. Employee salary history (all salaries for a specific employee, with status)
+router.get("/employee-salaries/:employeeId", auth(SAL.MNG), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
-  const employee_id = Number(req.query.employee_id);
+  const employee_id = Number(req.params.employeeId);
 
   if (!company_id || !employee_id) throw { status: 400, message: "Invalid company or employee" };
 
-  const [rows] = await conn.query(
-    `SELECT ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, 'past' AS status
+  // 1. Fetch employee details
+  const [[employee]] = await conn.query(
+    `SELECT e.id AS employee_id, e.employee_code, u.name, u.email, u.profile_picture
+     FROM employees e
+     JOIN users u ON u.id = e.user_id
+     WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
+     LIMIT 1`,
+    [employee_id, company_id]
+  );
+
+  if (!employee) throw { status: 404, message: "Employee not found" };
+
+  // 2. Fetch ALL salary structures for this employee (past, current, future)
+  const [salaryRows] = await conn.query(
+    `SELECT ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to,
+            CASE WHEN pe_used.salary_id IS NOT NULL THEN TRUE ELSE FALSE END AS payroll_used
      FROM salary_structures ss
-     WHERE ss.employee_id = ? AND ss.company_id = ? AND ss.is_deleted = 0 AND (ss.effective_to IS NOT NULL AND ss.effective_to < CURDATE())
+     LEFT JOIN (
+       SELECT DISTINCT salary_id FROM payroll_entries WHERE is_deleted = 0
+     ) pe_used ON pe_used.salary_id = ss.id
+     WHERE ss.employee_id = ? AND ss.company_id = ? AND ss.is_deleted = 0
      ORDER BY ss.effective_from DESC`,
     [employee_id, company_id]
   );
 
-  if (!rows.length) return sendSuccess(res, 200, "No salary history found", []);
+  if (!salaryRows.length) return sendSuccess(res, 200, "No salary records found", []);
 
-  const salaryIds = rows.map(r => r.salary_id);
-  const [components] = await conn.query(
-    `SELECT esc.salary_id, c.name, c.code, c.type, esc.calc_type, esc.calc_value
+  // 3. Fetch all components for the salary IDs
+  const salaryIds = salaryRows.map(r => r.salary_id);
+  const [componentRows] = await conn.query(
+    `SELECT esc.salary_id, c.id, c.code, c.name, c.type, esc.calc_type, esc.calc_value
      FROM employee_salary_component esc
-     JOIN salary_components c ON c.id = esc.component_id
+     JOIN salary_components c ON c.id = esc.component_id AND c.company_id = esc.company_id
      WHERE esc.salary_id IN (?) AND esc.company_id = ? AND esc.is_deleted = 0`,
     [salaryIds, company_id]
   );
 
+  // 4. Map components to salary_id
   const compMap = {};
-  components.forEach(c => {
+  componentRows.forEach(c => {
     if (!compMap[c.salary_id]) compMap[c.salary_id] = [];
     compMap[c.salary_id].push(c);
   });
 
-  const result = rows.map(r => ({
-    salary_id: r.salary_id,
-    base_amount: Number(r.base_amount),
-    effective_from: r.effective_from,
-    effective_to: r.effective_to,
-    status: r.status,
-    components: compMap[r.salary_id] || [],
-  }));
+  // 5. Build result array with same structure as /employees-salaries + status
+  const results = salaryRows.map(row => {
+    const components = compMap[row.salary_id] || [];
+    const base = Number(row.base_amount) || 0;
+    let total_earnings = base, total_deductions = 0, employer_contributions = 0;
 
-  return sendSuccess(res, 200, "Salary history fetched successfully", result);
+    // Calculate component amounts and totals
+    components.forEach(c => {
+      let amount = c.calc_type === "percentage" ? (base * Number(c.calc_value)) / 100 : Number(c.calc_value);
+      amount = Number(amount.toFixed(2));
+      c.amount = amount;
+      if (c.type === "earning") total_earnings += amount;
+      else if (c.type === "deduction") total_deductions += amount;
+      else if (c.type === "employer_contribution") employer_contributions += amount;
+    });
+
+    const gross_salary = Number(total_earnings.toFixed(2));
+    const net_salary = Math.max(0, Number((gross_salary - total_deductions).toFixed(2)));
+    const ctc = Number((gross_salary + employer_contributions).toFixed(2));
+
+    // Determine salary status: past / current / future
+    const today = new Date().toISOString().slice(0, 10);
+    let status;
+    if (row.effective_to && row.effective_to < today) status = "past";
+    else if (row.effective_from <= today && (!row.effective_to || row.effective_to >= today)) status = "current";
+    else status = "future";
+
+    return {
+      salary_id: row.salary_id,
+      payroll_used: Boolean(row.payroll_used),
+      employee: {
+        id: employee.employee_id,
+        employee_code: employee.employee_code,
+        name: employee.name,
+        email: employee.email,
+        profile_picture: buildFileUrl(employee.profile_picture),
+      },
+      base_amount: base,
+      effective_from: row.effective_from,
+      effective_to: row.effective_to,
+      status,  // <-- added status
+      ctc,
+      gross_salary,
+      employer_contributions: Number(employer_contributions.toFixed(2)),
+      total_deductions: Number(total_deductions.toFixed(2)),
+      net_salary,
+      components,
+    };
+  });
+
+  return sendSuccess(res, 200, "Employee salaries fetched successfully", results);
 }));
 
 // 15. My salary (employee view)
