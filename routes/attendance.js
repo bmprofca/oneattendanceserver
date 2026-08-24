@@ -2814,8 +2814,8 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
               return sendError(res, 400, "Invalid paid leave_type_value");
             }
           }
-          db_value2 = leave_type_value;
         }
+        db_value2 = leave_type_value;
       }
     }
 

@@ -113,7 +113,8 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
     ] = await Promise.all([
       conn.query(
         `SELECT id, attendance_date, type, start_time, end_time,
-                is_deductible, is_verified, day_status,
+          is_deductible, is_verified, day_status,
+          value1, value2, value3, remark,
                 created_by, verified_by,
                 ROUND(CASE WHEN start_time IS NOT NULL AND end_time IS NOT NULL
                       THEN TIME_TO_SEC(TIMEDIFF(end_time, start_time)) / 60
@@ -257,6 +258,13 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
           ];
 
       if (row.type === "attendance") {
+        day.half_day_type = row.day_status === "half_day" ? row.value1 : null;
+        day.leave_type = row.day_status === "leave" ? row.value1 : null;
+        day.leave_code = row.day_status === "leave" ? (row.value2 || null) : null;
+        day.leave_day_overtime = row.day_status === "leave" && row.value3 !== null
+          ? safeNumber(row.value3)
+          : null;
+        day.remark = row.remark || null;
         day.activities.push(...activity);
         day.worked_minutes += safeNumber(row.total_minutes);
       } else {
@@ -455,6 +463,11 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
         obj.verified_by = attendance.verified_by;
         obj.is_deductible = attendance.break_minutes > 0;
         obj.is_overtime = overtimeMinutes > 0;
+        obj.half_day_type = attendance.half_day_type;
+        obj.leave_type = attendance.leave_type;
+        obj.leave_code = attendance.leave_code || (leave ? leave.code : null);
+        obj.leave_day_overtime = attendance.leave_day_overtime;
+        obj.remark = attendance.remark;
 
         if (attendance.activities.length > 0) obj.activities = attendance.activities;
         if (attendance.breaks.length > 0) obj.breaks = attendance.breaks;
