@@ -419,6 +419,140 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
   }
 });
 
+// 2b. Single Employee Payroll History (all generated + current preview)
+router.get("/:employeeId", auth(PAY.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    const companyId = req.company?.id;
+    const employeeId = Number(req.params.employeeId);
+
+    if (!companyId || !employeeId) return sendError(res, 400, "Invalid company or employee");
+
+    // 1. Fetch employee details (same as /list)
+    const [[employee]] = await conn.query(
+      `SELECT e.id, e.employee_code, e.designation, e.employment_type, e.salary_type, e.joining_date,
+              u.name, u.email, u.profile_picture
+       FROM employees e
+       INNER JOIN users u ON u.id = e.user_id
+       WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
+       LIMIT 1`,
+      [employeeId, companyId]
+    );
+
+    if (!employee) return sendError(res, 404, "Employee not found");
+
+    // 2. Fetch ALL generated payroll entries for this employee (past, current, future)
+    const [entries] = await conn.query(
+      `SELECT pe.*, DATE_FORMAT(pe.payroll_period, '%Y-%m') AS period_key
+       FROM payroll_entries pe
+       WHERE pe.employee_id = ? AND pe.company_id = ? AND pe.is_deleted = 0
+       ORDER BY pe.payroll_period DESC`,
+      [employeeId, companyId]
+    );
+
+    // 3. Fetch components for all entries
+    const entryIds = entries.map(r => r.id);
+    const componentMap = await fetchPayrollComponentsMap(conn, entryIds);
+
+    // 4. Fetch adjustments for this employee (all periods, grouped by month)
+    const [adjustmentRows] = await conn.query(
+      `SELECT *, DATE_FORMAT(adjustment_period, '%Y-%m') AS period_key
+       FROM payroll_adjustments
+       WHERE company_id = ? AND employee_id = ? AND is_deleted = 0`,
+      [companyId, employeeId]
+    );
+    const adjustmentsByPeriod = {};
+    adjustmentRows.forEach(adj => {
+      if (!adjustmentsByPeriod[adj.period_key]) adjustmentsByPeriod[adj.period_key] = [];
+      adjustmentsByPeriod[adj.period_key].push({
+        type: adj.adjustment_type,
+        name: adj.name,
+        amount: adj.amount,
+        remark: adj.remark,
+      });
+    });
+
+    // 5. Build generated_payrolls array with status
+    const now = new Date();
+    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const generatedPayrolls = entries.map(entry => {
+      const periodKey = entry.period_key;
+      let status = "past";
+      if (periodKey === currentPeriod) status = "current";
+      else if (periodKey > currentPeriod) status = "future";
+
+      return {
+        employee: formatEmployeeBasic(employee),
+        payroll: {
+          ...formatPayrollEntry(entry),
+          components_breakdown: componentMap[entry.id] || { earnings: [], deductions: [] },
+          adjustments: adjustmentsByPeriod[periodKey] || [],
+        },
+        status,
+      };
+    });
+
+    // 6. Determine if a preview for the current month is needed
+    const hasCurrentPayroll = generatedPayrolls.some(p => p.status === "current");
+    const previewPayrolls = [];
+
+    if (!hasCurrentPayroll) {
+      // Check if employee is eligible (joining_date <= end of current month)
+      const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      if (employee.joining_date && new Date(employee.joining_date) <= lastDayOfMonth) {
+        const payroll = await calculatePayroll({
+          conn,
+          companyId,
+          employeeId,
+          upsertPeriod: currentPeriod,
+        });
+
+        if (payroll) {
+          previewPayrolls.push({
+            employee: formatEmployeeBasic(employee),
+            payroll: {
+              month: now.getMonth() + 1,
+              year: now.getFullYear(),
+              net_salary: payroll.net_salary,
+              total_earnings: payroll.total_earnings,
+              total_deductions: payroll.total_deductions,
+              attendance: {
+                working_days: payroll.total_days || 0,
+                present_days: payroll.shift_stats?.present_days || 0,
+                absent_days: payroll.shift_stats?.absent_days || 0,
+                paid_leave_days: payroll.shift_stats?.paid_leave_days || 0,
+                unpaid_leave_days: payroll.shift_stats?.unpaid_leave_days || 0,
+              },
+              work: {
+                worked_minutes: payroll.shift_stats?.worked_minutes || 0,
+                overtime_minutes: payroll.shift_stats?.overtime_minutes || 0,
+                deduction_minutes: payroll.shift_stats?.deductible_minutes || 0,
+              },
+              components_breakdown: {
+                earnings: payroll.components?.filter(c => c.componentType === "earning").map(c => ({ name: c.componentName, amount: c.amount })) || [],
+                deductions: payroll.components?.filter(c => c.componentType === "deduction").map(c => ({ name: c.componentName, amount: c.amount })) || [],
+              },
+              adjustments: payroll.adjustments?.map(a => ({ type: a.adjustment_type, name: a.name, amount: a.amount, remark: a.remark })) || [],
+            },
+            status: "current",
+          });
+        }
+      }
+    }
+
+    return sendSuccess(res, 200, "Employee payroll history fetched successfully", {
+      generated_payrolls: generatedPayrolls,
+      preview_payrolls: previewPayrolls,
+    });
+  } catch (err) {
+    console.error("Single Employee Payroll API Error:", err);
+    return sendError(res, err.statusCode || 500, err.message || "Server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 // 3. My Payroll
 router.get("/my", auth(PAY.EMP), async (req, res) => {
   let conn;
