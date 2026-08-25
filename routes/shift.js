@@ -230,12 +230,14 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
         row.type === "attendance"
           ? [
             {
+              attendance_id: row.id,
               type: "PUNCH_IN",
               time: formatTime(row.start_time),
               attendance_method: "manual",
               created_by: row.created_by
             },
             {
+              attendance_id: row.id,
               type: "PUNCH_OUT",
               time: formatTime(row.end_time),
               attendance_method: "manual",
@@ -244,12 +246,14 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
           ]
           : [
             {
+              attendance_id: row.id,
               type: "BREAK_START",
               time: formatTime(row.start_time),
               attendance_method: "manual",
               created_by: row.created_by
             },
             {
+              attendance_id: row.id,
               type: "BREAK_END",
               time: formatTime(row.end_time),
               attendance_method: "manual",
