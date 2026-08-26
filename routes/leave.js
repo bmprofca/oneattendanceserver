@@ -1982,6 +1982,142 @@ router.get("/emp-leaves", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
+router.get("/emp-leaves/:employee_id", auth(LEAVE.MNG), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    const company_id = req.company?.id;
+    if (!company_id) return sendError(res, 400, "Invalid company");
+
+    // Validate employee_id from path
+    const employee_id = Number(req.params.employee_id);
+    if (!Number.isInteger(employee_id) || employee_id <= 0) {
+      return sendError(res, 400, "Invalid employee_id");
+    }
+
+    // Pagination
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const offset = (page - 1) * limit;
+
+    // Filters (same as /emp-leaves, but employee_id is forced)
+    const search = (req.query.search || "").trim();
+    const status = req.query.status?.trim();
+    const start_date = req.query.start_date;
+    const end_date = req.query.end_date;
+    const leave_type = req.query.leave_type ? Number(req.query.leave_type) : null;
+
+    if (leave_type && (!Number.isInteger(leave_type) || leave_type <= 0))
+      return sendError(res, 400, "Invalid leave_type");
+
+    const allowedStatuses = ["pending", "approved", "rejected"];
+    if (status && !allowedStatuses.includes(status.toLowerCase()))
+      return sendError(res, 400, `Invalid status. Allowed: ${allowedStatuses.join(", ")}`);
+    if (start_date && isNaN(new Date(start_date))) return sendError(res, 400, "Invalid start_date");
+    if (end_date && isNaN(new Date(end_date))) return sendError(res, 400, "Invalid end_date");
+
+    // Main query with forced employee_id
+    let query = `
+      SELECT ${LEAVE_APPLICATION_FIELDS}, e.employee_code, e.designation,
+             u.name AS employee_name, u.email, u.profile_picture,
+             lc.code AS leave_code, lc.name AS leave_name, lc.is_paid,
+             au.name AS approved_by_name
+      FROM employee_leaves el
+      JOIN employees e ON e.id = el.employee_id AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
+      JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
+      JOIN leave_configs lc ON lc.id = el.leave_config_id AND lc.is_deleted = 0
+      LEFT JOIN users au ON au.id = el.approved_by
+      WHERE el.company_id = ? AND el.is_deleted = 0 AND LOWER(TRIM(el.status)) != 'cancelled'
+        AND el.employee_id = ?
+    `;
+    const params = [company_id, company_id, employee_id];
+
+    // Apply optional filters
+    if (status) { query += ` AND el.status = ?`; params.push(status); }
+    if (start_date && end_date) { query += ` AND el.start_date BETWEEN ? AND ?`; params.push(start_date, end_date); }
+    else if (start_date) { query += ` AND el.start_date >= ?`; params.push(start_date); }
+    else if (end_date) { query += ` AND el.start_date <= ?`; params.push(end_date); }
+    if (search) {
+      const terms = search.toLowerCase().split(" ").filter(Boolean);
+      const conditions = terms.map(() => `(LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ? OR LOWER(e.employee_code) LIKE ? OR LOWER(lc.name) LIKE ? OR LOWER(lc.code) LIKE ? OR LOWER(el.reason) LIKE ?)`).join(" AND ");
+      query += ` AND (${conditions})`;
+      terms.forEach(term => { const s = `%${term}%`; params.push(s, s, s, s, s, s); });
+    }
+    if (leave_type) { query += ` AND el.leave_config_id = ?`; params.push(leave_type); }
+
+    query += ` ORDER BY el.created_at DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const [rows] = await conn.query(query, params);
+
+    // Attachments
+    const leaveIds = rows.map(r => r.id);
+    let attachmentMap = {};
+    if (leaveIds.length) {
+      const [attachments] = await conn.query(
+        `SELECT id, leave_id, file_url, file_type, file_size 
+         FROM employee_leave_attachments 
+         WHERE leave_id IN (?) AND is_deleted = 0`,
+        [leaveIds]
+      );
+      attachmentMap = attachments.reduce((acc, file) => {
+        (acc[file.leave_id] = acc[file.leave_id] || []).push({
+          id: file.id,
+          file_url: file.file_url,
+          file_type: file.file_type,
+          file_size: file.file_size
+        });
+        return acc;
+      }, {});
+    }
+
+    // Count query (same filters, no limit/offset)
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM employee_leaves el
+      JOIN employees e ON e.id = el.employee_id AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
+      JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
+      JOIN leave_configs lc ON lc.id = el.leave_config_id AND lc.is_deleted = 0
+      WHERE el.company_id = ? AND el.is_deleted = 0 AND LOWER(TRIM(el.status)) != 'cancelled'
+        AND el.employee_id = ?
+    `;
+    const countParams = [company_id, company_id, employee_id];
+    if (status) { countQuery += ` AND el.status = ?`; countParams.push(status); }
+    if (start_date && end_date) { countQuery += ` AND el.start_date BETWEEN ? AND ?`; countParams.push(start_date, end_date); }
+    else if (start_date) { countQuery += ` AND el.start_date >= ?`; countParams.push(start_date); }
+    else if (end_date) { countQuery += ` AND el.start_date <= ?`; countParams.push(end_date); }
+    if (search) {
+      const terms = search.toLowerCase().split(" ").filter(Boolean);
+      const conditions = terms.map(() => `(LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ? OR LOWER(e.employee_code) LIKE ? OR LOWER(lc.name) LIKE ? OR LOWER(lc.code) LIKE ? OR LOWER(el.reason) LIKE ?)`).join(" AND ");
+      countQuery += ` AND (${conditions})`;
+      terms.forEach(term => { const s = `%${term}%`; countParams.push(s, s, s, s, s, s); });
+    }
+    if (leave_type) { countQuery += ` AND el.leave_config_id = ?`; countParams.push(leave_type); }
+
+    const [[{ total }]] = await conn.query(countQuery, countParams);
+
+    // Format data
+    const data = rows.map(row => ({
+      ...formatLeaveApplication(row),
+      profile_picture: buildFileUrl(row.profile_picture) || null,
+      attachments: attachmentMap[row.id] || []
+    }));
+
+    return sendSuccess(
+      res,
+      200,
+      "Employee leaves fetched successfully",
+      data,
+      buildMeta(page, limit, total, data.length)
+    );
+  } catch (err) {
+    console.error("Single Employee Leave List Error:", err);
+    return sendError(res, err.status || 500, err.message || "Internal server error");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 // ================ Leave Management Routes(Endusers) ====================
 
 router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
