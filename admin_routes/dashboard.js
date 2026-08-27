@@ -44,7 +44,7 @@ router.get("/", async (req, res) => {
       conn.query("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM employees WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM company_subscriptions WHERE is_active = 1" + cAt.condition, cAt.params),
-      conn.query("SELECT COUNT(*) as count FROM attendance" + aDate.condition, aDate.params),
+      conn.query("SELECT COUNT(*) as count FROM attendance WHERE 1 = 1" + aDate.condition, aDate.params),
       conn.query("SELECT COUNT(*) as count FROM employee_leaves WHERE is_deleted = 0" + sDate.condition, sDate.params),
       conn.query("SELECT COUNT(*) as count FROM holidays WHERE is_deleted = 0" + hDate.condition, hDate.params),
       conn.query("SELECT COUNT(*) as count FROM transactions WHERE is_deleted = 0" + tDate.condition, tDate.params),
