@@ -544,11 +544,11 @@ router.get("/:id/attendance-overview", async (req, res) => {
       SELECT
         COUNT(DISTINCT attendance_data.employee_id) AS unique_employees,
         COUNT(*) AS total_shifts,
-        COALESCE(SUM(attendance_data.worked_minutes), 0) AS total_worked_minutes,
-        COALESCE(SUM(attendance_data.overtime_minutes), 0) AS total_overtime_minutes,
-        ROUND(COALESCE(SUM(attendance_data.late_minutes), 0), 2) AS total_late_minutes,
-        COALESCE(SUM(attendance_data.deductible_minutes), 0) AS total_deductible_minutes,
-        ROUND(COALESCE(SUM(attendance_data.early_leave_minutes), 0), 2) AS total_early_leave_minutes
+        CAST(ROUND(COALESCE(SUM(attendance_data.worked_minutes), 0), 0) AS SIGNED) AS total_worked_minutes,
+        CAST(ROUND(COALESCE(SUM(attendance_data.overtime_minutes), 0), 0) AS SIGNED) AS total_overtime_minutes,
+        CAST(ROUND(COALESCE(SUM(attendance_data.late_minutes), 0), 0) AS SIGNED) AS total_late_minutes,
+        CAST(ROUND(COALESCE(SUM(attendance_data.deductible_minutes), 0), 0) AS SIGNED) AS total_deductible_minutes,
+        CAST(ROUND(COALESCE(SUM(attendance_data.early_leave_minutes), 0), 0) AS SIGNED) AS total_early_leave_minutes
       FROM (
         SELECT
           a.employee_id,
