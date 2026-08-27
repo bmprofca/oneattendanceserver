@@ -523,34 +523,139 @@ router.get("/:id/attendance-overview", async (req, res) => {
       date_to = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
     }
 
-    // Day-status breakdown from shifts
+    // Day-status breakdown from attendance records
     const [statusBreakdown] = await conn.query(
       `
       SELECT
-        s.day_status,
+        a.day_status,
         COUNT(*) AS count
-      FROM shifts s
-      WHERE s.company_id = ? AND s.is_deleted = 0
-        AND s.shift_date BETWEEN ? AND ?
-      GROUP BY s.day_status
+      FROM attendance a
+      WHERE a.company_id = ?
+        AND a.type = 'attendance'
+        AND a.attendance_date BETWEEN ? AND ?
+      GROUP BY a.day_status
       `,
       [companyId, date_from, date_to]
     );
 
-    // Overtime & late summary
+    // Time summary from attendance punch intervals and employee schedules
     const [[timeSummary]] = await conn.query(
       `
       SELECT
-        COUNT(DISTINCT s.employee_id)                             AS unique_employees,
-        COUNT(*)                                                  AS total_shifts,
-        COALESCE(SUM(s.worked_minutes), 0)                        AS total_worked_minutes,
-        COALESCE(SUM(s.overtime_minutes), 0)                      AS total_overtime_minutes,
-        COALESCE(SUM(s.late_minutes), 0)                          AS total_late_minutes,
-        COALESCE(SUM(s.deductible_minutes), 0)                    AS total_deductible_minutes,
-        COALESCE(SUM(s.early_leave_minutes), 0)                   AS total_early_leave_minutes
-      FROM shifts s
-      WHERE s.company_id = ? AND s.is_deleted = 0
-        AND s.shift_date BETWEEN ? AND ?
+        COUNT(DISTINCT attendance_data.employee_id) AS unique_employees,
+        COUNT(*) AS total_shifts,
+        COALESCE(SUM(attendance_data.worked_minutes), 0) AS total_worked_minutes,
+        COALESCE(SUM(attendance_data.overtime_minutes), 0) AS total_overtime_minutes,
+        COALESCE(SUM(attendance_data.late_minutes), 0) AS total_late_minutes,
+        COALESCE(SUM(attendance_data.deductible_minutes), 0) AS total_deductible_minutes,
+        COALESCE(SUM(attendance_data.early_leave_minutes), 0) AS total_early_leave_minutes
+      FROM (
+        SELECT
+          a.employee_id,
+          CASE
+            WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL
+            THEN GREATEST(
+              0,
+              CAST(TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) AS SIGNED) + CAST(CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END AS SIGNED)
+            )
+            ELSE 0
+          END AS worked_minutes,
+          CASE
+            WHEN a.is_overtime = 1
+              AND (
+                (
+                  CASE
+                    WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL
+                    THEN GREATEST(
+                      0,
+                      CAST(TIMESTAMPDIFF(
+                        MINUTE,
+                        CONCAT(a.attendance_date, ' ', a.start_time),
+                        CONCAT(a.attendance_date, ' ', a.end_time)
+                      ) AS SIGNED) + CAST(CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END AS SIGNED)
+                    )
+                    ELSE 0
+                  END
+                ) - CAST(e.expected_work_minutes AS SIGNED)
+                + CASE
+                  WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED)
+                    ELSE 0
+                  END
+              ) > COALESCE(e.grace_minutes, 0)
+            THEN (
+              (
+                CASE
+                  WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL
+                  THEN GREATEST(
+                    0,
+                    CAST(TIMESTAMPDIFF(
+                      MINUTE,
+                      CONCAT(a.attendance_date, ' ', a.start_time),
+                      CONCAT(a.attendance_date, ' ', a.end_time)
+                    ) AS SIGNED) + CAST(CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END AS SIGNED)
+                  )
+                  ELSE 0
+                END
+                ) - CAST(e.expected_work_minutes AS SIGNED)
+              + CASE
+                  WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED)
+                  ELSE 0
+                END
+            )
+            ELSE 0
+          END AS overtime_minutes,
+          CASE
+            WHEN a.is_deductible = 1
+              AND CAST(e.expected_work_minutes AS SIGNED) - (
+                CASE
+                  WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL
+                  THEN GREATEST(
+                    0,
+                    CAST(TIMESTAMPDIFF(
+                      MINUTE,
+                      CONCAT(a.attendance_date, ' ', a.start_time),
+                      CONCAT(a.attendance_date, ' ', a.end_time)
+                    ) AS SIGNED) + CAST(CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END AS SIGNED)
+                  )
+                  ELSE 0
+                END
+              ) > COALESCE(e.grace_minutes, 0)
+            THEN CAST(e.expected_work_minutes AS SIGNED) - (
+              CASE
+                WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL
+                THEN GREATEST(
+                  0,
+                  CAST(TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) AS SIGNED) + CAST(CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END AS SIGNED)
+                )
+                ELSE 0
+              END
+            )
+            ELSE 0
+          END AS deductible_minutes,
+          CASE
+            WHEN a.start_time IS NOT NULL AND e.shift_start IS NOT NULL
+            THEN GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_start, a.start_time)) / 60)
+            ELSE 0
+          END AS late_minutes,
+          CASE
+            WHEN a.end_time IS NOT NULL AND e.shift_end IS NOT NULL
+            THEN GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_end, a.end_time)) / 60)
+            ELSE 0
+          END AS early_leave_minutes
+        FROM attendance a
+        INNER JOIN employees e ON e.id = a.employee_id
+        WHERE a.company_id = ?
+          AND a.type = 'attendance'
+          AND a.attendance_date BETWEEN ? AND ?
+      ) AS attendance_data
       `,
       [companyId, date_from, date_to]
     );
