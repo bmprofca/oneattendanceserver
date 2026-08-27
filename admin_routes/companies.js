@@ -546,9 +546,9 @@ router.get("/:id/attendance-overview", async (req, res) => {
         COUNT(*) AS total_shifts,
         COALESCE(SUM(attendance_data.worked_minutes), 0) AS total_worked_minutes,
         COALESCE(SUM(attendance_data.overtime_minutes), 0) AS total_overtime_minutes,
-        COALESCE(SUM(attendance_data.late_minutes), 0) AS total_late_minutes,
+        ROUND(COALESCE(SUM(attendance_data.late_minutes), 0), 2) AS total_late_minutes,
         COALESCE(SUM(attendance_data.deductible_minutes), 0) AS total_deductible_minutes,
-        COALESCE(SUM(attendance_data.early_leave_minutes), 0) AS total_early_leave_minutes
+        ROUND(COALESCE(SUM(attendance_data.early_leave_minutes), 0), 2) AS total_early_leave_minutes
       FROM (
         SELECT
           a.employee_id,
@@ -642,12 +642,12 @@ router.get("/:id/attendance-overview", async (req, res) => {
           END AS deductible_minutes,
           CASE
             WHEN a.start_time IS NOT NULL AND e.shift_start IS NOT NULL
-            THEN GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_start, a.start_time)) / 60)
+            THEN ROUND(GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_start, a.start_time)) / 60), 2)
             ELSE 0
           END AS late_minutes,
           CASE
             WHEN a.end_time IS NOT NULL AND e.shift_end IS NOT NULL
-            THEN GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_end, a.end_time)) / 60)
+            THEN ROUND(GREATEST(0, TIME_TO_SEC(TIMEDIFF(e.shift_end, a.end_time)) / 60), 2)
             ELSE 0
           END AS early_leave_minutes
         FROM attendance a
