@@ -51,6 +51,7 @@ const sendOTPEmail = async ({
 
     const senderEmail = fromEmail || EMAIL_USER;
     const senderName = fromName || "OneAttendance";
+    const text = `Hello ${userName},\n\n${introText}\n\nYour verification code is ${otp}.\n\nThis OTP is valid for 5 minutes.`;
 
     await getTransporter().sendMail({
         from: getSender(senderName, senderEmail),
