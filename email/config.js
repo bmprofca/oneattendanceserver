@@ -36,7 +36,8 @@ export const EMAIL_TEMPLATES = {
     leave_request: "email/emailTemplate/leave_request_email.js",
     leave_accept: "email/emailTemplate/leave_acceptance_email.js",
     leave_reject: "email/emailTemplate/leave_rejection_email.js",
-    payroll: "email/emailTemplate/payroll_email.js"
+    payroll: "email/emailTemplate/payroll_email.js",
+    shift: "email/emailTemplate/shift_email.js"
 }
 
 export const EMAIL_PRIORITIES = {
@@ -51,6 +52,7 @@ export const EMAIL_PRIORITIES = {
     login_alert: "medium",
     invitation: "medium",
     payroll: "medium",
+    shift: "medium",
 
     leave_request: "low",
     leave_accept: "low",

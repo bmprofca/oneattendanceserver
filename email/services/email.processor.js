@@ -15,6 +15,7 @@ import { sendLoginAlertEmail } from "../emailTemplate/login_alert_email.js";
 import { sendWelcomeEmail } from "../emailTemplate/welcome_email.js";
 import { queueEmail } from "../services/email.queue.js"
 import { sendPayrollEmail } from "../emailTemplate/payroll_email.js";
+import { sendShiftEmail } from "../emailTemplate/shift_email.js";
 
 
 
@@ -176,6 +177,22 @@ export async function queuePayrollEmail({
       details,
       type
     }
+  });
+}
+
+export async function queueShiftEmail({
+  to,
+  subject,
+  fromEmail,
+  fromName,
+  replyTo,
+  shiftData,
+  maxAttempts = 3
+}) {
+  return queueEmail({
+    type: "shift",
+    maxAttempts,
+    payload: { to, subject, fromEmail, fromName, replyTo, shiftData }
   });
 }
 
@@ -433,6 +450,7 @@ export const EMAIL_SENDERS = Object.freeze({
   leave_accept: sendLeaveAcceptanceEmail,
   leave_reject: sendLeaveRejectionEmail,
 
-  payroll: sendPayrollEmail
+  payroll: sendPayrollEmail,
+  shift: sendShiftEmail
 
 });

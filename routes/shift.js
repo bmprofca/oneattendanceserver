@@ -20,7 +20,9 @@ import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResp
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
-import { generatePdfFromHtml } from "../utils/pdfGenerator.js";
+import { generateShiftPdf } from "../utils/generateShiftPdf.js";
+import { queueShiftEmail } from "../email/services/email.processor.js";
+import { EMAIL_USER } from "../config/config.js";
 import { SHIFT } from "../constants/permissions.js";
 
 const router = express.Router();
@@ -1000,70 +1002,6 @@ router.get("/employees-shifts", auth(SHIFT.MNG), async (req, res) => {
 
 // ── SHIFT DOWNLOAD & EMAIL ENDPOINTS ──────────────────────────────────────────
 
-async function buildShiftPdfHtml({ employeeName, employeeCode, month, year, statistics, shift, days }) {
-  const monthName = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' });
-  const dayRows = Object.entries(days || {}).map(([dateStr, d]) => {
-    const status = d?.day_status || (d?.is_holiday ? "holiday" : d?.is_leave ? "leave" : "upcoming");
-    const activities = d?.activities || [];
-    const punchIn = activities.find(a => a.type === "PUNCH_IN")?.time || "—";
-    const punchOut = activities.find(a => a.type === "PUNCH_OUT")?.time || "—";
-    return `
-      <tr>
-        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${dateStr}</td>
-        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-transform: capitalize; font-weight: bold;">${status}</td>
-        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${punchIn}</td>
-        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${punchOut}</td>
-      </tr>
-    `;
-  }).join("");
-
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8" />
-      <title>Shift Schedule - ${employeeName} - ${monthName} ${year}</title>
-      <style>
-        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; padding: 20px; font-size: 13px; }
-        .header { border-bottom: 2px solid #4f46e5; padding-bottom: 15px; margin-bottom: 20px; }
-        .title { font-size: 20px; font-weight: bold; color: #312e81; }
-        .meta { font-size: 12px; color: #64748b; margin-top: 5px; }
-        .stats { display: flex; gap: 15px; margin-bottom: 20px; }
-        .stat-card { background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px 15px; border-radius: 8px; flex: 1; }
-        .stat-label { font-size: 10px; font-weight: bold; text-transform: uppercase; color: #64748b; }
-        .stat-value { font-size: 16px; font-weight: bold; color: #0f172a; margin-top: 2px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th { background: #f1f5f9; text-align: left; padding: 8px; font-size: 11px; text-transform: uppercase; color: #475569; border-bottom: 2px solid #cbd5e1; }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <div class="title">Shift Schedule & Attendance Log</div>
-        <div class="meta">Employee: <strong>${employeeName || "Employee"}</strong> (${employeeCode || "N/A"}) | Period: <strong>${monthName} ${year}</strong></div>
-      </div>
-      <div class="stats">
-        <div class="stat-card"><div class="stat-label">Shift Timing</div><div class="stat-value">${shift?.start_time || "—"} - ${shift?.end_time || "—"}</div></div>
-        <div class="stat-card"><div class="stat-label">Target Minutes</div><div class="stat-value">${statistics?.expected_work_minutes || 0}m</div></div>
-        <div class="stat-card"><div class="stat-label">Worked Minutes</div><div class="stat-value">${statistics?.worked_minutes || 0}m</div></div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Status</th>
-            <th>Punch In</th>
-            <th>Punch Out</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${dayRows}
-        </tbody>
-      </table>
-    </body>
-    </html>
-  `;
-}
-
 async function getShiftCalendarData(conn, employeeId, companyId, month, year) {
   const [[employee]] = await conn.query(
     `SELECT e.id, e.joining_date, e.weekends, e.shift_start, e.shift_end,
@@ -1102,33 +1040,313 @@ async function getShiftCalendarData(conn, employeeId, companyId, month, year) {
   };
 }
 
-router.get("/download", auth(), async (req, res) => {
+router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => {
+  let conn;
+
+  try {
+    conn = await db.getConnection();
+
+    const companyId = safeNumber(req.company?.id);
+    const employeeId = safeNumber(req.params.employeeId, 0);
+
+    if (!companyId) return sendError(res, 400, "Company context missing");
+    if (!Number.isInteger(employeeId) || employeeId <= 0) {
+      return sendError(res, 400, "Valid employee_id required");
+    }
+
+    const now = getISTNow();
+    const currentDate = getCurrentDate();
+    const year = safeNumber(req.query.year, now.year());
+    const month = safeNumber(req.query.month, now.month() + 1);
+
+    if (month < 1 || month > 12) return sendError(res, 400, "Invalid month");
+
+    const { start_date: startDate, end_date: endDate, total_days: totalDays } =
+      buildMonthDateRange(year, month);
+
+    // Fetch employee basic info + shift schedule
+    const [[employee]] = await conn.query(
+      `SELECT e.id, e.employee_code, e.designation, e.employment_type,
+              e.salary_type, e.weekends, e.expected_work_minutes,
+              e.break_minutes AS expected_break_minutes, e.grace_minutes,
+              e.joining_date, e.shift_start, e.shift_end,
+              u.name, u.email, u.phone, u.profile_picture
+       FROM employees e
+       INNER JOIN users u ON u.id = e.user_id
+       WHERE e.id = ? AND e.company_id = ?
+         AND e.is_deleted = 0 AND u.is_deleted = 0
+       LIMIT 1`,
+      [employeeId, companyId]
+    );
+
+    if (!employee) return sendError(res, 404, "Employee not found");
+
+    const joiningDate = employee.joining_date ? formatToDate(employee.joining_date) : null;
+
+    // Fetch all shifts for the month
+    const [shiftRows] = await conn.query(
+      `SELECT shift_date, start_time, end_time, worked_minutes,
+              allowed_break_minutes, extra_break_minutes, early_leave_minutes,
+              late_minutes, overtime_minutes, deductible_minutes, day_status,
+              value1, value2
+       FROM shifts
+       WHERE company_id = ? AND employee_id = ?
+         AND is_deleted = 0
+         AND shift_date BETWEEN ? AND ?
+       ORDER BY shift_date ASC`,
+      [companyId, employeeId, startDate, endDate]
+    );
+
+    // Fetch holidays
+    const [holidayRows] = await conn.query(
+      `SELECT date, name, is_optional
+       FROM holidays
+       WHERE company_id = ? AND is_deleted = 0 AND is_active = 1
+         AND date BETWEEN ? AND ?`,
+      [companyId, startDate, endDate]
+    );
+
+    // Fetch approved leaves
+    const [leaveRows] = await conn.query(
+      `SELECT el.start_date, el.end_date, el.is_half_day, el.half_day_type,
+              lc.code AS leave_code, lc.name AS leave_name
+       FROM employee_leaves el
+       INNER JOIN leave_configs lc ON lc.id = el.leave_config_id
+       WHERE el.employee_id = ? AND el.company_id = ?
+         AND el.status = 'approved' AND el.is_deleted = 0
+         AND NOT (el.end_date < ? OR el.start_date > ?)`,
+      [employeeId, companyId, startDate, endDate]
+    );
+
+    // Build lookup maps
+    const shiftMap = new Map();
+    for (const row of shiftRows) {
+      shiftMap.set(formatToDate(row.shift_date), row);
+    }
+
+    const holidayMap = new Map();
+    for (const row of holidayRows) {
+      holidayMap.set(formatToDate(row.date), {
+        name: row.name,
+        is_optional: row.is_optional == 1,
+      });
+    }
+
+    const leaveMap = new Map();
+    for (const leave of leaveRows) {
+      eachDateBetween(
+        formatToDate(leave.start_date),
+        formatToDate(leave.end_date),
+        (date) => {
+          leaveMap.set(date, {
+            code: leave.leave_code,
+            name: leave.leave_name,
+            type: leave.is_half_day == 1 ? "half_day" : "full_day",
+            half_day_type: leave.half_day_type || null,
+          });
+        }
+      );
+    }
+
+    // Build day-wise data
+    const weekends = normalizeWeekends(employee.weekends);
+    const days = {};
+    let presentCount = 0,
+      absentCount = 0,
+      leaveCount = 0,
+      holidayCount = 0,
+      weekendCount = 0,
+      halfDayCount = 0,
+      notJoinedCount = 0,
+      upcomingCount = 0;
+    let totalWorkedMinutes = 0,
+      totalBreakMinutes = 0,
+      totalOvertimeMinutes = 0,
+      totalLateMinutes = 0,
+      totalEarlyLeaveMinutes = 0;
+
+    for (let day = 1; day <= totalDays; day++) {
+      const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+      const shift = shiftMap.get(date);
+      const holiday = holidayMap.get(date);
+      const leave = leaveMap.get(date);
+
+      const isFuture = isDateAfter(date, currentDate);
+      const isBeforeJoiningDate = isBeforeJoining(date, joiningDate);
+      const isWeekend = isWeekendDate({ date, weekends });
+
+      const obj = {};
+
+      if (isBeforeJoiningDate) {
+        obj.day_status = "not_joined";
+        notJoinedCount++;
+        days[date] = obj;
+        continue;
+      }
+
+      if (isFuture) {
+        obj.day_status = holiday
+          ? "holiday"
+          : leave
+          ? "leave"
+          : isWeekend
+          ? "weekend"
+          : "upcoming";
+        if (holiday) obj.is_holiday = holiday;
+        if (leave) obj.is_leave = leave;
+        days[date] = obj;
+        if (obj.day_status === "holiday") holidayCount++;
+        else if (obj.day_status === "leave") leaveCount++;
+        else if (obj.day_status === "weekend") weekendCount++;
+        else upcomingCount++;
+        continue;
+      }
+
+      // Past / today
+      if (holiday) obj.is_holiday = holiday;
+      if (leave) obj.is_leave = leave;
+
+      if (shift && safeNumber(shift.worked_minutes) > 0) {
+        obj.day_status = shift.day_status || "present";
+        obj.shift = {
+          start_time: shift.start_time,
+          end_time: shift.end_time,
+          worked_minutes: safeNumber(shift.worked_minutes),
+          allowed_break_minutes: safeNumber(shift.allowed_break_minutes),
+          extra_break_minutes: safeNumber(shift.extra_break_minutes),
+          early_leave_minutes: safeNumber(shift.early_leave_minutes),
+          late_minutes: safeNumber(shift.late_minutes),
+          overtime_minutes: safeNumber(shift.overtime_minutes),
+          deductible_minutes: safeNumber(shift.deductible_minutes),
+        };
+        totalWorkedMinutes += safeNumber(shift.worked_minutes);
+        totalBreakMinutes += safeNumber(shift.allowed_break_minutes);
+        totalOvertimeMinutes += safeNumber(shift.overtime_minutes);
+        totalLateMinutes += safeNumber(shift.late_minutes);
+        totalEarlyLeaveMinutes += safeNumber(shift.early_leave_minutes);
+      } else if (leave) {
+        obj.day_status = leave.type === "half_day" ? "half_day" : "leave";
+      } else if (holiday) {
+        obj.day_status = "holiday";
+      } else if (isWeekend) {
+        obj.day_status = "weekend";
+      } else {
+        obj.day_status = "absent";
+      }
+
+      switch (obj.day_status) {
+        case "present":
+        case "half_day":
+          presentCount++;
+          if (obj.day_status === "half_day") halfDayCount++;
+          break;
+        case "absent":
+          absentCount++;
+          break;
+        case "leave":
+          leaveCount++;
+          break;
+        case "holiday":
+          holidayCount++;
+          break;
+        case "weekend":
+          weekendCount++;
+          break;
+      }
+
+      days[date] = obj;
+    }
+
+
+    const statistics = {
+      expected_work_minutes: safeNumber(employee.expected_work_minutes) * totalDays,
+      worked_minutes: totalWorkedMinutes,
+      break_minutes: totalBreakMinutes,
+      overtime_minutes: totalOvertimeMinutes,
+      late_minutes: totalLateMinutes,
+      early_leave_minutes: totalEarlyLeaveMinutes,
+    };
+
+    const counts = {
+      present: presentCount,
+      absent: absentCount,
+      leave: leaveCount,
+      holiday: holidayCount,
+      weekend: weekendCount,
+      half_day: halfDayCount,
+      not_joined: notJoinedCount,
+      upcoming: upcomingCount,
+    };
+
+    return sendSuccess(
+      res,
+      200,
+      "Employee day-wise shift data fetched successfully",
+      {        
+        days,
+        statistics,
+        counts,
+      },
+      {
+        year,
+        month,
+        total_days: totalDays,
+      }
+    );
+  } catch (error) {
+    console.error("EMPLOYEE_DAYWISE_SHIFT_API_ERROR", error);
+    return sendError(res, 500, "Failed to fetch employee day-wise shift data");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+router.post("/download", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
     const companyId = req.company?.id;
-    const employeeId = safeNumber(req.query.employee_id, 0);
-    const month = safeNumber(req.query.month, new Date().getMonth() + 1);
-    const year = safeNumber(req.query.year, new Date().getFullYear());
+    const userId = req.user?.id;
+    const { employee_id, month, year } = req.body || {};
 
-    if (!companyId || !employeeId) return sendError(res, 400, "Valid employee_id required");
+    if (!companyId || !userId) return sendError(res, 401, "Unauthorized access");
 
-    const shiftData = await getShiftCalendarData(conn, employeeId, companyId, month, year);
+    const employeeId = safeNumber(employee_id, 0);
+    const m = safeNumber(month, new Date().getMonth() + 1);
+    const y = safeNumber(year, new Date().getFullYear());
+
+    if (!employeeId) return sendError(res, 400, "Valid employee_id required");
+
+    const shiftData = await getShiftCalendarData(conn, employeeId, companyId, m, y);
     if (!shiftData) return sendError(res, 404, "Shift calendar data not found");
 
     const html = await buildShiftPdfHtml({
       employeeName: shiftData.employee.name,
       employeeCode: shiftData.employee.employee_code,
-      month, year,
+      month: m,
+      year: y,
       statistics: shiftData.statistics,
       shift: shiftData.shift,
       days: shiftData.days
     });
 
     const pdfBuffer = await generatePdfFromHtml(html);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="shift_schedule_${employeeId}_${month}_${year}.pdf"`);
-    return res.send(pdfBuffer);
+    const fileName = `shift_schedule_${employeeId}_${m}_${y}_${Date.now()}.pdf`;
+    const file = new Blob([pdfBuffer], { type: "application/pdf" });
+    const formData = new FormData();
+    formData.append("file", file, fileName);
+
+    const uploadResponse = await fetch("https://upload.onesaas.in/api/upload", {
+      method: "POST",
+      headers: { key: "onedevelopers" },
+      body: formData,
+    });
+    if (!uploadResponse.ok) throw new Error(`Upload API failed with status ${uploadResponse.status}`);
+    const uploadResult = await uploadResponse.json();
+    if (!uploadResult?.success || !uploadResult?.url) throw new Error(uploadResult?.message || "Failed to upload shift PDF");
+
+    return sendSuccess(res, 200, "Shift schedule generated successfully", { url: uploadResult.url, file_name: fileName });
   } catch (error) {
     console.error("SHIFT DOWNLOAD ERROR:", error);
     return sendError(res, 500, error.message || "Failed to generate shift PDF");
@@ -1154,6 +1372,15 @@ router.post("/send-email", auth(SHIFT.MNG), async (req, res) => {
 
     const receiverEmail = (email || shiftData.employee.email || "").trim();
     if (!receiverEmail) return sendError(res, 400, "Employee email not found");
+
+    await queueShiftEmail({
+      to: receiverEmail,
+      subject: `Shift Schedule - ${m}/${y}`,
+      fromEmail: EMAIL_USER,
+      fromName: "OneAttendance",
+      replyTo: req.user?.email || EMAIL_USER,
+      shiftData: { ...shiftData, month: m, year: y }
+    });
 
     return sendSuccess(res, 200, `Shift schedule email queued successfully to ${receiverEmail}`);
   } catch (error) {
