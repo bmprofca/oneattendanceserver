@@ -37,13 +37,6 @@ router.get("/", async (req, res) => {
     const sDate = getDateCondition('start_date');
     const hDate = getDateCondition('date');
     const tDate = getDateCondition('transaction_date');
-    
-    // For queries that don't have an existing WHERE clause
-    const aDateNoWhere = getDateCondition('attendance_date');
-    if(aDateNoWhere.condition) {
-      aDateNoWhere.condition = " WHERE " + aDateNoWhere.condition.substring(5); // replace ' AND ' with ' WHERE '
-    }
-
     const csAt = getDateCondition('cs.created_at');
 
     const queries = [
@@ -51,11 +44,11 @@ router.get("/", async (req, res) => {
       conn.query("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM employees WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM company_subscriptions WHERE is_active = 1" + cAt.condition, cAt.params),
-      conn.query("SELECT COUNT(*) as count FROM attendance" + aDateNoWhere.condition, aDateNoWhere.params),
+      conn.query("SELECT COUNT(*) as count FROM attendance" + aDate.condition, aDate.params),
       conn.query("SELECT COUNT(*) as count FROM employee_leaves WHERE is_deleted = 0" + sDate.condition, sDate.params),
       conn.query("SELECT COUNT(*) as count FROM holidays WHERE is_deleted = 0" + hDate.condition, hDate.params),
       conn.query("SELECT COUNT(*) as count FROM transactions WHERE is_deleted = 0" + tDate.condition, tDate.params),
-      conn.query("SELECT COUNT(*) as count FROM shifts WHERE is_deleted = 0" + cAt.condition, cAt.params),
+      conn.query("SELECT COUNT(*) as count FROM attendance WHERE type = 'attendance'" + aDate.condition, aDate.params),
       conn.query("SELECT COUNT(*) as count FROM subscription_packages WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM custom_subscription_packages WHERE is_deleted = 0" + cAt.condition, cAt.params),
       conn.query("SELECT COUNT(*) as count FROM payroll_entries WHERE is_deleted = 0" + cAt.condition, cAt.params),
