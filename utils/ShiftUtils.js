@@ -49,90 +49,113 @@ const ATTENDANCE_QUERY = `
 const SHIFT_STATS_QUERY = `
     SELECT
         COUNT(*) AS total_days,
-        SUM( CASE 
-                WHEN day_status = 'present' THEN 1 
-                WHEN day_status = 'half_day' THEN 1 
-                WHEN day_status = 'leave' AND value1 = 'paid' THEN 1 ELSE 0 END
-            ) AS payable_days,
-
-        SUM( CASE 
-                WHEN day_status = 'present' THEN 1 ELSE 0 END
-            ) AS present_days,
-
-        SUM( CASE 
-                WHEN day_status = 'half_day' THEN 1 ELSE 0 END
-            ) AS half_days,
-
-        SUM( CASE
-                WHEN day_status = 'absent' THEN 1 ELSE 0 END
-            ) AS absent_days,
-
-        SUM( CASE 
-                WHEN day_status = 'leave' AND value1 = 'paid' THEN 1 ELSE 0 END
-            ) AS paid_leave_days,
-
-        SUM( CASE 
-                WHEN day_status = 'leave' AND value1 = 'unpaid' THEN 1 ELSE 0 END
-            ) AS unpaid_leave_days,
-
-        SUM( CASE 
-                WHEN value2 = 'weekend' THEN 1 ELSE 0 END
-            ) AS weekend_days,
-
-        SUM( CASE 
-                WHEN value2 = 'holiday' THEN 1 ELSE 0 END
-            ) AS holiday_days,
-
-        SUM(COALESCE(expected_work_minutes, 0)) AS expected_work_minutes,
-
-        SUM(COALESCE(worked_minutes, 0)) AS worked_minutes,
-
-        SUM(COALESCE(allowed_break_minutes, 0)) AS allowed_break_minutes,
-
-        SUM(COALESCE(extra_break_minutes, 0)) AS extra_break_minutes,
-
-        SUM(COALESCE(early_leave_minutes, 0)) AS early_leave_minutes,
-
-        SUM(COALESCE(late_minutes, 0)) AS late_minutes,
-
-        SUM( CASE 
-                WHEN is_deductible = 1 THEN COALESCE(deductible_minutes, 0) ELSE 0 END
-            ) AS deductible_minutes,
-             
-        SUM( CASE 
-                WHEN is_overtime = 1 THEN COALESCE(overtime_minutes, 0) ELSE 0 END
-            ) AS overtime_minutes,
-
-        SUM( CASE 
-                WHEN is_deductible = 1 THEN 1 ELSE 0 END
-            ) AS deductible_days,
-
-        SUM( CASE 
-                WHEN is_overtime = 1 THEN 1 ELSE 0 END
-            ) AS overtime_days,
-
-        SUM(
-            CASE
-                WHEN day_status = 'present'
-                    THEN COALESCE(expected_work_minutes, 0)
-
-                WHEN day_status = 'half_day'
-                    THEN (COALESCE(expected_work_minutes, 0) / 2)
-
-                WHEN day_status = 'leave'
-                    AND value1 = 'paid'
-                    THEN COALESCE(expected_work_minutes, 0)
-
+        SUM(CASE
+                WHEN a.day_status = 'present' THEN 1
+                WHEN a.day_status = 'half_day' THEN 1
+                WHEN a.day_status = 'leave' AND a.value1 = 'paid' THEN 1
                 ELSE 0
-            END
-        ) AS payable_work_minutes
+            END) AS payable_days,
 
-    FROM shifts
-    WHERE 
-        company_id = ? 
-        AND employee_id = ? 
-        AND shift_date BETWEEN ? AND ? 
-        AND is_deleted = 0
+        SUM(CASE WHEN a.day_status = 'present' THEN 1 ELSE 0 END) AS present_days,
+        SUM(CASE WHEN a.day_status = 'half_day' THEN 1 ELSE 0 END) AS half_days,
+        SUM(CASE WHEN a.day_status = 'absent' THEN 1 ELSE 0 END) AS absent_days,
+        SUM(CASE WHEN a.day_status = 'leave' AND a.value1 = 'paid' THEN 1 ELSE 0 END) AS paid_leave_days,
+        SUM(CASE WHEN a.day_status = 'leave' AND a.value1 = 'unpaid' THEN 1 ELSE 0 END) AS unpaid_leave_days,
+        SUM(CASE WHEN a.value2 = 'weekend' THEN 1 ELSE 0 END) AS weekend_days,
+        SUM(CASE WHEN a.value2 = 'holiday' THEN 1 ELSE 0 END) AS holiday_days,
+
+        SUM(COALESCE(e.expected_work_minutes, 0)) AS expected_work_minutes,
+
+        SUM(CASE
+                WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                    GREATEST(
+                        0,
+                        TIMESTAMPDIFF(
+                            MINUTE,
+                            CONCAT(a.attendance_date, ' ', a.start_time),
+                            CONCAT(a.attendance_date, ' ', a.end_time)
+                        ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                    )
+                ELSE 0
+            END) AS worked_minutes,
+
+        SUM(CASE
+                WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                    GREATEST(
+                        0,
+                        TIMESTAMPDIFF(
+                            MINUTE,
+                            CONCAT(a.attendance_date, ' ', e.shift_start),
+                            CONCAT(a.attendance_date, ' ', a.start_time)
+                        )
+                    )
+                ELSE 0
+            END) AS late_minutes,
+
+        SUM(CASE
+                WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                    GREATEST(
+                        0,
+                        TIMESTAMPDIFF(
+                            MINUTE,
+                            CONCAT(a.attendance_date, ' ', a.end_time),
+                            CONCAT(a.attendance_date, ' ', e.shift_end)
+                        )
+                    )
+                ELSE 0
+            END) AS early_leave_minutes,
+
+        SUM(CASE
+                WHEN a.type = 'attendance' AND a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                    GREATEST(
+                        0,
+                        CAST(e.expected_work_minutes AS SIGNED) - (
+                            TIMESTAMPDIFF(
+                                MINUTE,
+                                CONCAT(a.attendance_date, ' ', a.start_time),
+                                CONCAT(a.attendance_date, ' ', a.end_time)
+                            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                        )
+                    )
+                ELSE 0
+            END) AS deductible_minutes,
+
+        SUM(CASE
+                WHEN a.type = 'attendance' AND a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                    GREATEST(
+                        0,
+                        (
+                            TIMESTAMPDIFF(
+                                MINUTE,
+                                CONCAT(a.attendance_date, ' ', a.start_time),
+                                CONCAT(a.attendance_date, ' ', a.end_time)
+                            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                        ) - CAST(e.expected_work_minutes AS SIGNED)
+                        + CASE WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED) ELSE 0 END
+                    )
+                ELSE 0
+            END) AS overtime_minutes,
+
+        SUM(CASE WHEN a.is_deductible = 1 THEN 1 ELSE 0 END) AS deductible_days,
+        SUM(CASE WHEN a.is_overtime = 1 THEN 1 ELSE 0 END) AS overtime_days,
+
+        SUM(CASE
+                WHEN a.day_status = 'present' THEN CAST(e.expected_work_minutes AS SIGNED)
+                WHEN a.day_status = 'half_day' THEN CAST(e.expected_work_minutes AS SIGNED) / 2
+                WHEN a.day_status = 'leave' AND a.value1 = 'paid' THEN CAST(e.expected_work_minutes AS SIGNED)
+                ELSE 0
+            END) AS payable_work_minutes
+
+    FROM attendance a
+    INNER JOIN employees e
+        ON e.id = a.employee_id
+        AND e.company_id = a.company_id
+    WHERE a.company_id = ?
+        AND a.employee_id = ?
+        AND a.attendance_date BETWEEN ? AND ?
+        AND a.type = 'attendance'
+        AND e.is_deleted = 0
+        AND e.is_active = 1
 `;
 
 export const getShiftStats = async ({ conn, companyId, employeeId, fromDate, toDate }) => {
@@ -178,258 +201,3 @@ export const getShiftStats = async ({ conn, companyId, employeeId, fromDate, toD
     };
 };
 
-export async function generateShift(conn, employee_id, company_id, date, modified_by) {
-
-    if (!conn) {
-        throw new Error("Database connection is required");
-    }
-
-    const eid = Number(employee_id);
-    const cid = Number(company_id);
-    const modBy = Number(modified_by);
-
-    if (!Number.isInteger(eid) || eid <= 0) {
-        throw new Error("Invalid employee_id");
-    }
-
-    if (!Number.isInteger(cid) || cid <= 0) {
-        throw new Error("Invalid company_id");
-    }
-
-    if (!Number.isInteger(modBy) || modBy <= 0) {
-        throw new Error("Invalid modified_by");
-    }
-
-    if (!parseDate(date)) {
-        throw new Error("Invalid date");
-    }
-
-    const [[employee]] = await conn.query(EMPLOYEE_SHIFT_QUERY, [eid, cid]);
-
-    if (!employee) {
-        throw new Error("Employee not found");
-    }
-
-    const [attendanceRows] = await conn.query(ATTENDANCE_QUERY, [eid, cid, date]);
-
-    const attendanceRow = attendanceRows.find(r => r.type === "attendance") || null;
-    const breakRows = attendanceRows.filter(r => r.type === "break");
-
-    const expectedWorkMinutes = Number(employee.expected_work_minutes) || 0;
-    const allowedBreakMinutes = Number(employee.break_minutes) || 0;
-    const graceMinutes = Number(employee.grace_minutes) || 0;
-
-    let workedMinutes = 0;
-    let breakMinutes = 0;
-    let extraBreakMinutes = 0;
-    let earlyLeaveMinutes = 0;
-    let lateMinutes = 0;
-    let overtimeMinutes = 0;
-    let deductibleMinutes = 0;
-
-    let startTime = null;
-    let endTime = null;
-
-    let dayStatus = "absent";
-    let value1 = null;
-    let value2 = null;
-
-    let isDeductible = 0;
-    let isOvertime = 0;
-
-    if (attendanceRow) {
-
-        dayStatus = attendanceRow.day_status || "present";
-        value1 = attendanceRow.value1 || null;
-        value2 = attendanceRow.value2 || null;
-        isDeductible = Number(attendanceRow.is_deductible) || 0;
-        isOvertime = Number(attendanceRow.is_overtime) || 0;
-
-        const enableOvertime = Number(employee.enable_overtime) === 1;
-        const enableDeduction = Number(employee.enable_deduction) === 1;
-
-        if (!enableOvertime) isOvertime = 0;
-        if (!enableDeduction) isDeductible = 0;
-
-        const shiftStartDt = buildShiftAnchor(date, employee.shift_start);
-        let shiftEndDt = buildShiftAnchor(date, employee.shift_end);
-        shiftEndDt = shiftNextDayIfBefore(shiftEndDt, shiftStartDt);
-
-        const attendanceStartDt = alignTimeToShift(date, attendanceRow.start_time, shiftStartDt);
-        let attendanceEndDt = alignTimeToShift(date, attendanceRow.end_time, shiftStartDt);
-        attendanceEndDt = shiftNextDayIfBefore(attendanceEndDt, attendanceStartDt);
-
-        startTime = formatDatetime(attendanceStartDt);
-        endTime = formatDatetime(attendanceEndDt);
-
-        for (const br of breakRows) {
-            const breakStartDt = alignTimeToShift(date, br.start_time, shiftStartDt);
-            let breakEndDt = alignTimeToShift(date, br.end_time, shiftStartDt);
-            breakEndDt = shiftNextDayIfBefore(breakEndDt, breakStartDt);
-            breakMinutes += diffMinutesBetween(breakStartDt, breakEndDt);
-        }
-
-        if (attendanceStartDt && attendanceEndDt && dayStatus !== "absent" && dayStatus !== "leave") {
-
-            const actualStart = earliestDt([attendanceStartDt]);
-            const actualEnd = latestDt([attendanceEndDt]);
-            const presenceMinutes = diffMinutesBetween(actualStart, actualEnd);
-            const rawWorkedMinutes = Math.max(0, presenceMinutes - breakMinutes);
-            const paidBreakMinutes = Math.min(breakMinutes, allowedBreakMinutes);
-            const effectiveWorkedMinutes = rawWorkedMinutes + paidBreakMinutes;
-            extraBreakMinutes = Math.max(0, breakMinutes - allowedBreakMinutes);
-
-            if (actualStart && shiftStartDt) {
-                lateMinutes = Math.max(0, actualStart.diff(shiftStartDt, "minute"));
-            }
-            if (actualEnd && shiftEndDt) {
-                earlyLeaveMinutes = Math.max(0, shiftEndDt.diff(actualEnd, "minute"));
-            }
-
-            let requiredMinutes = expectedWorkMinutes;
-            let overtimeThreshold = expectedWorkMinutes + graceMinutes;
-
-            if (dayStatus === "half_day") {
-                requiredMinutes = Math.floor(expectedWorkMinutes / 2);
-                overtimeThreshold = requiredMinutes + graceMinutes;
-                value1 = normalizeHalfDayType(value1);
-                value2 = null;
-            }
-
-            workedMinutes = Math.min(effectiveWorkedMinutes, requiredMinutes);
-
-            if (isOvertime && enableOvertime && effectiveWorkedMinutes > overtimeThreshold) {
-                overtimeMinutes = effectiveWorkedMinutes - requiredMinutes;
-            } else {
-                overtimeMinutes = 0;
-            }
-
-            if (isDeductible && enableDeduction) {
-                deductibleMinutes = extraBreakMinutes + lateMinutes + earlyLeaveMinutes;
-            } else {
-                deductibleMinutes = 0;
-            }
-        }
-
-        if (dayStatus === "leave") {
-            workedMinutes = 0;
-            breakMinutes = 0;
-            extraBreakMinutes = 0;
-            earlyLeaveMinutes = 0;
-            lateMinutes = 0;
-            deductibleMinutes = 0;
-            startTime = null;
-            endTime = null;
-
-            if (value1 === "paid" && isOvertime && enableOvertime) {
-                overtimeMinutes = parseOvertimeValue(attendanceRow.value3);
-            } else {
-                overtimeMinutes = 0;
-            }
-        }
-
-        if (dayStatus === "absent") {
-            workedMinutes = 0;
-            breakMinutes = 0;
-            extraBreakMinutes = 0;
-            earlyLeaveMinutes = 0;
-            lateMinutes = 0;
-            overtimeMinutes = 0;
-            deductibleMinutes = 0;
-            startTime = null;
-            endTime = null;
-            value1 = null;
-            value2 = null;
-        }
-    }
-
-    await conn.query(
-        `INSERT INTO shifts (
-            company_id,
-            employee_id,
-            shift_date,
-            start_time,
-            end_time,
-            expected_work_minutes,
-            worked_minutes,
-            allowed_break_minutes,
-            extra_break_minutes,
-            early_leave_minutes,
-            late_minutes,
-            overtime_minutes,
-            deductible_minutes,
-            is_deductible,
-            is_overtime,
-            day_status,
-            value1,
-            value2,
-            created_by,
-            updated_by
-        ) VALUES (
-            ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?
-        )
-        ON DUPLICATE KEY UPDATE
-            start_time = VALUES(start_time),
-            end_time = VALUES(end_time),
-            expected_work_minutes = VALUES(expected_work_minutes),
-            worked_minutes = VALUES(worked_minutes),
-            allowed_break_minutes = VALUES(allowed_break_minutes),
-            extra_break_minutes = VALUES(extra_break_minutes),
-            early_leave_minutes = VALUES(early_leave_minutes),
-            late_minutes = VALUES(late_minutes),
-            overtime_minutes = VALUES(overtime_minutes),
-            deductible_minutes = VALUES(deductible_minutes),
-            is_deductible = VALUES(is_deductible),
-            is_overtime = VALUES(is_overtime),
-            day_status = VALUES(day_status),
-            value1 = VALUES(value1),
-            value2 = VALUES(value2),
-            updated_by = VALUES(updated_by),
-            updated_at = CURRENT_TIMESTAMP`,
-        [
-            cid,
-            eid,
-            date,
-            startTime,
-            endTime,
-            expectedWorkMinutes,
-            workedMinutes,
-            allowedBreakMinutes,
-            extraBreakMinutes,
-            earlyLeaveMinutes,
-            lateMinutes,
-            overtimeMinutes,
-            deductibleMinutes,
-            isDeductible,
-            isOvertime,
-            dayStatus,
-            value1,
-            value2,
-            modBy,
-            modBy
-        ]
-    );
-
-    return {
-        success: true,
-        employee_id: eid,
-        company_id: cid,
-        shift_date: date,
-        calculations: {
-            worked_minutes: workedMinutes,
-            break_minutes: breakMinutes,
-            extra_break_minutes: extraBreakMinutes,
-            early_leave_minutes: earlyLeaveMinutes,
-            late_minutes: lateMinutes,
-            overtime_minutes: overtimeMinutes,
-            deductible_minutes: deductibleMinutes
-        }
-    };
-}

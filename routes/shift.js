@@ -775,18 +775,60 @@ router.get("/employees-shifts", auth(SHIFT.MNG), async (req, res) => {
     const [shiftRows] = await conn.query(
       `
           SELECT
-            employee_id,
-            shift_date,
-            worked_minutes,
-            allowed_break_minutes,
-            overtime_minutes
+            a.employee_id,
+            a.attendance_date AS shift_date,
+            CASE
+              WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                GREATEST(
+                  0,
+                  TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                )
+              ELSE 0
+            END AS worked_minutes,
+            CASE
+              WHEN a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                GREATEST(
+                  0,
+                  (
+                    TIMESTAMPDIFF(
+                      MINUTE,
+                      CONCAT(a.attendance_date, ' ', a.start_time),
+                      CONCAT(a.attendance_date, ' ', a.end_time)
+                    ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                  ) - e.expected_work_minutes + COALESCE(CAST(a.value3 AS SIGNED), 0)
+                )
+              ELSE 0
+            END AS overtime_minutes,
+            CASE
+              WHEN a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+                GREATEST(
+                  0,
+                  e.expected_work_minutes - (
+                    TIMESTAMPDIFF(
+                      MINUTE,
+                      CONCAT(a.attendance_date, ' ', a.start_time),
+                      CONCAT(a.attendance_date, ' ', a.end_time)
+                    ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                  )
+                )
+              ELSE 0
+            END AS deductible_minutes
 
-          FROM shifts
+          FROM attendance a
+          INNER JOIN employees e
+            ON e.id = a.employee_id
+           AND e.company_id = a.company_id
+           AND e.is_deleted = 0
+           AND e.is_active = 1
 
-          WHERE company_id = ?
-            AND is_deleted = 0
-            AND employee_id IN (?)
-            AND shift_date BETWEEN ? AND ?
+          WHERE a.company_id = ?
+            AND a.type = 'attendance'
+            AND a.employee_id IN (?)
+            AND a.attendance_date BETWEEN ? AND ?
           `,
       [
         companyId,
@@ -1085,15 +1127,61 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
 
     // Fetch all shifts for the month
     const [shiftRows] = await conn.query(
-      `SELECT shift_date, start_time, end_time, worked_minutes,
-              allowed_break_minutes, extra_break_minutes, early_leave_minutes,
-              late_minutes, overtime_minutes, deductible_minutes, day_status,
-              value1, value2
-       FROM shifts
-       WHERE company_id = ? AND employee_id = ?
-         AND is_deleted = 0
-         AND shift_date BETWEEN ? AND ?
-       ORDER BY shift_date ASC`,
+      `SELECT
+          a.attendance_date AS shift_date,
+          CASE
+            WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+              GREATEST(
+                0,
+                TIMESTAMPDIFF(
+                  MINUTE,
+                  CONCAT(a.attendance_date, ' ', a.start_time),
+                  CONCAT(a.attendance_date, ' ', a.end_time)
+                ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+              )
+            ELSE 0
+          END AS worked_minutes,
+          CASE
+            WHEN a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+              GREATEST(
+                0,
+                (
+                  TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                ) - e.expected_work_minutes + COALESCE(CAST(a.value3 AS SIGNED), 0)
+              )
+            ELSE 0
+          END AS overtime_minutes,
+          CASE
+            WHEN a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+              GREATEST(
+                0,
+                e.expected_work_minutes - (
+                  TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                )
+              )
+            ELSE 0
+          END AS deductible_minutes,
+          a.day_status,
+          a.value1,
+          a.value2
+       FROM attendance a
+       INNER JOIN employees e
+         ON e.id = a.employee_id
+        AND e.company_id = a.company_id
+        AND e.is_deleted = 0
+        AND e.is_active = 1
+       WHERE a.company_id = ? AND a.employee_id = ?
+         AND a.type = 'attendance'
+         AND a.attendance_date BETWEEN ? AND ?
+       ORDER BY a.attendance_date ASC`,
       [companyId, employeeId, startDate, endDate]
     );
 

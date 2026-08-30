@@ -807,27 +807,63 @@ export const getPayslipData = async ({ conn, payrollEntryId, companyId, type = "
   const [attendanceRows] = await conn.execute(
     `
     SELECT
-      shift_date,
-      start_time,
-      end_time,
-      worked_minutes,
-      extra_break_minutes,
-      early_leave_minutes,
-      late_minutes,
-      is_overtime,
-      is_deductible,
-      overtime_minutes,
-      deductible_minutes,
-      day_status,
-      value1,
-      value2
-    FROM shifts
-    WHERE employee_id = ?
-      AND company_id = ?
-      AND shift_date BETWEEN ? AND ?
-      AND is_deleted = 0
-      AND is_active = 1
-    ORDER BY shift_date
+      a.attendance_date AS shift_date,
+      CASE
+        WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', a.start_time),
+              CONCAT(a.attendance_date, ' ', a.end_time)
+            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+          )
+        ELSE 0
+      END AS worked_minutes,
+      CASE
+        WHEN a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            (
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+            ) - e.expected_work_minutes + COALESCE(CAST(a.value3 AS SIGNED), 0)
+          )
+        ELSE 0
+      END AS overtime_minutes,
+      CASE
+        WHEN a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            e.expected_work_minutes - (
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+            )
+          )
+        ELSE 0
+      END AS deductible_minutes,
+      a.is_overtime,
+      a.is_deductible,
+      a.day_status,
+      a.value1,
+      a.value2
+    FROM attendance a
+    INNER JOIN employees e
+      ON e.id = a.employee_id
+     AND e.company_id = a.company_id
+     AND e.is_deleted = 0
+     AND e.is_active = 1
+    WHERE a.employee_id = ?
+      AND a.company_id = ?
+      AND a.type = 'attendance'
+      AND a.attendance_date BETWEEN ? AND ?
+    ORDER BY a.attendance_date
     `,
     [
       payroll.employee_id,

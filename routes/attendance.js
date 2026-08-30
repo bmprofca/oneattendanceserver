@@ -14,7 +14,6 @@ import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResp
 import { buildFileUrl } from "../utils/fileService.js";
 import { createAttendanceLog } from "../utils/attendanceLogsUtil.js";
 import { AT } from "../constants/permissions.js";
-import { generateShift } from "../utils/ShiftUtils.js";
 import { payrollExists, upsertPayroll } from "../utils/payrollUtils.js";
 import axios from "axios";
 import { runFaceCheck, FACE_SERVICE_URL } from "../utils/faceCheckUtil.js";
@@ -838,17 +837,115 @@ const ATTENDANCE_QUERY = {
   GET_DASHBOARD_SHIFT_STATS: `
     SELECT
       COUNT(*) AS total_shifts,
-      SUM(worked_minutes) AS total_worked_minutes,
-      SUM(allowed_break_minutes) AS total_break_minutes,
-      SUM(extra_break_minutes) AS total_extra_break_minutes,
-      SUM(overtime_minutes) AS total_overtime_minutes,
-      SUM(late_minutes) AS total_late_minutes,
-      SUM(early_leave_minutes) AS total_early_leave_minutes,
-      AVG(worked_minutes) AS avg_worked_minutes
-    FROM shifts
-    WHERE company_id = ?
-      AND shift_date = ?
-      AND is_deleted = 0
+      SUM(CASE
+        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', a.start_time),
+              CONCAT(a.attendance_date, ' ', a.end_time)
+            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+          )
+        ELSE 0
+      END) AS total_worked_minutes,
+      SUM(CASE
+        WHEN a.type = 'break' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', a.start_time),
+              CONCAT(a.attendance_date, ' ', a.end_time)
+            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+          )
+        ELSE 0
+      END) AS total_break_minutes,
+      SUM(CASE
+        WHEN a.type = 'break' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(0,
+            (
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+            ) - COALESCE(e.break_minutes, 0)
+          )
+        ELSE 0
+      END) AS total_extra_break_minutes,
+      SUM(CASE
+        WHEN a.type = 'attendance' AND a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          CASE
+            WHEN (
+              (
+                TIMESTAMPDIFF(
+                  MINUTE,
+                  CONCAT(a.attendance_date, ' ', a.start_time),
+                  CONCAT(a.attendance_date, ' ', a.end_time)
+                ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+              ) - CAST(e.expected_work_minutes AS SIGNED)
+              + CASE WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED) ELSE 0 END
+            ) > COALESCE(e.grace_minutes, 0)
+            THEN GREATEST(
+              0,
+              (
+                TIMESTAMPDIFF(
+                  MINUTE,
+                  CONCAT(a.attendance_date, ' ', a.start_time),
+                  CONCAT(a.attendance_date, ' ', a.end_time)
+                ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+              ) - CAST(e.expected_work_minutes AS SIGNED)
+              + CASE WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED) ELSE 0 END
+            )
+            ELSE 0
+          END
+        ELSE 0
+      END) AS total_overtime_minutes,
+      SUM(CASE
+        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', e.shift_start),
+              CONCAT(a.attendance_date, ' ', a.start_time)
+            )
+          )
+        ELSE 0
+      END) AS total_late_minutes,
+      SUM(CASE
+        WHEN a.type = 'attendance' AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', a.end_time),
+              CONCAT(a.attendance_date, ' ', e.shift_end)
+            )
+          )
+        ELSE 0
+      END) AS total_early_leave_minutes,
+      AVG(CASE
+        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+          GREATEST(
+            0,
+            TIMESTAMPDIFF(
+              MINUTE,
+              CONCAT(a.attendance_date, ' ', a.start_time),
+              CONCAT(a.attendance_date, ' ', a.end_time)
+            ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+          )
+        ELSE 0
+      END) AS avg_worked_minutes
+    FROM attendance a
+    INNER JOIN employees e
+      ON e.id = a.employee_id
+      AND e.company_id = a.company_id
+    WHERE a.company_id = ?
+      AND a.attendance_date = ?
+      AND e.is_deleted = 0
+      AND e.is_active = 1
   `,
 
   GET_DASHBOARD_LEAVE_STATS: `
@@ -1234,7 +1331,6 @@ const removeNullFields = (obj = {}) =>
   Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
 
 async function recalculateShiftAndPayroll(conn, companyId, employeeId, attendanceDate, createdBy) {
-  await generateShift(conn, employeeId, companyId, attendanceDate, createdBy);
   const existingPayroll = await payrollExists({ conn, companyId, employeeId });
   if (existingPayroll) {
     await upsertPayroll({ conn, companyId, employeeId, createdBy });
@@ -1764,8 +1860,6 @@ async function executePunchOut(conn, {
     created_by: user_id,
     updated_by: user_id
   });
-
-  await generateShift(conn, employee_id, company_id, attendance_date, user_id);
 
   if (is_verified) {
     const existingPayroll = await payrollExists({ conn, companyId: company_id, employeeId: employee_id });
@@ -3088,13 +3182,96 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
         a.is_overtime,
         a.is_deductible,
         a.remark,
-        s.id AS shift_id,
-        s.worked_minutes,
-        s.allowed_break_minutes AS actual_break_minutes,
-        s.extra_break_minutes,
-        s.late_minutes,
-        s.early_leave_minutes,
-        s.overtime_minutes,
+        CASE
+          WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            GREATEST(
+              0,
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+            )
+          ELSE 0
+        END AS worked_minutes,
+        CASE
+          WHEN a.type = 'attendance' AND a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            CASE
+              WHEN (
+                (
+                  TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                ) - CAST(e.expected_work_minutes AS SIGNED)
+                + CASE WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED) ELSE 0 END
+              ) > COALESCE(e.grace_minutes, 0)
+              THEN GREATEST(
+                0,
+                (
+                  TIMESTAMPDIFF(
+                    MINUTE,
+                    CONCAT(a.attendance_date, ' ', a.start_time),
+                    CONCAT(a.attendance_date, ' ', a.end_time)
+                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                ) - CAST(e.expected_work_minutes AS SIGNED)
+                + CASE WHEN a.value3 REGEXP '^[0-9]+$' THEN CAST(a.value3 AS SIGNED) ELSE 0 END
+              )
+              ELSE 0
+            END
+          ELSE 0
+        END AS overtime_minutes,
+        CASE
+          WHEN a.type = 'attendance' AND a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            GREATEST(
+              0,
+              CAST(e.expected_work_minutes AS SIGNED) - (
+                TIMESTAMPDIFF(
+                  MINUTE,
+                  CONCAT(a.attendance_date, ' ', a.start_time),
+                  CONCAT(a.attendance_date, ' ', a.end_time)
+                ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+              )
+            )
+          ELSE 0
+        END AS deductible_minutes,
+        CASE
+          WHEN a.type = 'attendance' AND a.start_time IS NOT NULL THEN
+            GREATEST(
+              0,
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', e.shift_start),
+                CONCAT(a.attendance_date, ' ', a.start_time)
+              )
+            )
+          ELSE 0
+        END AS late_minutes,
+        CASE
+          WHEN a.type = 'attendance' AND a.end_time IS NOT NULL THEN
+            GREATEST(
+              0,
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.end_time),
+                CONCAT(a.attendance_date, ' ', e.shift_end)
+              )
+            )
+          ELSE 0
+        END AS early_leave_minutes,
+        CASE
+          WHEN a.type = 'break' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            GREATEST(
+              0,
+              TIMESTAMPDIFF(
+                MINUTE,
+                CONCAT(a.attendance_date, ' ', a.start_time),
+                CONCAT(a.attendance_date, ' ', a.end_time)
+              ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+            )
+          ELSE 0
+        END AS actual_break_minutes,
         ls.method AS start_method,
         ls.ip_address AS start_ip,
         ls.latitude AS start_lat,
@@ -3106,12 +3283,11 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
 
       FROM attendance a
 
-      LEFT JOIN shifts s
-        ON s.employee_id = a.employee_id
-        AND s.company_id = a.company_id
-        AND s.shift_date = a.attendance_date
-        AND s.is_deleted = 0
-        AND s.is_active = 1
+      INNER JOIN employees e
+        ON e.id = a.employee_id
+        AND e.company_id = a.company_id
+        AND e.is_deleted = 0
+        AND e.is_active = 1
 
       LEFT JOIN attendance_logs ls
         ON ls.id = (
@@ -3153,47 +3329,14 @@ router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
       const startPunch = buildPunchObject(r.start_time, r.start_method, r.start_lat, r.start_lng, r.start_ip);
       const endPunch = buildPunchObject(r.end_time, r.end_method, r.end_lat, r.end_lng, r.end_ip);
 
-      let calculations = {
-        worked_minutes: 0,
-        break_minutes: 0,
+      const calculations = {
+        worked_minutes: Number(r.worked_minutes || 0),
+        break_minutes: Number(r.actual_break_minutes || 0),
         extra_break_minutes: 0,
-        late_minutes: 0,
-        early_leave_minutes: 0,
-        overtime_minutes: 0,
+        late_minutes: Number(r.late_minutes || 0),
+        early_leave_minutes: Number(r.early_leave_minutes || 0),
+        overtime_minutes: Number(r.overtime_minutes || 0),
       };
-
-      if (r.shift_id) {
-        calculations = {
-          worked_minutes: Number(r.worked_minutes || 0),
-          break_minutes: Number(r.actual_break_minutes || 0),
-          extra_break_minutes: Number(r.extra_break_minutes || 0),
-          late_minutes: Number(r.late_minutes || 0),
-          early_leave_minutes: Number(r.early_leave_minutes || 0),
-          overtime_minutes: Number(r.overtime_minutes || 0),
-        };
-      } else {
-        const workedMinutes = calculateMinutesBetween(r.start_time, r.end_time);
-        let lateMinutes = 0;
-        if (employee.shift_start && r.start_time) {
-          lateMinutes = Math.max(0, calculateMinutesBetween(employee.shift_start, r.start_time) - Number(employee.grace_minutes || 0));
-        }
-        let earlyLeaveMinutes = 0;
-        if (employee.shift_end && r.end_time) {
-          earlyLeaveMinutes = Math.max(0, calculateMinutesBetween(r.end_time, employee.shift_end));
-        }
-        let overtimeMinutes = 0;
-        if (workedMinutes > Number(employee.expected_work_minutes || 0)) {
-          overtimeMinutes = workedMinutes - Number(employee.expected_work_minutes || 0);
-        }
-        calculations = {
-          worked_minutes: workedMinutes,
-          break_minutes: Number(employee.break_minutes || 0),
-          extra_break_minutes: 0,
-          late_minutes: lateMinutes,
-          early_leave_minutes: earlyLeaveMinutes,
-          overtime_minutes: overtimeMinutes,
-        };
-      }
 
       const response = {
         id: r.id,
