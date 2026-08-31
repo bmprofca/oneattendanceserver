@@ -145,7 +145,7 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
       ),
       conn.query(
         `SELECT el.start_date, el.end_date, el.is_half_day,
-                el.half_day_type, lc.code, lc.name
+                el.half_day_type, lc.code, lc.name, lc.is_paid
          FROM employee_leaves el
          INNER JOIN leave_configs lc ON lc.id = el.leave_config_id
          WHERE el.employee_id = ? AND el.company_id = ?
@@ -210,7 +210,8 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
             code: row.code,
             name: row.name,
             type: row.is_half_day == 1 ? "half_day" : "full_day",
-            half_day_type: row.half_day_type || null
+            half_day_type: row.half_day_type || null,
+            is_paid: row.is_paid == 1
           });
         }
       );
@@ -430,7 +431,8 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
             code: leave.code,
             name: leave.name,
             type: leave.type,
-            half_day_type: leave.half_day_type
+            half_day_type: leave.type === "half_day" ? leave.half_day_type || null : null,
+            is_paid: leave.is_paid == 1,
           };
         }
 
@@ -463,7 +465,15 @@ router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
       }
 
       if (holiday) obj.is_holiday = { name: holiday.name, is_optional: holiday.is_optional };
-      if (leave) obj.is_leave = { code: leave.code, name: leave.name, type: leave.type, half_day_type: leave.half_day_type };
+      if (leave) {
+        obj.is_leave = {
+          code: leave.code,
+          name: leave.name,
+          type: leave.type,
+          half_day_type: leave.type === "half_day" ? leave.half_day_type || null : null,
+          is_paid: leave.is_paid == 1,
+        };
+      }
 
       if (attendance) {
         const workedMinutes = Math.max(0, attendance.worked_minutes - attendance.break_minutes);
@@ -1119,7 +1129,7 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
     const [[employee]] = await conn.query(
       `SELECT e.id, e.employee_code, e.designation, e.employment_type,
               e.salary_type, e.weekends, e.expected_work_minutes,
-              e.break_minutes AS expected_break_minutes, e.grace_minutes,
+              e.break_minutes, e.grace_minutes,
               e.joining_date, e.shift_start, e.shift_end,
               u.name, u.email, u.phone, u.profile_picture
        FROM employees e
@@ -1249,7 +1259,7 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
     // Fetch approved leaves
     const [leaveRows] = await conn.query(
       `SELECT el.start_date, el.end_date, el.is_half_day, el.half_day_type,
-              lc.code AS leave_code, lc.name AS leave_name
+              lc.code AS leave_code, lc.name AS leave_name, lc.is_paid
        FROM employee_leaves el
        INNER JOIN leave_configs lc ON lc.id = el.leave_config_id
        WHERE el.employee_id = ? AND el.company_id = ?
@@ -1283,6 +1293,7 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
             name: leave.leave_name,
             type: leave.is_half_day == 1 ? "half_day" : "full_day",
             half_day_type: leave.half_day_type || null,
+            is_paid: leave.is_paid == 1,
           });
         }
       );
@@ -1334,7 +1345,15 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
           ? "weekend"
           : "upcoming";
         if (holiday) obj.is_holiday = holiday;
-        if (leave) obj.is_leave = leave;
+        if (leave) {
+          obj.is_leave = {
+            code: leave.code,
+            name: leave.name,
+            type: leave.type,
+            half_day_type: leave.type === "half_day" ? leave.half_day_type || null : null,
+            is_paid: leave.is_paid == 1,
+          };
+        }
         days[date] = obj;
         if (obj.day_status === "holiday") holidayCount++;
         else if (obj.day_status === "leave") leaveCount++;
@@ -1345,7 +1364,15 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
 
       // Past / today
       if (holiday) obj.is_holiday = holiday;
-      if (leave) obj.is_leave = leave;
+      if (leave) {
+        obj.is_leave = {
+          code: leave.code,
+          name: leave.name,
+          type: leave.type,
+          half_day_type: leave.type === "half_day" ? leave.half_day_type || null : null,
+          is_paid: leave.is_paid == 1,
+        };
+      }
 
       if (shift && safeNumber(shift.worked_minutes) > 0) {
         obj.day_status = shift.day_status || "present";

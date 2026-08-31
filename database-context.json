@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-31T13:31:12.504Z",
+  "generated_at": "2026-08-31T16:26:17.717Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
@@ -4222,7 +4222,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
