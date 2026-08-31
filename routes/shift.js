@@ -1376,6 +1376,20 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
 
       if (shift && safeNumber(shift.worked_minutes) > 0) {
         obj.day_status = shift.day_status || "present";
+
+        if (obj.day_status === "half_day") {
+          obj.half_day_type = shift.value1 || null;
+        }
+
+        if (obj.day_status === "leave") {
+          obj.is_leave = {
+            code: shift.value2 || null,
+            is_paid: String(shift.value1 || "").toLowerCase() === "paid",
+            type: "leave",
+            half_day_type: null,
+          };
+        }
+
         obj.shift = {
           worked_minutes: safeNumber(shift.worked_minutes),
           extra_break_minutes: safeNumber(shift.extra_break_minutes),
