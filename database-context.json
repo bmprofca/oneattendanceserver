@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-08-30T17:44:17.530Z",
+  "generated_at": "2026-08-31T13:00:20.721Z",
   "database": "u278432002_oneattendance",
   "table_count": 34,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 33,
+      "estimated_rows": 31,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 80,
+      "estimated_rows": 76,
       "comment": null,
       "columns": [
         {
@@ -456,7 +456,7 @@
     "bank_accounts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 9,
+      "estimated_rows": 8,
       "comment": null,
       "columns": [
         {
@@ -711,7 +711,7 @@
     "companies": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -1447,7 +1447,7 @@
     "company_subscriptions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {
@@ -2694,7 +2694,7 @@
     "employee_leave_attachments": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 2,
       "comment": null,
       "columns": [
         {
@@ -4963,7 +4963,7 @@
     "payroll_entry_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 7,
+      "estimated_rows": 6,
       "comment": null,
       "columns": [
         {
@@ -6274,7 +6274,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 19,
+      "estimated_rows": 12,
       "comment": null,
       "columns": [
         {
@@ -6523,7 +6523,7 @@
     "shifts": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 11,
+      "estimated_rows": 10,
       "comment": null,
       "columns": [
         {
@@ -6858,7 +6858,7 @@
     "subscription_alert_config": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -7129,7 +7129,7 @@
     "subscription_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 0,
       "comment": null,
       "columns": [
         {
@@ -7575,7 +7575,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 9,
+      "estimated_rows": 8,
       "comment": null,
       "columns": [
         {

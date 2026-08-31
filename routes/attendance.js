@@ -836,9 +836,11 @@ const ATTENDANCE_QUERY = {
 
   GET_DASHBOARD_SHIFT_STATS: `
     SELECT
-      COUNT(*) AS total_shifts,
+      COUNT(DISTINCT CASE WHEN a.type = 'attendance' THEN a.id END) AS total_shifts,
       SUM(CASE
-        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'attendance'
+          AND a.start_time IS NOT NULL
+          AND a.end_time IS NOT NULL THEN
           GREATEST(
             0,
             TIMESTAMPDIFF(
@@ -850,7 +852,9 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_worked_minutes,
       SUM(CASE
-        WHEN a.type = 'break' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'break'
+          AND a.start_time IS NOT NULL
+          AND a.end_time IS NOT NULL THEN
           GREATEST(
             0,
             TIMESTAMPDIFF(
@@ -862,7 +866,9 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_break_minutes,
       SUM(CASE
-        WHEN a.type = 'break' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'break'
+          AND a.start_time IS NOT NULL
+          AND a.end_time IS NOT NULL THEN
           GREATEST(0,
             (
               TIMESTAMPDIFF(
@@ -875,7 +881,10 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_extra_break_minutes,
       SUM(CASE
-        WHEN a.type = 'attendance' AND a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'attendance'
+          AND a.is_overtime = 1
+          AND a.start_time IS NOT NULL
+          AND a.end_time IS NOT NULL THEN
           CASE
             WHEN (
               (
@@ -903,7 +912,10 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_overtime_minutes,
       SUM(CASE
-        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL THEN
+        WHEN a.type = 'attendance'
+          AND a.start_time IS NOT NULL
+          AND e.shift_start IS NOT NULL
+          AND a.start_time > e.shift_start THEN
           GREATEST(
             0,
             TIMESTAMPDIFF(
@@ -915,7 +927,10 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_late_minutes,
       SUM(CASE
-        WHEN a.type = 'attendance' AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'attendance'
+          AND a.end_time IS NOT NULL
+          AND e.shift_end IS NOT NULL
+          AND a.end_time < e.shift_end THEN
           GREATEST(
             0,
             TIMESTAMPDIFF(
@@ -927,7 +942,9 @@ const ATTENDANCE_QUERY = {
         ELSE 0
       END) AS total_early_leave_minutes,
       AVG(CASE
-        WHEN a.type = 'attendance' AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+        WHEN a.type = 'attendance'
+          AND a.start_time IS NOT NULL
+          AND a.end_time IS NOT NULL THEN
           GREATEST(
             0,
             TIMESTAMPDIFF(

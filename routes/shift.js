@@ -29,6 +29,14 @@ const router = express.Router();
 
 const formatToDate = (date) => formatIST(date, "YYYY-MM-DD");
 
+const formatShiftClock = (time) => {
+  if (time === null || time === undefined || time === "") return null;
+  const [hours, minutes] = String(time).split(":");
+  const hour = Number(hours);
+  if (!Number.isFinite(hour) || !minutes) return null;
+  return `${hour}:${minutes}`;
+};
+
 // isWeekendDate replacement using new weekendInfo
 const isWeekendDate = ({ date, weekends = [] }) => {
   return weekendInfo(date, weekends).is_weekend;
@@ -1123,26 +1131,46 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
 
     if (!employee) return sendError(res, 404, "Employee not found");
 
+    const shiftMeta = {
+      shift_start_time: formatShiftClock(employee.shift_start),
+      shift_end_time: formatShiftClock(employee.shift_end),
+      expected_work_minutes: safeNumber(employee.expected_work_minutes),
+      allowed_break_minutes: safeNumber(employee.break_minutes),
+      grace_minutes: safeNumber(employee.grace_minutes),
+    };
+
     const joiningDate = employee.joining_date ? formatToDate(employee.joining_date) : null;
 
-    // Fetch all shifts for the month
+    // Fetch attendance rows for the month; the legacy shifts table has been discarded.
     const [shiftRows] = await conn.query(
-      `SELECT
+      `
+        SELECT
           a.attendance_date AS shift_date,
+
           CASE
-            WHEN a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            WHEN a.start_time IS NOT NULL
+              AND a.end_time IS NOT NULL
+            THEN
               GREATEST(
                 0,
                 TIMESTAMPDIFF(
                   MINUTE,
                   CONCAT(a.attendance_date, ' ', a.start_time),
                   CONCAT(a.attendance_date, ' ', a.end_time)
-                ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                )
+                + CASE
+                    WHEN a.end_time < a.start_time THEN 1440
+                    ELSE 0
+                  END
               )
             ELSE 0
           END AS worked_minutes,
+
           CASE
-            WHEN a.is_overtime = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            WHEN a.is_overtime = 1
+              AND a.start_time IS NOT NULL
+              AND a.end_time IS NOT NULL
+            THEN
               GREATEST(
                 0,
                 (
@@ -1150,38 +1178,61 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
                     MINUTE,
                     CONCAT(a.attendance_date, ' ', a.start_time),
                     CONCAT(a.attendance_date, ' ', a.end_time)
-                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
-                ) - e.expected_work_minutes + COALESCE(CAST(a.value3 AS SIGNED), 0)
+                  )
+                  + CASE
+                      WHEN a.end_time < a.start_time THEN 1440
+                      ELSE 0
+                    END
+                )
+                - CAST(e.expected_work_minutes AS SIGNED)
+                + COALESCE(CAST(a.value3 AS SIGNED), 0)
               )
             ELSE 0
           END AS overtime_minutes,
+
           CASE
-            WHEN a.is_deductible = 1 AND a.start_time IS NOT NULL AND a.end_time IS NOT NULL THEN
+            WHEN a.is_deductible = 1
+              AND a.start_time IS NOT NULL
+              AND a.end_time IS NOT NULL
+            THEN
               GREATEST(
                 0,
-                e.expected_work_minutes - (
+                CAST(e.expected_work_minutes AS SIGNED)
+                -
+                (
                   TIMESTAMPDIFF(
                     MINUTE,
                     CONCAT(a.attendance_date, ' ', a.start_time),
                     CONCAT(a.attendance_date, ' ', a.end_time)
-                  ) + CASE WHEN a.end_time < a.start_time THEN 1440 ELSE 0 END
+                  )
+                  + CASE
+                      WHEN a.end_time < a.start_time THEN 1440
+                      ELSE 0
+                    END
                 )
               )
             ELSE 0
           END AS deductible_minutes,
+
           a.day_status,
           a.value1,
           a.value2
-       FROM attendance a
-       INNER JOIN employees e
-         ON e.id = a.employee_id
-        AND e.company_id = a.company_id
-        AND e.is_deleted = 0
-        AND e.is_active = 1
-       WHERE a.company_id = ? AND a.employee_id = ?
-         AND a.type = 'attendance'
-         AND a.attendance_date BETWEEN ? AND ?
-       ORDER BY a.attendance_date ASC`,
+
+        FROM attendance a
+
+        INNER JOIN employees e
+          ON e.id = a.employee_id
+          AND e.company_id = a.company_id
+          AND e.is_deleted = 0
+          AND e.is_active = 1
+
+        WHERE a.company_id = ?
+          AND a.employee_id = ?
+          AND a.type = 'attendance'
+          AND a.attendance_date BETWEEN ? AND ?
+
+        ORDER BY a.attendance_date ASC
+      `,
       [companyId, employeeId, startDate, endDate]
     );
 
@@ -1298,10 +1349,7 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
       if (shift && safeNumber(shift.worked_minutes) > 0) {
         obj.day_status = shift.day_status || "present";
         obj.shift = {
-          start_time: shift.start_time,
-          end_time: shift.end_time,
           worked_minutes: safeNumber(shift.worked_minutes),
-          allowed_break_minutes: safeNumber(shift.allowed_break_minutes),
           extra_break_minutes: safeNumber(shift.extra_break_minutes),
           early_leave_minutes: safeNumber(shift.early_leave_minutes),
           late_minutes: safeNumber(shift.late_minutes),
@@ -1325,9 +1373,10 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
 
       switch (obj.day_status) {
         case "present":
-        case "half_day":
           presentCount++;
-          if (obj.day_status === "half_day") halfDayCount++;
+          break;
+        case "half_day":
+          halfDayCount++;
           break;
         case "absent":
           absentCount++;
@@ -1371,7 +1420,8 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
       res,
       200,
       "Employee day-wise shift data fetched successfully",
-      {        
+      {
+        shift: shiftMeta,
         days,
         statistics,
         counts,
