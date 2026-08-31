@@ -20,7 +20,8 @@ import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResp
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, EMPLOYMENT_TYPES, SALARY_TYPES } from "../constants/constants_values.js";
-import { generateShiftPdf } from "../utils/generateShiftPdf.js";
+import { buildShiftPdfHtml } from "../utils/generateShiftPdf.js";
+import { generatePdfFromHtml } from "../utils/pdfGenerator.js";
 import { queueShiftEmail } from "../email/services/email.processor.js";
 import { EMAIL_USER } from "../config/config.js";
 import { SHIFT } from "../constants/permissions.js";
