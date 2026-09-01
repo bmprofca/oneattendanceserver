@@ -122,7 +122,8 @@ async function createCompanySubscription(
         subscriptionPackage,
         package_period,
         amount_paid,
-        payment_reference = null
+        payment_reference = null,
+        package_type = "normal"
     }
 ) {
     const now = getISTNow();
@@ -176,7 +177,8 @@ async function createCompanySubscription(
         INSERT INTO company_subscriptions
         (
             company_id,
-            subscription_package_id,
+            package_id,
+            package_type,
             employee_limit,
             subscription_type,
             amount_paid,
@@ -189,12 +191,13 @@ async function createCompanySubscription(
         )
         VALUES
         (
-            ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
         )
         `,
         [
             company_id,
             subscriptionPackage.id,
+            package_type,
             subscriptionPackage.max_employee_count,
             package_period,
             amount_paid,
@@ -571,7 +574,8 @@ router.get("/details", auth(), async (req, res) => {
             `
             SELECT
                 cs.id,
-                cs.subscription_package_id,
+                cs.package_id,
+                cs.package_type,
                 cs.employee_limit,
                 cs.subscription_type,
                 cs.amount_paid,
@@ -581,7 +585,7 @@ router.get("/details", auth(), async (req, res) => {
                 sp.name AS package_name
             FROM company_subscriptions cs
             INNER JOIN subscription_packages sp
-                ON sp.id = cs.subscription_package_id
+                ON sp.id = cs.package_id
                AND sp.is_deleted = 0
             WHERE cs.company_id = ?
               AND cs.is_deleted = 0
@@ -626,22 +630,16 @@ router.get("/details", auth(), async (req, res) => {
 
                 return {
                     id: sub.id,
-                    subscription_package_id:
-                        sub.subscription_package_id,
-                    package_name:
-                        sub.package_name,
-                    subscription_type:
-                        sub.subscription_type,
-                    employee_limit:
-                        sub.employee_limit,
-                    amount_paid:
-                        sub.amount_paid,
-                    starts_at:
-                        sub.starts_at,
-                    expires_at:
-                        sub.expires_at,
-                    payment_reference:
-                        sub.payment_reference,
+                    package_id: sub.package_id,
+                    subscription_package_id: sub.package_id,
+                    package_type: sub.package_type,
+                    package_name: sub.package_name,
+                    subscription_type: sub.subscription_type,
+                    employee_limit: sub.employee_limit,
+                    amount_paid: sub.amount_paid,
+                    starts_at: sub.starts_at,
+                    expires_at: sub.expires_at,
+                    payment_reference: sub.payment_reference,
                     status
                 };
             }
@@ -659,9 +657,11 @@ router.get("/details", auth(), async (req, res) => {
 
                 return {
                     id: sub.id,
-                    subscription_package_id: sub.subscription_package_id,
+                    package_id: sub.package_id,
+                    subscription_package_id: sub.package_id,
                     package_name: sub.package_name,
                     subscription_type: sub.subscription_type,
+                    package_type: sub.package_type,
                     employee_limit: sub.employee_limit,
                     amount_paid: sub.amount_paid,
                     starts_at: sub.starts_at,
