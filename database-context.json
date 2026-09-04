@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-03T10:53:55.727Z",
+  "generated_at": "2026-09-04T14:26:26.085Z",
   "database": "u278432002_oneattendance",
   "table_count": 33,
   "tables": {
@@ -6274,7 +6274,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 7,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -7010,7 +7010,7 @@
     "transactions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 1,
       "comment": null,
       "columns": [
         {

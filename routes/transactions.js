@@ -753,6 +753,7 @@ const buildCompanyLedgerListItemDesc = (txn, runningBalanceRef, roleMap) => {
 
   return {
     id: txn.id,
+    transaction_id: txn.transaction_id,
     transaction_date: formatToDate(txn.transaction_date),
     amount,
     transaction_type: txn.transaction_type,
@@ -1047,6 +1048,7 @@ router.get("/company-ledger", auth(), async (req, res) => {
       `
       SELECT
         t.id,
+        t.transaction_id,
         t.transaction_date,
         t.transaction_type,
         t.entry_type,
