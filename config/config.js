@@ -43,7 +43,7 @@ const config = {
   FACEBOOK_APP_ID: '1745467266627339',
   FACEBOOK_APP_SECRET: 'b598238311f5aa61fc9b928e73a4f7cd',
 
-  NODE_ENV: 'development',
+  NODE_ENV: 'production',
 
   // Face Recognition Service
   FACE_SERVICE_URL: 'http://localhost:8000',
