@@ -187,7 +187,7 @@ const ATTENDANCE_METHODS = {
     description: "AI-based face scan",
     requiresDevice: true,
     requiresCamera: true,
-    is_available: false 
+    is_available: true
   },
 
   QR: {
