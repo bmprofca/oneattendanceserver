@@ -45,9 +45,8 @@ const config = {
 
   NODE_ENV: 'production',
 
-  // Face Recognition Service
-  FACE_SERVICE_URL: 'http://localhost:8000',
-  FACE_SERVICE_TIMEOUT_MS: 120000,
+  // Face Recognition 
+  FACE_MATCH_THRESHOLD: 0.8,
 
   // Zwitch (Open Money)
   ZWITCH_PAYMENT_TOKEN_URL: 'https://api.zwitch.io/v1/pg/payment_token',
@@ -91,8 +90,7 @@ export const {
   FACEBOOK_APP_ID,
   FACEBOOK_APP_SECRET,
   NODE_ENV,
-  FACE_SERVICE_URL,
-  FACE_SERVICE_TIMEOUT_MS,
+  FACE_MATCH_THRESHOLD,
   ZWITCH_PAYMENT_TOKEN_URL,
   ZWITCH_API_KEY,
   ZWITCH_API_SECRET,

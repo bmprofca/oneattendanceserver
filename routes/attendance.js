@@ -15,9 +15,8 @@ import { buildFileUrl } from "../utils/fileService.js";
 import { createAttendanceLog } from "../utils/attendanceLogsUtil.js";
 import { AT } from "../constants/permissions.js";
 import { payrollExists, upsertPayroll } from "../utils/payrollUtils.js";
-import axios from "axios";
-import { runFaceCheck, FACE_SERVICE_URL } from "../utils/faceCheckUtil.js";
-import { NODE_ENV } from "../config/config.js";
+import { runFaceCheck } from "../utils/faceCheckUtil.js";
+import { parseFaceEmbedding } from "../utils/faceEmbedding.js";
 
 const FACE_ATTENDANCE_METHOD = "face";
 
@@ -1531,23 +1530,22 @@ const validateFaceAttendanceType = async (conn, company_id, employee_id, weekend
   };
 };
 
-const verifyEmployeeFaceMatch = async (companyId, imageUrl, faceEmployeeUserId) => {
-  const { data } = await axios.post(`${FACE_SERVICE_URL}/check`, { company_id: companyId, image: imageUrl, employee_id: faceEmployeeUserId });
-
-  if (!data?.success) {
-    const err = new Error(data?.message || "Face does not match");
-    err.statusCode = String(data?.message || "").toLowerCase().includes("not found") ? 404 : 400;
+const verifyEmployeeFaceMatch = async (conn, companyId, embedding, faceEmployeeUserId) => {
+  const result = await runFaceCheck(conn, { companyId, embedding, employeeId: faceEmployeeUserId });
+  if (!result.success) {
+    const err = new Error(result.message || "Face does not match");
+    err.statusCode = result.statusCode || 400;
     throw err;
   }
 
-  const matchedUserId = safeNumber(data?.employee_id, 0);
+  const matchedUserId = safeNumber(result.responseData?.employee_id, 0);
   if (matchedUserId !== faceEmployeeUserId) {
     const err = new Error("Face does not match the selected employee");
     err.statusCode = 400;
     throw err;
   }
 
-  return data;
+  return result.responseData;
 };
 
 const fetchEmployeeForFaceAttendance = async (conn, company_id, employeeRef) => {
@@ -2293,7 +2291,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
   try {
     const company_id = safeNumber(req.company?.id, 0);
     const punchType = normalizeFaceAttendanceType(req.body?.type);
-    const imageUrl = String(req.body?.image || "").trim();
+    const embedding = req.body?.embedding;
     const typeLabel = String(req.body?.type || "").trim();
 
     if (!company_id) {
@@ -2304,13 +2302,13 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
       return sendError(res, 400, 'Valid type required: "punch in", "punch out", "break start", or "break end"');
     }
 
-    if (!imageUrl) {
-      return sendError(res, 400, "Valid image URL required");
+    if (!parseFaceEmbedding(embedding)) {
+      return sendError(res, 400, "Valid face embedding required");
     }
 
     conn = await db.getConnection();
 
-    const faceResult = await runFaceCheck(conn, { companyId: company_id, imageUrl, employeeId: 0 });
+    const faceResult = await runFaceCheck(conn, { companyId: company_id, embedding, employeeId: 0 });
 
     if (!faceResult.success) {
       return sendError(res, faceResult.statusCode, faceResult.message, faceResult.responseData);
@@ -2381,15 +2379,15 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
     }
 
     const punchType = normalizeFaceAttendanceType(req.body?.type);
-    const imageUrl = String(req.body?.image || "").trim();
+    const embedding = req.body?.embedding;
     const employeeRef = safeNumber(req.body?.employee_id, 0);
 
     if (!punchType) {
       return sendError(res, 400, 'Valid type required: "punch in", "punch out", "break start", or "break end"');
     }
 
-    if (!imageUrl) {
-      return sendError(res, 400, "Valid image URL required");
+    if (!parseFaceEmbedding(embedding)) {
+      return sendError(res, 400, "Valid face embedding required");
     }
 
     if (!employeeRef || employeeRef <= 0) {
@@ -2415,7 +2413,7 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
       return await fail(400, "Face enrollment is not set for this employee");
     }
 
-    await verifyEmployeeFaceMatch(company_id, imageUrl, face_user_id);
+    await verifyEmployeeFaceMatch(conn, company_id, embedding, face_user_id);
 
     const typeValidation = await validateFaceAttendanceType(conn, company_id, employee_id, employee.weekends, punchType);
 

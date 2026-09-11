@@ -17,8 +17,8 @@ import {
   generateRandomPassword, generateRandomToken,
 } from "../utils/auth.js";
 import { queueSignupOTPEmail, sendQueuedWelcomeEmail } from "../email/services/email.processor.js";
-import axios from "axios";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
+import { parseFaceEmbedding } from "../utils/faceEmbedding.js";
 import {
   parseDate, parseTime, formatIST, getCurrentDate, getCurrentTime, diffMinutes,
   addMinutesToTime, isValidTimeRange, buildShiftAnchor, alignTimeToShift,
@@ -29,11 +29,9 @@ import {
   isSameDate, isBeforeJoining, isDateTimeBefore, isDateTimeAfter, isDateTimeSame,
   getDateTimeDiffDays, getISTNow, toIST, compareDates, compareDateTimes, formatUTCToIST,
 } from "../utils/time.js";
-import { FRONTEND_URL, FACE_SERVICE_URL as configFaceServiceUrl, EMAIL_USER } from "../config/config.js";
+import { FRONTEND_URL, EMAIL_USER } from "../config/config.js";
 import { normalizeIndianMobile } from "../utils/mobile.js";
 
-
-const FACE_SERVICE_URL = (configFaceServiceUrl || "http://localhost:8000").replace(/\/$/, "");
 
 const timeStringToMinutes = (value) => {
   if (value === null || value === undefined) return NaN;
@@ -1025,17 +1023,17 @@ const handleFaceEnrollCheck = async (req, res) => {
       req.body?.employee_id ?? req.query?.employee_id,
       0
     );
-    const imageUrl = String(req.body?.image ?? req.query?.image ?? "").trim();
+    const embedding = req.body?.embedding ?? req.query?.embedding;
 
     if (!companyId || companyId <= 0) {
       return sendError(res, 401, "Unauthorized company");
     }
-    if (!imageUrl) {
-      return sendError(res, 400, "Valid image URL required");
+    if (!parseFaceEmbedding(embedding)) {
+      return sendError(res, 400, "Valid face embedding required");
     }
 
     conn = await db.getConnection();
-    const result = await runFaceCheck(conn, { companyId, imageUrl, employeeId });
+    const result = await runFaceCheck(conn, { companyId, embedding, employeeId });
     if (result.success) {
       return sendSuccess(res, 200, result.message, result.responseData);
     }
@@ -1054,34 +1052,37 @@ const handleFaceEnrollCheck = async (req, res) => {
 };
 
 router.post("/face-enroll/set", auth(EMP.MNG), async (req, res) => {
+  let conn;
   try {
     const companyId = safeNumber(req.company?.id, 0);
     const employeeId = safeNumber(req.body?.employee_id, 0);
-    const imageUrl = String(req.body?.image || "").trim();
+    const embedding = parseFaceEmbedding(req.body?.embedding);
 
     if (!companyId || companyId <= 0) return sendError(res, 401, "Unauthorized company");
     if (!employeeId || employeeId <= 0) return sendError(res, 400, "Valid employee_id required");
-    if (!imageUrl) return sendError(res, 400, "Valid image URL required");
-
-    const payload = { employee_id: employeeId, company_id: companyId, image: imageUrl };
-    const { data } = await axios.post(`${FACE_SERVICE_URL}/set`, payload);
-    console.log("[FACE_SET_RESPONSE]", { payload, response: data });
-
-    if (data?.success) {
-      return sendSuccess(res, 200, data.message || "Face enrolled successfully", {
-        employee_id: data.employee_id ?? employeeId,
-        employee_name: data.employee_name ?? null,
-        company_id: data.company_id ?? companyId,
-        face_enrolled: true,
-      });
-    }
-    const status = String(data?.message || "").toLowerCase().includes("not found") ? 404 : 400;
-    return sendError(res, status, data?.message || "Failed to enroll face");
+    if (!embedding) return sendError(res, 400, "Valid face embedding required");
+    conn = await db.getConnection();
+    const [[employee]] = await conn.query(
+      `SELECT e.user_id, u.name FROM employees e INNER JOIN users u ON u.id = e.user_id
+       WHERE e.user_id = ? AND e.company_id = ? AND e.is_deleted = 0 AND u.is_deleted = 0 LIMIT 1`,
+      [employeeId, companyId]
+    );
+    if (!employee) return sendError(res, 404, "Employee not found");
+    await conn.query(
+      `UPDATE employees SET face_enrolled = 1, face_data = ?, updated_by = ?, updated_at = NOW()
+       WHERE user_id = ? AND company_id = ? AND is_deleted = 0`,
+      [JSON.stringify(embedding), req.user?.id || null, employeeId, companyId]
+    );
+    return sendSuccess(res, 200, "Face enrolled successfully", {
+      employee_id: employeeId, employee_name: employee.name || null, company_id: companyId, face_enrolled: true,
+    });
   } catch (error) {
     console.error("POST /employees/face-enroll/set ERROR:", error);
     const message = error?.response?.data?.message || error?.message || "Failed to enroll face";
     const status = error?.response ? 400 : 500;
     return sendError(res, status, message);
+  } finally {
+    if (conn) conn.release();
   }
 });
 
