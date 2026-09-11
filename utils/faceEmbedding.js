@@ -1,6 +1,6 @@
 import { safeNumber } from "./sendResponse.js";
 
-export const FACE_EMBEDDING_DIMENSION = 128;
+export const FACE_EMBEDDING_DIMENSION = 512;
 export const FACE_MATCH_THRESHOLD = 0.8;
 
 export function parseFaceEmbedding(value) {
