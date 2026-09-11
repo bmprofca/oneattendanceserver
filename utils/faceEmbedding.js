@@ -1,7 +1,8 @@
 import { safeNumber } from "./sendResponse.js";
 
 export const FACE_EMBEDDING_DIMENSION = 512;
-export const FACE_MATCH_THRESHOLD = 0.8;
+// A lower threshold allows visually similar but different faces to pass.
+export const FACE_MATCH_THRESHOLD = 0.9;
 
 export function parseFaceEmbedding(value) {
   let parsed = value;

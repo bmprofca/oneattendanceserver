@@ -2285,7 +2285,7 @@ router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res
 });
 
 // Route 5: POST /face-attendance-check
-router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
+router.post("/face-attendance-check", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -2319,6 +2319,9 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
     if (!employee) {
       return sendError(res, 404, "Employee not found", faceResult.responseData);
     }
+    if (req.role === "employee" && Number(employee.user_id) !== Number(req.user.id)) {
+      return sendError(res, 403, "Employees can only use face attendance for themselves");
+    }
     const [[faceRow]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_FACE_DATA, [employee.id, company_id]);
 
     if (!faceRow || Number(faceRow.face_enrolled) !== 1 || !faceRow.face_data) {
@@ -2350,7 +2353,7 @@ router.post("/face-attendance-check", auth(AT.MNG), async (req, res) => {
 });
 
 // Route 6: POST /face-attendance
-router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
+router.post("/face-attendance", auth(), async (req, res) => {
   let conn;
   let transactionActive = false;
 
@@ -2402,6 +2405,9 @@ router.post("/face-attendance", auth(AT.MNG), async (req, res) => {
 
     if (!employee) {
       return await fail(404, "Employee not found");
+    }
+    if (req.role === "employee" && Number(employee.user_id) !== Number(req.user.id)) {
+      return await fail(403, "Employees can only use face attendance for themselves");
     }
 
     const employee_id = safeNumber(employee.id, 0);
