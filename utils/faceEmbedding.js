@@ -12,7 +12,7 @@ export function parseFaceEmbedding(value) {
       return null;
     }
   }
-  if (!Array.isArray(parsed) || parsed.length < 8 || parsed.length > 2048) {
+  if (!Array.isArray(parsed) || parsed.length !== FACE_EMBEDDING_DIMENSION) {
     return null;
   }
   const embedding = parsed.map(Number);
