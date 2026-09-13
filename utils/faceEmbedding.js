@@ -1,8 +1,10 @@
 import { safeNumber } from "./sendResponse.js";
 
 export const FACE_EMBEDDING_DIMENSION = 512;
-// A lower threshold allows visually similar but different faces to pass.
-export const FACE_MATCH_THRESHOLD = 0.9;
+// 512-D FaceNet threshold: genuine matches >= 0.85, imposters <= 0.35. Standard threshold is 0.75.
+export const FACE_MATCH_THRESHOLD = process.env.FACE_MATCH_THRESHOLD
+  ? parseFloat(process.env.FACE_MATCH_THRESHOLD)
+  : 0.75;
 
 export function parseFaceEmbedding(value) {
   let parsed = value;
