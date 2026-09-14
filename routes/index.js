@@ -20,6 +20,7 @@ import financeRoutes from "./finance.js";
 import subscriptionRoutes from "./subscriptions.js";
 import webhookRoutes from "./webhook.js";
 import ipRoutes from "./iproute.js";
+import mediaRoutes from "./media.js";
 
 
 const router = express.Router();
@@ -46,6 +47,7 @@ router.use('/finance', financeRoutes);
 router.use('/subscriptions', subscriptionRoutes);
 router.use('/webhook', webhookRoutes);
 router.use('/ip', ipRoutes);
+router.use('/media', mediaRoutes);
 
 
 

@@ -64,7 +64,18 @@ const config = {
   FAST2SMS_SENDER_ID: 'FINFLR',
   FAST2SMS_URL: 'https://www.fast2sms.com/dev/bulkV2',
   FAST2SMS_OTP_TEMPLATE: '219530',
+
+  // ==== Backblaze B2 =====
+  B2_ENDPOINT: 'https://s3.eu-central-003.backblazeb2.com',
+  B2_REGION: 'eu-central-003',
+  B2_BUCKET: 'OneAttendance',
+  B2_ACCESS_KEY: '81a52e31f317',
+  B2_SECRET_KEY: '00343a3d46573b761adda6b5b1500ae0470471e90e',
+  B2_DOWNLOAD_AUTH_TTL_SECONDS: 86400,
+
 };
+
+export const productionBaseDomain = String(config.SERVER_BASE_URL ?? '').replace(/\/$/, '');
 
 export const {
   PORT,
@@ -102,6 +113,12 @@ export const {
   FAST2SMS_SENDER_ID,
   FAST2SMS_URL,
   FAST2SMS_OTP_TEMPLATE,
+  B2_ENDPOINT,
+  B2_REGION,
+  B2_BUCKET,
+  B2_ACCESS_KEY,
+  B2_SECRET_KEY,
+  B2_DOWNLOAD_AUTH_TTL_SECONDS
 } = config;
 
 export default config;

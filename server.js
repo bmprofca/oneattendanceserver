@@ -14,6 +14,8 @@ import adminRoutes from './admin_routes/index.js';
 import adminOpenApiSpec from './admin_docs/openapi.js';
 import { adminScalarApiReferenceConfig } from './admin_docs/scalar.js';
 import fetchAndSaveTemplates from './whatsappTemplates/getTemplates.js';
+import mediaRoutes from './routes/media.js';
+import { initB2Storage } from './utils/b2Storage.js';
 
 const app = express();
 
@@ -49,6 +51,8 @@ app.use(
   })
 );
 
+app.use('/api/media', mediaRoutes);
+app.use('/media', mediaRoutes);
 app.use('/admin', adminRoutes);
 app.use('/', routes);
 
@@ -79,6 +83,13 @@ const startServer = async () => {
     );
   } catch (err) {
     console.error("⚠️ Database context generation failed:", err.message);
+  }
+
+  try {
+    await initB2Storage();
+    console.log('✅ Backblaze B2 storage initialized');
+  } catch (error) {
+    console.warn('⚠️ Backblaze B2 storage init skipped:', error.message);
   }
 
   try {

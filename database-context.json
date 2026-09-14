@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T06:49:32.268Z",
+  "generated_at": "2026-09-14T16:22:57.929Z",
   "database": "u278432002_oneattendance",
   "table_count": 33,
   "tables": {
@@ -711,7 +711,7 @@
     "companies": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -3514,7 +3514,7 @@
     "invite_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 13,
+      "estimated_rows": 17,
       "comment": null,
       "columns": [
         {
@@ -3991,7 +3991,7 @@
     "leave_configs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 17,
+      "estimated_rows": 22,
       "comment": null,
       "columns": [
         {
@@ -4222,7 +4222,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 5,
       "comment": null,
       "columns": [
         {
@@ -5191,7 +5191,7 @@
     "permission_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 14,
+      "estimated_rows": 21,
       "comment": null,
       "columns": [
         {
@@ -5369,7 +5369,7 @@
     "permission_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 708,
+      "estimated_rows": 931,
       "comment": null,
       "columns": [
         {
@@ -5533,7 +5533,7 @@
     "salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 25,
+      "estimated_rows": 35,
       "comment": null,
       "columns": [
         {
@@ -5750,7 +5750,7 @@
     "salary_component_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 15,
+      "estimated_rows": 19,
       "comment": null,
       "columns": [
         {
@@ -5922,7 +5922,7 @@
     "salary_component_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 44,
+      "estimated_rows": 57,
       "comment": null,
       "columns": [
         {
@@ -6274,7 +6274,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 17,
+      "estimated_rows": 22,
       "comment": null,
       "columns": [
         {
@@ -7240,7 +7240,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 10,
+      "estimated_rows": 11,
       "comment": null,
       "columns": [
         {
