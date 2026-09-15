@@ -26,7 +26,7 @@ const openApiSpec = {
     title: 'OneAttendance API Reference',
     version: '1.0.0',
     description:
-      'Interactive API documentation for OneAttendance Server. Sign up: POST /auth/signup/request-otp → POST /auth/signup/verify-otp. Login: POST /auth/login/password OR /auth/login/verify-otp. The session TOKEN is auto-saved to the Scalar environment after successful authentication.',
+      'Interactive API documentation for OneAttendance Server. Sign up: POST /auth/signup/request-otp → POST /auth/signup/verify-otp. Login: POST /auth/login/request-otp → POST /auth/login/verify-otp. The session TOKEN is auto-saved to the Scalar environment after successful authentication.',
   },
   servers: [{ url: '/', description: 'OneAttendance Server API' }],
   'x-scalar-active-environment': 'development',

@@ -84,7 +84,7 @@ export const sendLoginAlertEmail = async ({
             </div>
 
             <p style="margin: 0; font-size: 14px; color: #6b7280; line-height: 1.5;">
-                If you did not sign in, we recommend you change your password immediately and enable two-factor authentication if available.
+                If you did not sign in, we recommend you review your account activity and revoke active sessions immediately.
             </p>
         `,
         footerHtml: `

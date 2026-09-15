@@ -2,8 +2,8 @@ import express from "express";
 import axios from "axios";
 import db from "../config/db.js";
 import {
-  generateOTP, hashPassword, comparePassword, verifyOtpHash,
-  generateSessionToken, generateRandomPassword
+  generateOTP, hashPassword, verifyOtpHash,
+  generateSessionToken
 } from "../utils/auth.js";
 import getClientMeta from "../utils/ipHelper.js";
 import auth from "../middleware/authMiddleware.js";
@@ -11,7 +11,7 @@ import { OAuth2Client } from "google-auth-library";
 import { saveMediaFromUrl } from "../utils/fileService.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
 import {
-  queueSignupOTPEmail, queueLoginOTPEmail, queueForgotPasswordOTPEmail,
+  queueSignupOTPEmail, queueLoginOTPEmail,
   sendQueuedWelcomeEmail, queueLoginAlertEmail
 } from "../email/services/email.processor.js";
 import { sendOtpSms } from "../utils/sms.js";
@@ -25,14 +25,13 @@ import { normalizeIndianMobile } from "../utils/mobile.js";
 const router = express.Router();
 
 const SQL = {
-  USER_BY_EMAIL: `SELECT id, email, phone, password, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE email = ? AND is_deleted = 0`,
-  USER_BY_PHONE: `SELECT id, email, phone, password, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE phone = ? AND is_deleted = 0`,
-  USER_BY_EMAIL_ACTIVE: `SELECT id, email, phone, password, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE email = ? AND is_deleted = 0 AND is_active = 1`,
-  USER_BY_PHONE_ACTIVE: `SELECT id, email, phone, password, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE phone = ? AND is_deleted = 0 AND is_active = 1`,
+  USER_BY_EMAIL: `SELECT id, email, phone, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE email = ? AND is_deleted = 0`,
+  USER_BY_PHONE: `SELECT id, email, phone, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE phone = ? AND is_deleted = 0`,
+  USER_BY_EMAIL_ACTIVE: `SELECT id, email, phone, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE email = ? AND is_deleted = 0 AND is_active = 1`,
+  USER_BY_PHONE_ACTIVE: `SELECT id, email, phone, name, profile_picture, is_active, is_system_admin, is_deleted, last_login FROM users WHERE phone = ? AND is_deleted = 0 AND is_active = 1`,
   USER_BY_ID: `SELECT id, email, phone, name, profile_picture, is_active, is_system_admin, last_login FROM users WHERE id = ? LIMIT 1`,
-  INSERT_USER: `INSERT INTO users (email, phone, password, name, profile_picture, is_active, last_login, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW(), NOW())`,
+  INSERT_USER: `INSERT INTO users (email, phone, name, profile_picture, is_active, last_login, created_at, updated_at) VALUES (?, ?, ?, ?, 1, NOW(), NOW(), NOW())`,
   UPDATE_LAST_LOGIN: `UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = ?`,
-  UPDATE_PASSWORD: `UPDATE users SET password = ?, updated_by = ?, updated_at = NOW() WHERE id = ?`,
 
   OTP_SIGNUP_RATE_LIMIT: (col) =>
     `SELECT COUNT(*) AS count FROM otps WHERE ${col} = ? AND otp_purpose = 'signup' AND created_at > NOW() - INTERVAL 30 SECOND`,
@@ -73,12 +72,6 @@ const normalizeLoginType = (value) => {
 };
 
 const normalizeSignupType = (value) => {
-  if (!value || typeof value !== "string") return null;
-  const t = value.toLowerCase().trim();
-  return t === "email" ? "email" : (t === "phone" || t === "mobile" ? "phone" : null);
-};
-
-const normalizeForgotType = (value) => {
   if (!value || typeof value !== "string") return null;
   const t = value.toLowerCase().trim();
   return t === "email" ? "email" : (t === "phone" || t === "mobile" ? "phone" : null);
@@ -161,11 +154,10 @@ const sendLoginAlert = async (user, session, req, normalizedPlatform) => {
   }
 };
 
-const resolveLoginPayload = (body, { requirePassword = false, requireOtp = false } = {}) => {
-  const { login_type, phone, email, password, otp } = body || {};
+const resolveLoginPayload = (body, { requireOtp = false } = {}) => {
+  const { login_type, phone, email, otp } = body || {};
   const loginType = normalizeLoginType(login_type);
   if (!loginType) return { error: { status: 400, message: "Valid login_type is required (email/phone)" } };
-  if (requirePassword && !password) return { error: { status: 400, message: "Password is required" } };
   if (requireOtp && (otp === undefined || otp === null || otp === "")) return { error: { status: 400, message: "OTP is required" } };
   let identifier;
   if (loginType === "email") {
@@ -177,7 +169,7 @@ const resolveLoginPayload = (body, { requirePassword = false, requireOtp = false
     identifier = normalizeIndianMobile(phone);
     if (!identifier) return { error: { status: 400, message: "Invalid phone number" } };
   }
-  return { loginType, identifier, password, otp };
+  return { loginType, identifier, otp };
 };
 
 const resolveSignupRequestPayload = (body) => {
@@ -199,45 +191,22 @@ const resolveSignupRequestPayload = (body) => {
 };
 
 const resolveSignupPayload = (body) => {
-  const { signup_type, email, phone, otp, password, name } = body || {};
+  const { signup_type, email, phone, otp, name } = body || {};
   const signupType = normalizeSignupType(signup_type);
   if (!signupType) return { error: { status: 400, message: "Valid signup_type is required (email/phone)" } };
-  if (!password) return { error: { status: 400, message: "Password is required" } };
-  if (typeof password !== "string" || password.length < 6) return { error: { status: 400, message: "Password must be at least 6 characters" } };
   if (otp === undefined || otp === null || otp === "") return { error: { status: 400, message: "OTP is required" } };
   if (signupType === "email") {
     if (!hasNonEmptyString(email)) return { error: { status: 400, message: "Email is required for email signup" } };
     if (hasNonEmptyString(phone)) return { error: { status: 400, message: "Phone is not allowed for email signup. Use phone signup instead." } };
     const normalizedEmail = email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) return { error: { status: 400, message: "Invalid email format" } };
-    return { signupType, normalizedEmail, normalizedPhone: "", password, otp, name: name?.trim() || null };
+    return { signupType, normalizedEmail, normalizedPhone: "", otp, name: name?.trim() || null };
   }
   if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required for phone signup" } };
   if (hasNonEmptyString(email)) return { error: { status: 400, message: "Email is not allowed for phone signup. Use email signup instead." } };
   const normalizedPhone = normalizeIndianMobile(phone);
   if (!normalizedPhone) return { error: { status: 400, message: "Invalid phone number" } };
-  return { signupType, normalizedEmail: "", normalizedPhone, password, otp, name: name?.trim() || null };
-};
-
-const resolveForgotPasswordPayload = (body, { requireOtp = false, requirePassword = false } = {}) => {
-  const { forgot_type, email, phone, otp, new_password } = body || {};
-  const forgotType = normalizeForgotType(forgot_type);
-  if (!forgotType) return { error: { status: 400, message: "Valid forgot_type is required (email/phone)" } };
-  if (requireOtp && (otp === undefined || otp === null || otp === "")) return { error: { status: 400, message: "OTP is required" } };
-  if (requirePassword && !new_password) return { error: { status: 400, message: "new_password is required" } };
-  let identifier;
-  if (forgotType === "email") {
-    if (!email || typeof email !== "string") return { error: { status: 400, message: "Email is required" } };
-    identifier = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return { error: { status: 400, message: "Invalid email format" } };
-  } else {
-    if (phone === undefined || phone === null || phone === "") return { error: { status: 400, message: "Phone is required" } };
-    identifier = normalizeIndianMobile(phone);
-    if (!identifier) return { error: { status: 400, message: "Invalid phone number" } };
-  }
-  if (requirePassword && (typeof new_password !== "string" || new_password.length < 6))
-    return { error: { status: 400, message: "Password must be at least 6 characters" } };
-  return { forgotType, identifier, otp, new_password };
+  return { signupType, normalizedEmail: "", normalizedPhone, otp, name: name?.trim() || null };
 };
 
 const TRUECALLER_TOKEN_URL = "https://oauth-account-noneu.truecaller.com/v1/token";
@@ -354,7 +323,7 @@ router.post("/signup/verify-otp", async (req, res) => {
     const { platform, latitude, longitude } = req.body || {};
     const resolved = resolveSignupPayload(req.body);
     if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { signupType, normalizedEmail, normalizedPhone, password, otp: submittedOtp, name } = resolved;
+    const { signupType, normalizedEmail, normalizedPhone, otp: submittedOtp, name } = resolved;
     const normalizedPlatform = normalizePlatform(platform);
     if (!normalizedPlatform) return sendError(res, 400, "Valid platform is required (web/android/ios)");
     const coords = parseCoordinates(latitude, longitude);
@@ -382,10 +351,9 @@ router.post("/signup/verify-otp", async (req, res) => {
       return sendError(res, 409, signupType === "email" ? "Email already registered" : "Phone already registered");
     }
 
-    const hashed = await hashPassword(password);
     let result;
     try {
-      [result] = await conn.query(SQL.INSERT_USER, [normalizedEmail, normalizedPhone, hashed, name, null]);
+      [result] = await conn.query(SQL.INSERT_USER, [normalizedEmail, normalizedPhone, name, null]);
     } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
         await rollbackTransaction(conn, transactionStarted);
@@ -443,14 +411,13 @@ router.post("/login/request-otp", async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
-    const resolved = resolveLoginPayload(req.body, { requirePassword: true });
+    const resolved = resolveLoginPayload(req.body);
     if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { loginType, identifier, password } = resolved;
+    const { loginType, identifier } = resolved;
     const ip = getClientMeta(req)?.ip_v4 || req.ip || "0.0.0.0";
 
     const user = await getUserByLoginType(conn, loginType, identifier, true);
     if (!user) return sendError(res, 401, "Invalid credentials");
-    if (!(await comparePassword(password, user.password))) return sendError(res, 401, "Invalid credentials");
 
     const [[emailRecent]] = await conn.query(SQL.OTP_SIGNUP_RATE_LIMIT("email"), [identifier]);
     if (emailRecent.count > 5000) return sendError(res, 429, "Please wait before requesting another OTP");
@@ -499,9 +466,9 @@ router.post("/login/verify-otp", async (req, res) => {
   try {
     conn = await db.getConnection();
     const { latitude, longitude, platform } = req.body || {};
-    const resolved = resolveLoginPayload(req.body, { requirePassword: true, requireOtp: true });
+    const resolved = resolveLoginPayload(req.body, { requireOtp: true });
     if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { loginType, identifier, password, otp: submittedOtp } = resolved;
+    const { loginType, identifier, otp: submittedOtp } = resolved;
     const normalizedPlatform = normalizePlatform(platform);
     if (!normalizedPlatform) return sendError(res, 400, "Valid platform is required (web/android/ios)");
     const coords = parseCoordinates(latitude, longitude);
@@ -517,11 +484,6 @@ router.post("/login/verify-otp", async (req, res) => {
       await rollbackTransaction(conn, transactionStarted);
       return sendError(res, 401, "Invalid credentials");
     }
-    if (!(await comparePassword(password, user.password))) {
-      await rollbackTransaction(conn, transactionStarted);
-      return sendError(res, 401, "Invalid credentials");
-    }
-
     const { record, error } = await verifyAndMarkOTP(conn, "email", identifier, "login", submittedOtp);
     if (error) {
       await rollbackTransaction(conn, transactionStarted);
@@ -557,142 +519,6 @@ router.post("/login/verify-otp", async (req, res) => {
     return sendError(res, 500, "Server error");
   } finally {
     await rollbackTransaction(conn, transactionStarted);
-    if (conn) conn.release();
-  }
-});
-
-router.post("/forgot-password/request-otp", async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const resolved = resolveForgotPasswordPayload(req.body);
-    if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { forgotType, identifier } = resolved;
-    const ip = getClientMeta(req)?.ip_v4 || req.ip || "0.0.0.0";
-    const userCol = forgotType === "email" ? "email" : "phone";
-
-    const [users] = await conn.query(`SELECT id FROM users WHERE ${userCol} = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1`, [identifier]);
-    if (!users.length) return sendError(res, 404, "User not found");
-
-    const [[cooldown]] = await conn.query(SQL.OTP_SIGNUP_RATE_LIMIT(userCol), [identifier]);
-    if (cooldown.count > 0) return sendError(res, 429, "Please wait 30 seconds before requesting another OTP");
-    const [[ipCooldown]] = await conn.query(SQL.OTP_IP_RATE_LIMIT("forgot_password"), [ip]);
-    if (ipCooldown.count > 0) return sendError(res, 429, "Too many OTP requests from this IP. Please wait before retrying.");
-    const [[dailyLimit]] = await conn.query(SQL.OTP_DAILY_LIMIT(userCol, "forgot_password"), [identifier]);
-    if (dailyLimit.total >= 10) return sendError(res, 429, `Daily OTP request limit reached for this ${forgotType}`);
-    const [[dailyIp]] = await conn.query(SQL.OTP_DAILY_IP_LIMIT("forgot_password"), [ip]);
-    if (dailyIp.total >= 20) return sendError(res, 429, "Too many OTP requests from this IP today");
-
-    const otp = String(generateOTP());
-    const otpHash = await hashPassword(otp);
-    const expiry = new Date(Date.now() + 5 * 60 * 1000);
-    await conn.query(SQL.INSERT_OTP, [
-      forgotType === "email" ? identifier : "",
-      forgotType === "phone" ? identifier : "",
-      "forgot_password", otpHash, expiry, ip
-    ]);
-
-    console.log("Forget Password OTP:", otp);
-    if (forgotType === "email" && identifier) {
-      try {
-        await queueForgotPasswordOTPEmail({
-          to: identifier,
-          userName: "User",
-          otp,
-          fromEmail: EMAIL_USER,
-          fromName: "OneAttendance",
-          replyTo: EMAIL_USER
-        });
-      } catch (emailErr) {
-        console.error("FORGOT PASSWORD OTP EMAIL QUEUE ERROR:", emailErr.message);
-        return sendError(res, 500, "Failed to send forgot password OTP email");
-      }
-    } else if (forgotType === "phone" && identifier) {
-      try { await sendOtpSms(identifier, otp); } catch (smsErr) { console.error("FORGOT PASSWORD OTP SMS ERROR:", smsErr.message); }
-      try { await sendOtpWhatsApp(identifier, otp); } catch (waErr) { console.error("FORGOT PASSWORD OTP WHATSAPP ERROR:", waErr.message); }
-    }
-
-    return sendSuccess(res, 200, `If this ${forgotType} is registered, an OTP has been sent`);
-  } catch (err) {
-    console.error("FORGOT PASSWORD REQUEST OTP ERROR:", err);
-    if (err.code === "ER_CON_COUNT_ERROR") return sendError(res, 503, "Database temporarily unavailable");
-    if (err.code === "PROTOCOL_CONNECTION_LOST") return sendError(res, 503, "Database connection lost");
-    return sendError(res, 500, "Something went wrong while processing OTP request");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.post("/forgot-password/verify-otp", async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const resolved = resolveForgotPasswordPayload(req.body, { requireOtp: true });
-    if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { forgotType, identifier, otp: submittedOtp } = resolved;
-    const userCol = forgotType === "email" ? "email" : "phone";
-
-    await conn.beginTransaction();
-    const { record, error } = await verifyAndMarkOTP(conn, userCol, identifier, "forgot_password", submittedOtp);
-    if (error) {
-      await conn.rollback();
-      return sendError(res, 400, error);
-    }
-    await conn.query(`UPDATE otps SET is_verified = 1, verified_at = NOW() WHERE id = ?`, [record.id]);
-    await conn.commit();
-    return sendSuccess(res, 200, "OTP verified successfully", { verified: true });
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("FORGOT PASSWORD VERIFY ERROR:", err);
-    return sendError(res, 500, "Something went wrong");
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
-router.post("/forgot-password/reset", async (req, res) => {
-  let conn;
-  try {
-    conn = await db.getConnection();
-    const resolved = resolveForgotPasswordPayload(req.body);
-    if (resolved.error) return sendError(res, resolved.error.status, resolved.error.message);
-    const { forgotType, identifier } = resolved;
-    const { new_password } = req.body;
-    if (!new_password) return sendError(res, 400, "new_password is required");
-    if (typeof new_password !== "string" || new_password.length < 6) return sendError(res, 400, "Password must be at least 6 characters");
-
-    const userCol = forgotType === "email" ? "email" : "phone";
-    await conn.beginTransaction();
-
-    const [otpRows] = await conn.query(SQL.GET_OTP_BY_IDENTIFIER(userCol, "forgot_password"), [identifier]);
-    if (!otpRows.length || !otpRows[0].is_verified) {
-      await conn.rollback();
-      return sendError(res, 400, "OTP verification required");
-    }
-    const record = otpRows[0];
-    if (new Date() > new Date(record.otp_expiry)) {
-      await conn.rollback();
-      return sendError(res, 400, "OTP expired");
-    }
-
-    const [users] = await conn.query(`SELECT id FROM users WHERE ${userCol} = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1 FOR UPDATE`, [identifier]);
-    if (!users.length) {
-      await conn.rollback();
-      return sendError(res, 400, "Invalid request");
-    }
-    const user = users[0];
-    const hashed = await hashPassword(new_password);
-    await conn.query(SQL.UPDATE_PASSWORD, [hashed, user.id, user.id]);
-    await conn.query(SQL.MARK_OTP_USED, [record.id]);
-    await conn.query(SQL.INACTIVATE_SESSIONS, [user.id, user.id]);
-    await conn.commit();
-
-    return sendSuccess(res, 200, "Password reset successfully. Please login again.");
-  } catch (err) {
-    if (conn) await conn.rollback();
-    console.error("PASSWORD RESET ERROR:", err);
-    return sendError(res, 500, "Something went wrong");
-  } finally {
     if (conn) conn.release();
   }
 });
@@ -854,16 +680,13 @@ router.post("/continue/google", async (req, res) => {
     transactionStarted = true;
 
     if (isNewUser) {
-      const randomPassword = generateRandomPassword();
-      const hashedPassword = await hashPassword(randomPassword);
-      const [insertResult] = await conn.query(SQL.INSERT_USER, [email, "", hashedPassword, payload.name || null, profilePicture]);
+      const [insertResult] = await conn.query(SQL.INSERT_USER, [email, "", payload.name || null, profilePicture]);
       const [createdUsers] = await conn.query(SQL.USER_BY_ID, [insertResult.insertId]);
       user = createdUsers[0];
       try {
         await sendQueuedWelcomeEmail({
           to: email,
           userName: user.name || email || "User",
-          password: randomPassword,
           dashboardUrl: FRONTEND_URL + "/home",
           fromEmail: EMAIL_USER,
           fromName: "OneAttendance",
@@ -979,9 +802,7 @@ router.post("/continue/facebook", async (req, res) => {
           if (media?.success) profilePicture = media.file_url;
         } catch (e) { }
       }
-      const randomPassword = generateRandomPassword();
-      const hashed = await hashPassword(randomPassword);
-      const [insertResult] = await conn.query(SQL.INSERT_USER, [email, "", hashed, fbUser.name || null, profilePicture]);
+      const [insertResult] = await conn.query(SQL.INSERT_USER, [email, "", fbUser.name || null, profilePicture]);
       const [newUsers] = await conn.query(SQL.USER_BY_ID, [insertResult.insertId]);
       user = newUsers[0];
     } else {
@@ -1071,8 +892,7 @@ router.post("/continue/truecaller", async (req, res) => {
     transactionStarted = true;
 
     if (isNewUser) {
-      const hashed = await hashPassword(generateRandomPassword());
-      const [insertResult] = await conn.query(SQL.INSERT_USER, [signupEmail, tcUser.phone, hashed, tcUser.name, profilePicture]);
+      const [insertResult] = await conn.query(SQL.INSERT_USER, [signupEmail, tcUser.phone, tcUser.name, profilePicture]);
       const [newRows] = await conn.query(SQL.USER_BY_ID, [insertResult.insertId]);
       user = newRows[0];
     } else {

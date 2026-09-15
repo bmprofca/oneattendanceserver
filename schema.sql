@@ -650,7 +650,6 @@ CREATE TABLE `users` (
   `id` bigint(20) UNSIGNED NOT NULL,
   `email` varchar(254) DEFAULT NULL,
   `phone` varchar(30) DEFAULT NULL,
-  `password` varchar(255) NOT NULL,
   `name` varchar(200) DEFAULT NULL,
   `profile_picture` varchar(255) DEFAULT NULL,
   `profession` varchar(100) DEFAULT NULL,

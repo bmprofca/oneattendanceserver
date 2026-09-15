@@ -1,7 +1,6 @@
 import {
   sendLoginOTPEmail,
   sendSignupOTPEmail,
-  sendForgotPasswordOTPEmail,
   sendPhoneUpdateOTPEmail,
   sendDeleteAccountOTPEmail,
 } from "../emailTemplate/otp_email.js";
@@ -73,32 +72,6 @@ export async function queueLoginOTPEmail({
 
 }
 
-export async function queueForgotPasswordOTPEmail({
-  to,
-  userName,
-  otp,
-  subject,
-  fromEmail,
-  fromName,
-  replyTo,
-  maxAttempts = 3
-}) {
-
-  return queueEmail({
-    type: "forgot_password_otp",
-    maxAttempts,
-    payload: {
-      to,
-      userName,
-      otp,
-      subject,
-      fromEmail,
-      fromName,
-      replyTo
-    }
-  });
-
-}
 
 export async function queuePhoneUpdateOTPEmail({
   to,
@@ -408,7 +381,6 @@ export async function sendQueuedWelcomeEmail({
   to,
   subject,
   userName,
-  password,
   dashboardUrl,
   fromEmail,
   fromName,
@@ -423,7 +395,6 @@ export async function sendQueuedWelcomeEmail({
       to,
       subject,
       userName,
-      password,
       dashboardUrl,
       fromEmail,
       fromName,
@@ -438,7 +409,6 @@ export const EMAIL_SENDERS = Object.freeze({
 
   signup_otp: sendSignupOTPEmail,
   login_otp: sendLoginOTPEmail,
-  forgot_password_otp: sendForgotPasswordOTPEmail,
   phone_update_otp: sendPhoneUpdateOTPEmail,
   delete_account_otp: sendDeleteAccountOTPEmail,
 

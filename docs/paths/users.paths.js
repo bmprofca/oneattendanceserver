@@ -17,14 +17,6 @@ export const schemas = {
       profile_picture: { type: 'string', example: 'https://example.com/avatar.jpg' },
     },
   },
-  UpdatePasswordPayload: {
-    type: 'object',
-    required: ['old_password', 'new_password'],
-    properties: {
-      old_password: { type: 'string', example: 'OldPass123' },
-      new_password: { type: 'string', example: 'NewPass123' },
-    },
-  },
 };
 
 export const paths = {
@@ -97,32 +89,21 @@ export const paths = {
   '/users/update-password': {
     put: {
       tags: ['Users'],
-      summary: 'Update account password',
+      summary: 'Update account password (Deprecated)',
+      description: 'Password authentication has been removed. This endpoint returns 400 Bad Request.',
+      deprecated: true,
       security: [{ bearerAuth: [] }],
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/UpdatePasswordPayload' },
-            examples: {
-              updatePassword: { summary: 'Update password', value: { old_password: 'OldPass123', new_password: 'NewPass123' } },
-            },
-          },
-        },
-      },
       responses: {
-        200: {
-          description: 'Password updated successfully',
+        400: {
+          description: 'Password authentication is no longer supported',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/MessageResponse' },
-              example: { success: true, message: 'Password updated successfully' },
+              example: { success: false, message: 'Password authentication is no longer supported. Please login via OTP or SSO.' },
             },
           },
         },
-        400: { description: 'Invalid old password or weak new password', content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationErrorResponse' } } } },
         401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/UnauthorizedResponse' } } } },
-        500: { description: 'Internal server error', content: { 'application/json': { schema: { $ref: '#/components/schemas/InternalServerErrorResponse' } } } },
       },
     },
   },

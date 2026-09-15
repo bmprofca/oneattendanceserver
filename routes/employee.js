@@ -13,8 +13,7 @@ import { buildFileUrl } from "../utils/fileService.js";
 import { EMP, PROFILE } from "../constants/permissions.js";
 import getClientMeta from "../utils/ipHelper.js";
 import {
-  generateOTP, hashPassword, comparePassword, verifyOtpHash, generateSessionToken,
-  generateRandomPassword, generateRandomToken,
+  generateOTP, hashPassword, verifyOtpHash, generateSessionToken,
 } from "../utils/auth.js";
 import { queueSignupOTPEmail, sendQueuedWelcomeEmail } from "../email/services/email.processor.js";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
@@ -415,14 +414,11 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 409, signupType === "email" ? "Email already registered" : "Phone already registered");
     }
 
-    const generatedPassword = generateRandomPassword();
-    const hashedPassword = await hashPassword(generatedPassword);
-
     let userResult;
     try {
       [userResult] = await conn.query(
-        `INSERT INTO users (email, phone, password, name, created_by) VALUES (?, ?, ?, ?, ?)`,
-        [normalizedEmail, normalizedPhone, hashedPassword, normalizedName, createdBy]
+        `INSERT INTO users (email, phone, name, created_by) VALUES (?, ?, ?, ?)`,
+        [normalizedEmail, normalizedPhone, normalizedName, createdBy]
       );
     } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
@@ -575,7 +571,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
         await sendQueuedWelcomeEmail({
           to: normalizedEmail,
           userName: normalizedName,
-          password: generatedPassword,
           dashboardUrl: FRONTEND_URL + "/home",
           fromEmail: EMAIL_USER,
           fromName: "OneAttendance",

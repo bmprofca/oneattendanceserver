@@ -25,7 +25,6 @@ export const QUEUE_PATHS = {
 export const EMAIL_TEMPLATES = {
     signup_otp: "email/emailTemplate/otp_email.js",
     login_otp: "email/emailTemplate/otp_email.js",
-    forgot_password_otp: "email/emailTemplate/otp_email.js",
     phone_update_otp: "email/emailTemplate/otp_email.js",
     delete_account_otp: "email/emailTemplate/otp_email.js",
 
@@ -44,7 +43,6 @@ export const EMAIL_PRIORITIES = {
 
     signup_otp: "high",
     login_otp: "high",
-    forgot_password_otp: "high",
     phone_update_otp: "high",
     delete_account_otp: "high",
 

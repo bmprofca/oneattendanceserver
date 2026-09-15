@@ -87,19 +87,6 @@ export const sendSignupOTPEmail = async ({ to, userName = "User", otp, subject, 
     });
 };
 
-export const sendForgotPasswordOTPEmail = async ({ to, userName = "User", otp, subject, ...rest }) => {
-    await sendOTPEmail({
-        to,
-        userName,
-        otp,
-        subject: subject || "Reset your OneAttendance password",
-        heading: "Password Reset",
-        introText: "You have requested to reset your password. Use the OTP below to proceed. If you did not make this request, you can safely ignore this email.",
-        ...rest,
-    });
-};
-
-
 export const sendDeleteAccountOTPEmail = async ({ to, userName = "User", otp, subject, ...rest }) => {
     await sendOTPEmail({
         to,

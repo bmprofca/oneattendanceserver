@@ -1,7 +1,6 @@
 import express from "express";
 import db from "../config/db.js";
 import adminAuth from "../middleware/adminAuthMiddleware.js";
-import { hashPassword } from "../utils/auth.js";
 import {
   sendSuccess,
   sendError,
