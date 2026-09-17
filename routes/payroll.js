@@ -35,6 +35,8 @@ const router = express.Router();
 const PAYROLL_ENTRY_FIELDS = `
   pe.id,
   pe.payroll_period,
+  YEAR(pe.payroll_period) AS payroll_year,
+  MONTH(pe.payroll_period) AS payroll_month,
   pe.net_salary,
   pe.total_earnings,
   pe.total_deductions,
@@ -700,9 +702,17 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
     const user_id = req.user?.id;
     const company_id = req.company?.id;
 
-    let { year, page = 1, limit = 10 } = req.query;
+    let { year, month, page = 1, limit = 10 } = req.query;
     page = Number(page) || 1;
     limit = Math.min(Number(limit) || 10, 100);
+    year = year === undefined || year === "" ? null : Number(year);
+    month = month === undefined || month === "" ? null : Number(month);
+    if (
+      (year !== null && (!Number.isInteger(year) || year < 1)) ||
+      (month !== null && (!Number.isInteger(month) || month < 1 || month > 12))
+    ) {
+      return sendError(res, 400, "Invalid payroll period");
+    }
     const offset = (page - 1) * limit;
     if (!user_id || !company_id) return sendError(res, 400, "Invalid user/company");
 
@@ -715,7 +725,8 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
 
     let whereClause = `pe.employee_id = ? AND pe.company_id = ? AND pe.is_deleted = 0`;
     const params = [employee.id, company_id];
-    if (year) { whereClause += ` AND YEAR(pe.payroll_period) = ?`; params.push(year); }
+    if (year !== null) { whereClause += ` AND YEAR(pe.payroll_period) = ?`; params.push(year); }
+    if (month !== null) { whereClause += ` AND MONTH(pe.payroll_period) = ?`; params.push(month); }
 
     const [[{ total }]] = await conn.query(`SELECT COUNT(*) as total FROM payroll_entries pe WHERE ${whereClause}`, params);
 
@@ -739,13 +750,11 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
       }, {});
     }
 
-    const data = rows.map(r => {
-      const date = new Date(r.payroll_period);
-      return {
+    const data = rows.map(r => ({
         payroll: {
           id: r.id,
-          month: date.getMonth() + 1,
-          year: date.getFullYear(),
+          month: Number(r.payroll_month),
+          year: Number(r.payroll_year),
           net_salary: r.net_salary,
           total_earnings: r.total_earnings,
           total_deductions: r.total_deductions,
@@ -778,8 +787,7 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
             remark: a.remark,
           })),
         },
-      };
-    });
+      }));
 
     return sendSuccess(res, 200, "My payroll fetched successfully", data, buildMeta(page, limit, total, data.length));
   } catch (err) {
