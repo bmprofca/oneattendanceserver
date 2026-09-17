@@ -1274,7 +1274,13 @@ router.get("/my-salary", auth(SAL.EMP), withConnection(async (conn, req, res) =>
      ORDER BY ss.effective_from DESC, ss.id DESC LIMIT 1`,
     [company_id, employee_id, targetDate, targetDate]
   );
-  if (!salaryStructure) throw { status: 404, message: "Salary structure not found" };
+  if (!salaryStructure) {
+    return res.status(200).json({
+      success: true,
+      message: "No salary structure found for the selected period",
+      data: null,
+    });
+  }
 
   const [components] = await conn.query(
     `SELECT esc.id, sc.id AS component_id, sc.code, sc.name, sc.type, sc.is_taxable, sc.is_statutory, esc.calc_type, esc.calc_value, esc.remark,
