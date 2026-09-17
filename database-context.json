@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-15T16:21:24.033Z",
+  "generated_at": "2026-09-17T12:03:31.814Z",
   "database": "u278432002_oneattendance",
   "table_count": 33,
   "tables": {
@@ -4222,7 +4222,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -4593,7 +4593,7 @@
     "payroll_entries": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -4963,7 +4963,7 @@
     "payroll_entry_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 14,
+      "estimated_rows": 18,
       "comment": null,
       "columns": [
         {
@@ -6274,7 +6274,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 23,
+      "estimated_rows": 26,
       "comment": null,
       "columns": [
         {
@@ -7010,7 +7010,7 @@
     "transactions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 3,
+      "estimated_rows": 4,
       "comment": null,
       "columns": [
         {
@@ -7240,7 +7240,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 11,
+      "estimated_rows": 12,
       "comment": null,
       "columns": [
         {
@@ -7277,19 +7277,8 @@
           "comment": null
         },
         {
-          "name": "password",
-          "position": 4,
-          "data_type": "varchar",
-          "column_type": "varchar(255)",
-          "nullable": false,
-          "default": null,
-          "key": null,
-          "extra": null,
-          "comment": null
-        },
-        {
           "name": "name",
-          "position": 5,
+          "position": 4,
           "data_type": "varchar",
           "column_type": "varchar(200)",
           "nullable": true,
@@ -7300,7 +7289,7 @@
         },
         {
           "name": "profile_picture",
-          "position": 6,
+          "position": 5,
           "data_type": "varchar",
           "column_type": "varchar(255)",
           "nullable": true,
@@ -7311,7 +7300,7 @@
         },
         {
           "name": "profession",
-          "position": 7,
+          "position": 6,
           "data_type": "varchar",
           "column_type": "varchar(100)",
           "nullable": true,
@@ -7322,7 +7311,7 @@
         },
         {
           "name": "whatsapp",
-          "position": 8,
+          "position": 7,
           "data_type": "varchar",
           "column_type": "varchar(100)",
           "nullable": true,
@@ -7333,7 +7322,7 @@
         },
         {
           "name": "is_active",
-          "position": 9,
+          "position": 8,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -7344,7 +7333,7 @@
         },
         {
           "name": "is_system_admin",
-          "position": 10,
+          "position": 9,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": true,
@@ -7355,7 +7344,7 @@
         },
         {
           "name": "last_login",
-          "position": 11,
+          "position": 10,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -7366,7 +7355,7 @@
         },
         {
           "name": "created_at",
-          "position": 12,
+          "position": 11,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -7377,7 +7366,7 @@
         },
         {
           "name": "created_by",
-          "position": 13,
+          "position": 12,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -7388,7 +7377,7 @@
         },
         {
           "name": "updated_at",
-          "position": 14,
+          "position": 13,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": false,
@@ -7399,7 +7388,7 @@
         },
         {
           "name": "updated_by",
-          "position": 15,
+          "position": 14,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,
@@ -7410,7 +7399,7 @@
         },
         {
           "name": "is_deleted",
-          "position": 16,
+          "position": 15,
           "data_type": "tinyint",
           "column_type": "tinyint(1)",
           "nullable": false,
@@ -7421,7 +7410,7 @@
         },
         {
           "name": "deleted_at",
-          "position": 17,
+          "position": 16,
           "data_type": "datetime",
           "column_type": "datetime",
           "nullable": true,
@@ -7432,7 +7421,7 @@
         },
         {
           "name": "deleted_by",
-          "position": 18,
+          "position": 17,
           "data_type": "bigint",
           "column_type": "bigint(20) unsigned",
           "nullable": true,

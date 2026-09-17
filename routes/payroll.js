@@ -452,7 +452,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
 });
 
 // 2b. Single Employee Payroll History (all generated + current preview)
-router.get("/:employeeId", auth(PAY.MNG), async (req, res) => {
+router.get("/:employeeId([0-9]+)", auth(PAY.MNG), async (req, res) => {
   let conn;
 
   try {
@@ -710,6 +710,7 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
       `SELECT id, employee_code, designation, employment_type, salary_type FROM employees WHERE user_id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1`,
       [user_id, company_id]
     );
+
     if (!employee) return sendError(res, 404, "Employee not found");
 
     let whereClause = `pe.employee_id = ? AND pe.company_id = ? AND pe.is_deleted = 0`;
