@@ -267,7 +267,7 @@ router.post("/signup/request-otp", async (req, res) => {
 
     const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";
     const [existingUser] = await conn.query(`SELECT id FROM users WHERE ${existingUserSql} AND is_deleted = 0 LIMIT 1`, [rateLimitVal]);
-    if (existingUser.length > 5000) return sendError(res, 409, signupType === "email" ? "Email already registered. Please login." : "Phone already registered. Please login.");
+    if (existingUser.length) return sendError(res, 409, signupType === "email" ? "Email already registered. Please login." : "Phone already registered. Please login.");
 
     const [[emailRecent]] = await conn.query(SQL.OTP_SIGNUP_RATE_LIMIT(rateLimitCol), [rateLimitVal]);
     if (emailRecent.count > 50000) return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
