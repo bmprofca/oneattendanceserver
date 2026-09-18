@@ -13,7 +13,7 @@ import { buildFileUrl } from "../utils/fileService.js";
 import { EMP, PROFILE } from "../constants/permissions.js";
 import getClientMeta from "../utils/ipHelper.js";
 import {
-  generateOTP, hashPassword, verifyOtpHash, generateSessionToken,
+  generateOTP, hashPassword, verifyOtpHash, generateSessionToken, generateRandomToken,
 } from "../utils/auth.js";
 import { queueSignupOTPEmail, sendQueuedWelcomeEmail } from "../email/services/email.processor.js";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
