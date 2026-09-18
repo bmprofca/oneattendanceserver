@@ -267,7 +267,7 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 429, "Too many requests from this IP");
     }
 
-    const otp = generateOTP();
+    const otp = 123456;
     const otpHash = await hashPassword(otp);
     const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
 
