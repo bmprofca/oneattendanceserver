@@ -239,20 +239,64 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
       return sendError(res, 400, "Company context missing");
     }
 
+    const [[loggedInUser]] = await conn.query(
+      `SELECT email, phone FROM users WHERE id = ? AND is_deleted = 0 LIMIT 1`,
+      [req.user?.id]
+    );
+    const loggedInEmail = loggedInUser?.email?.trim().toLowerCase() || "";
+    let loggedInPhone = loggedInUser?.phone ? String(loggedInUser.phone) : "";
+    if (loggedInPhone) {
+      try {
+        loggedInPhone = normalizeIndianMobile(loggedInPhone);
+      } catch {
+        loggedInPhone = loggedInPhone.replace(/\D/g, "");
+      }
+    }
+
+    const isSelfSignup = signupType === "email"
+      ? loggedInEmail === normalizedEmail
+      : loggedInPhone === normalizedPhone || loggedInPhone === String(normalizedPhone).replace(/^91/, "");
+    if (isSelfSignup) {
+      return sendError(res, 400, "You cannot add yourself as an employee");
+    }
+
+    const ownerContactColumn = signupType === "email" ? "u.email" : "u.phone";
+    const ownerContactValue = signupType === "email" ? normalizedEmail : normalizedPhone;
+    const [[companyOwner]] = await conn.query(
+      `SELECT c.owner_user_id
+       FROM companies c
+       INNER JOIN users u ON u.id = c.owner_user_id AND u.is_deleted = 0
+       WHERE c.id = ? AND ${ownerContactColumn} = ?
+       LIMIT 1`,
+      [companyId, ownerContactValue]
+    );
+    if (companyOwner) {
+      return sendError(res, 409, "Company owner cannot be added as an employee");
+    }
+
+    const employeeContactColumn = signupType === "email" ? "u.email" : "u.phone";
+    const employeeContactValue = signupType === "email" ? normalizedEmail : normalizedPhone;
+    const [[existingEmployee]] = await conn.query(
+      `SELECT e.id
+       FROM employees e
+       INNER JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
+       WHERE e.company_id = ? AND e.is_deleted = 0 AND ${employeeContactColumn} = ?
+       LIMIT 1`,
+      [companyId, employeeContactValue]
+    );
+    if (existingEmployee) {
+      return sendError(res, 409, "User is already an employee in this company");
+    }
+
+    const [[existingUser]] = await conn.query(
+      `SELECT id, name FROM users WHERE ${signupType === "email" ? "email" : "phone"} = ? AND is_deleted = 0 LIMIT 1`,
+      [employeeContactValue]
+    );
+
     const rateLimitColumn = signupType === "phone" ? "phone" : "email";
     const rateLimitValue = signupType === "phone" ? normalizedPhone : normalizedEmail;
     const clientMeta = getClientMeta(req);
     const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || "unknown";
-
-    const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";
-    const existingUserParams = signupType === "email" ? [normalizedEmail] : [normalizedPhone];
-    const [existingUser] = await conn.query(
-      `SELECT id FROM users WHERE ${existingUserSql} AND is_deleted = 0 LIMIT 1`,
-      existingUserParams
-    );
-    if (existingUser.length) {
-      return sendError(res, 409, signupType === "email" ? "Email already registered" : "Phone already registered");
-    }
 
     const [[recentOtp]] = await conn.query(
       `SELECT COUNT(*) AS count FROM otps WHERE ${rateLimitColumn} = ? AND otp_purpose = 'employee_create' AND created_at > NOW() - INTERVAL 30 SECOND`,
@@ -312,7 +356,15 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
       }
     }
 
-    return sendSuccess(res, 200, signupType === "email" ? "OTP sent to email" : "OTP sent to phone");
+    return sendSuccess(
+      res,
+      200,
+      signupType === "email" ? "OTP sent to email" : "OTP sent to phone",
+      {
+        existing_user: Boolean(existingUser),
+        name: existingUser?.name?.trim() || null,
+      }
+    );
   } catch (err) {
     console.error("EMPLOYEE CREATE OTP ERROR:", err);
     return sendError(res, 500, "Something went wrong");
@@ -355,10 +407,6 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     const createdBy = req.user?.id;
 
     const normalizedName = sanitizeText(name, 200);
-    if (!normalizedName || normalizedName.length < 3) {
-      return sendError(res, 400, "Invalid employee name (min 3 characters)");
-    }
-
     if (!companyId) {
       return sendError(res, 400, "Company context missing");
     }
@@ -418,30 +466,67 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
     const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";
     const existingUserParams = signupType === "email" ? [normalizedEmail] : [normalizedPhone];
     const [existingUsers] = await conn.query(
-      `SELECT id FROM users WHERE ${existingUserSql} AND is_deleted = 0 LIMIT 1`,
+      `SELECT id, name FROM users WHERE ${existingUserSql} AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
       existingUserParams
     );
-    if (existingUsers.length) {
+    const existingUserId = existingUsers[0]?.id || null;
+    const employeeName = existingUserId
+      ? sanitizeText(existingUsers[0]?.name, 200)
+      : normalizedName;
+    if (!employeeName || employeeName.length < 3) {
       await conn.rollback();
       transactionStarted = false;
-      return sendError(res, 409, signupType === "email" ? "Email already registered" : "Phone already registered");
+      return sendError(res, 400, "Invalid employee name (min 3 characters)");
     }
 
-    let userResult;
-    try {
-      [userResult] = await conn.query(
-        `INSERT INTO users (email, phone, name, created_by) VALUES (?, ?, ?, ?)`,
-        [normalizedEmail, normalizedPhone, normalizedName, createdBy]
+    if (existingUserId) {
+      const [[companyOwner]] = await conn.query(
+        `SELECT owner_user_id FROM companies WHERE id = ? AND owner_user_id = ? LIMIT 1`,
+        [companyId, existingUserId]
       );
-    } catch (err) {
-      if (err.code === "ER_DUP_ENTRY") {
+      if (companyOwner) {
         await conn.rollback();
         transactionStarted = false;
-        return sendError(res, 409, "Email or phone already registered");
+        return sendError(res, 409, "Company owner cannot be added as an employee");
       }
-      throw err;
+
+      const [existingEmployees] = await conn.query(
+        `SELECT id FROM employees WHERE company_id = ? AND user_id = ? AND is_deleted = 0 LIMIT 1`,
+        [companyId, existingUserId]
+      );
+      if (existingEmployees.length) {
+        await conn.rollback();
+        transactionStarted = false;
+        return sendError(res, 409, "User is already an employee in this company");
+      }
     }
-    const userId = userResult.insertId;
+
+    let userId;
+    if (existingUserId) {
+      userId = existingUserId;
+    } else {
+      let userResult;
+      try {
+        [userResult] = await conn.query(
+          `INSERT INTO users (email, phone, name, created_by) VALUES (?, ?, ?, ?)`,
+          [normalizedEmail, normalizedPhone, employeeName, createdBy]
+        );
+      } catch (err) {
+        if (err.code === "ER_DUP_ENTRY") {
+          await conn.rollback();
+          transactionStarted = false;
+          return sendError(res, 409, "Email or phone already registered");
+        }
+        throw err;
+      }
+      userId = userResult.insertId;
+    }
+
+    if (!userId) {
+      await conn.rollback();
+      transactionStarted = false;
+      return sendError(res, 500, "Unable to resolve user account");
+    }
 
     const packageId = safeNumber(permission_package_id, 0);
     if (!packageId) {
@@ -583,7 +668,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
       try {
         await sendQueuedWelcomeEmail({
           to: normalizedEmail,
-          userName: normalizedName,
+          userName: employeeName,
           dashboardUrl: FRONTEND_URL + "/home",
           fromEmail: EMAIL_USER,
           fromName: "OneAttendance",
