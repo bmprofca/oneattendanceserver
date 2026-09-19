@@ -61,9 +61,9 @@ const config = {
 
   // Fast2SMS Integration
   FAST2SMS_API_KEY: 'TNcvwZtlCVKAhVecVxeTOBubj8TdQDkRuw9m6r0bcsbdRjYzhv5ylzoyli6T',
-  FAST2SMS_SENDER_ID: 'FINFLR',
+  FAST2SMS_SENDER_ID: 'ONEOMS',
   FAST2SMS_URL: 'https://www.fast2sms.com/dev/bulkV2',
-  FAST2SMS_OTP_TEMPLATE: '219530',
+  FAST2SMS_OTP_TEMPLATE: '225451',
 
   // ==== Backblaze B2 =====
   B2_ENDPOINT: 'https://s3.eu-central-003.backblazeb2.com',

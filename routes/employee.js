@@ -30,6 +30,8 @@ import {
 } from "../utils/time.js";
 import { FRONTEND_URL, EMAIL_USER } from "../config/config.js";
 import { normalizeIndianMobile } from "../utils/mobile.js";
+import { sendOtpSms } from "../utils/sms.js";
+import { sendOtpWhatsApp } from "../utils/whatsapp.js";
 
 
 const timeStringToMinutes = (value) => {
@@ -296,6 +298,17 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
       } catch (err) {
         console.error("EMPLOYEE OTP EMAIL ERROR:", err);
         return sendError(res, 500, "Failed to send OTP email");
+      }
+    } else if (signupType === "phone" && normalizedPhone) {
+      try {
+        await sendOtpSms(normalizedPhone, otp);
+      } catch (err) {
+        console.error("EMPLOYEE OTP SMS ERROR:", err.message);
+      }
+      try {
+        await sendOtpWhatsApp(normalizedPhone, otp);
+      } catch (err) {
+        console.error("EMPLOYEE OTP WHATSAPP ERROR:", err.message);
       }
     }
 
