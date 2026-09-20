@@ -701,12 +701,13 @@ router.get("/list", auth(), async (req, res) => {
     const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
     const companyId = req.company?.id;
+    const currentUserId = safeNumber(req.user?.id, 0);
     if (!companyId) {
       return sendError(res, 400, "Invalid company context");
     }
 
-    let where = "WHERE e.company_id = ?";
-    const params = [companyId];
+    let where = "WHERE e.company_id = ? AND e.user_id <> ?";
+    const params = [companyId, currentUserId];
 
     if (search.length >= 3) {
       where += ` AND (e.employee_code LIKE ? OR e.designation LIKE ? OR u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)`;
@@ -724,8 +725,8 @@ router.get("/list", auth(), async (req, res) => {
       `SELECT
          COUNT(CASE WHEN e.is_active = 1 THEN 1 END) AS active,
          COUNT(CASE WHEN e.is_active = 0 THEN 1 END) AS inactive
-       FROM employees e WHERE e.company_id = ?`,
-      [companyId]
+       FROM employees e WHERE e.company_id = ? AND e.user_id <> ?`,
+      [companyId, currentUserId]
     );
     const activeCount = stats[0]?.active || 0;
     const inactiveCount = stats[0]?.inactive || 0;
