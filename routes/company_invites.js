@@ -14,7 +14,7 @@ import { buildFileUrl } from "../utils/fileService.js";
 import { queueCompanyInvitationEmail } from "../email/services/email.processor.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, SALARY_TYPES, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
-import { INV, INV_PKG } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { normalizeWeekends, formatIST } from "../utils/time.js";
 import { FRONTEND_URL, EMAIL_USER, NODE_ENV } from "../config/config.js";
 
@@ -58,7 +58,7 @@ const UPDATE_INVITE_PACKAGE = `
 `;
 
 const SELECT_PERMISSIONS_FOR_PACKAGES = `
-  SELECT ppi.package_id, p.id, p.action, p.code, p.name
+  SELECT ppi.package_id, p.id, p.action, p.code, p.category, p.description
   FROM permission_package_items ppi
   JOIN permissions p ON p.id = ppi.permission_id
   WHERE ppi.package_id IN (?) AND ppi.is_deleted = 0 AND ppi.is_active = 1
@@ -131,7 +131,7 @@ const cleanAttendanceMethods = (methods, companyMethods) => {
   return { success: true, data: JSON.stringify(cleaned) };
 };
 
-router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
+router.post("/package-create", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -308,7 +308,7 @@ router.post("/package-create", auth(INV_PKG.MNG), async (req, res) => {
   }
 });
 
-router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
+router.put("/package-update", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -497,7 +497,7 @@ router.put("/package-update", auth(INV_PKG.MNG), async (req, res) => {
   }
 });
 
-router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
+router.get("/package-list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -583,7 +583,7 @@ router.get("/package-list", auth(INV_PKG.MNG), async (req, res) => {
   }
 });
 
-router.delete("/package-delete", auth(INV_PKG.MNG), async (req, res) => {
+router.delete("/package-delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -766,7 +766,7 @@ const LIST_INVITES_DATA = `
     u.name AS user_name, u.email AS user_email, u.profile_picture,
     ib.name AS inviter_name, ib.email as inviter_email, ib.profile_picture AS inviter_profile_picture,
     pp.package_name,
-    p.id AS permission_id, p.name AS permission_name, p.code AS permission_code
+    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code
   FROM company_invites ci
   LEFT JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
   LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
@@ -813,7 +813,7 @@ const MY_INVITES_DATA = `
     ib.id AS invited_by_id, ib.name AS invited_by_name,
     ib.email AS invited_by_email, ib.profile_picture AS invited_by_profile_picture,
     pp.id AS package_id, pp.package_name,
-    p.id AS permission_id, p.name AS permission_name, p.code AS permission_code
+    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code
   FROM company_invites ci
   INNER JOIN companies c ON c.id = ci.company_id
   LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
@@ -1129,7 +1129,7 @@ const processInviteAcceptance = async (conn, invite, userId) => {
   return { success: true };
 };
 
-router.post("/send", auth(INV.MNG), async (req, res) => {
+router.post("/send", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   const rollback = async () => { if (conn) await conn.rollback(); };
 
@@ -1357,7 +1357,7 @@ router.post("/send", auth(INV.MNG), async (req, res) => {
   }
 });
 
-router.post("/resend", auth(INV.MNG), async (req, res) => {
+router.post("/resend", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   const rollback = async () => { if (conn) await conn.rollback(); };
   try {
@@ -1534,7 +1534,7 @@ router.post("/accept-invite", async (req, res) => {
   }
 });
 
-router.get("/list", auth(INV.MNG), async (req, res) => {
+router.get("/list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1792,7 +1792,7 @@ router.get("/my", auth(), async (req, res) => {
   }
 });
 
-router.put("/update", auth(INV.MNG), async (req, res) => {
+router.put("/update", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2002,7 +2002,7 @@ router.put("/update", auth(INV.MNG), async (req, res) => {
   }
 });
 
-router.delete("/cancel", auth(INV.MNG), async (req, res) => {
+router.delete("/cancel", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

@@ -24,7 +24,7 @@ import { buildShiftPdfHtml } from "../utils/generateShiftPdf.js";
 import { generatePdfFromHtml } from "../utils/pdfGenerator.js";
 import { queueShiftEmail } from "../email/services/email.processor.js";
 import { EMAIL_USER } from "../config/config.js";
-import { SHIFT } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
@@ -43,7 +43,7 @@ const isWeekendDate = ({ date, weekends = [] }) => {
   return weekendInfo(date, weekends).is_weekend;
 };
 
-router.get("/my-calendar", auth(SHIFT.EMP), async (req, res) => {
+router.get("/my-calendar", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -668,7 +668,7 @@ function accumulateShiftCounts(counts, summary) {
   counts.overtime_minutes += summary.overtime_minutes;
 }
 
-router.get("/employees-shifts", auth(SHIFT.MNG), async (req, res) => {
+router.get("/employees-shifts", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -1101,7 +1101,7 @@ async function getShiftCalendarData(conn, employeeId, companyId, month, year) {
   };
 }
 
-router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => {
+router.get("/employee-shifts/:employeeId", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -1482,7 +1482,7 @@ router.get("/employee-shifts/:employeeId", auth(SHIFT.MNG), async (req, res) => 
   }
 });
 
-router.post("/download", auth(), async (req, res) => {
+router.post("/download", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1535,7 +1535,7 @@ router.post("/download", auth(), async (req, res) => {
   }
 });
 
-router.post("/send-email", auth(SHIFT.MNG), async (req, res) => {
+router.post("/send-email", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

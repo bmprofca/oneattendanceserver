@@ -10,7 +10,7 @@ import {
   sendSuccess, sendError, safeNumber, buildMeta, parseJSONSafe, sanitizeText
 } from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
-import { EMP, PROFILE } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import getClientMeta from "../utils/ipHelper.js";
 import {
   generateOTP, hashPassword, verifyOtpHash, generateSessionToken, generateRandomToken,
@@ -195,7 +195,7 @@ const PACKAGE_COLUMNS = "pp.id AS package_id, pp.package_name, pp.group_code, pp
 const FULL_EMPLOYEE_SELECT = `${EMPLOYEE_COLUMNS}, ${USER_COLUMNS}, ${PACKAGE_COLUMNS}`;
 
 const PERMISSIONS_SUBQUERY = `(
-  SELECT JSON_ARRAYAGG(JSON_OBJECT('permission_id', p.id, 'code', p.code, 'name', p.name, 'action', p.action))
+  SELECT JSON_ARRAYAGG(JSON_OBJECT('permission_id', p.id, 'code', p.code, 'description', p.description, 'action', p.action, 'category', p.category))
   FROM permission_package_items ppi
   JOIN permissions p ON p.id = ppi.permission_id
   WHERE ppi.package_id = pp.id AND ppi.is_active = 1 AND ppi.is_deleted = 0
@@ -223,7 +223,7 @@ const PACKAGE_INNER_JOIN = `JOIN permission_packages pp ON pp.id = e.permission_
 
 const router = express.Router();
 
-router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
+router.post("/request-create-otp", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -373,7 +373,7 @@ router.post("/request-create-otp", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.post("/create", auth(EMP.MNG), async (req, res) => {
+router.post("/create", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   let transactionStarted = false;
 
@@ -691,7 +691,7 @@ router.post("/create", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.get("/list", auth(EMP.MNG), async (req, res) => {
+router.get("/list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -793,7 +793,7 @@ router.get("/list", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.put("/update", auth(EMP.MNG), async (req, res) => {
+router.put("/update", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   const VALID_WEEK_DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
@@ -953,7 +953,7 @@ router.put("/update", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.delete("/delete", auth(EMP.MNG), async (req, res) => {
+router.delete("/delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -998,7 +998,7 @@ router.delete("/delete", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.get("/all-list", auth(EMP.MNG), async (req, res) => {
+router.get("/all-list", auth(), async (req, res) => {
   try {
     let { search } = req.query;
     search = sanitizeText(search) || "";
@@ -1029,7 +1029,7 @@ router.get("/all-list", auth(EMP.MNG), async (req, res) => {
 });
 
 // GET /employees/:id - Fetch single employee details
-router.get("/:id", auth(EMP.MNG), async (req, res) => {
+router.get("/:id", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1144,7 +1144,7 @@ const handleFaceEnrollCheck = async (req, res) => {
   }
 };
 
-router.post("/face-enroll/set", auth(EMP.MNG), async (req, res) => {
+router.post("/face-enroll/set", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     const companyId = safeNumber(req.company?.id, 0);
@@ -1179,10 +1179,10 @@ router.post("/face-enroll/set", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.get("/face-enroll/check", auth(EMP.MNG), handleFaceEnrollCheck);
-router.post("/face-enroll/check", auth(EMP.MNG), handleFaceEnrollCheck);
+router.get("/face-enroll/check", auth(), handleFaceEnrollCheck);
+router.post("/face-enroll/check", auth(), handleFaceEnrollCheck);
 
-router.put("/face-enroll/delete", auth(EMP.MNG), async (req, res) => {
+router.put("/face-enroll/delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1218,7 +1218,7 @@ router.put("/face-enroll/delete", auth(EMP.MNG), async (req, res) => {
   }
 });
 
-router.get("/face-enroll/list", auth(EMP.MNG), async (req, res) => {
+router.get("/face-enroll/list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

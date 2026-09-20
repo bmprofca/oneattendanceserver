@@ -13,7 +13,7 @@ import {
   queueLeaveAcceptanceEmail, queueLeaveRejectionEmail,
 } from "../email/services/email.processor.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
-import { LEAVE, LEAVE_BAL, LEAVE_CFG } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 import { EMAIL_USER } from "../config/config.js";
 
@@ -149,7 +149,7 @@ const parseBoolean = (value, field) => {
 
 // ============= Leave Config Routes ==============
 
-router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
+router.post("/create", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
   try {
     const { code, name, is_paid, allow_half_day, max_balance, carry_forward_limit, exclude_weekends, } = req.body;
@@ -225,7 +225,7 @@ router.post("/create", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
+router.put("/update", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
 
   try {
@@ -487,7 +487,7 @@ router.put("/update", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
+router.get("/company", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -557,7 +557,7 @@ router.get("/company", auth(LEAVE_CFG.MNG), async (req, res) => {
   }
 });
 
-router.delete("/delete", auth(LEAVE_CFG.MNG), async (req, res) => {
+router.delete("/delete", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
   let transactionStarted = false;
   let responseSent = false;
@@ -759,7 +759,7 @@ router.delete("/delete", auth(LEAVE_CFG.MNG), async (req, res) => {
 
 //============= Leave Balance Mangement Routes ===============
 
-router.get("/my-balance", auth(LEAVE_BAL.EMP), async (req, res) => {
+router.get("/my-balance", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -813,7 +813,7 @@ router.get("/my-balance", auth(LEAVE_BAL.EMP), async (req, res) => {
   }
 });
 
-router.put("/upsert-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
+router.put("/upsert-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
 
   try {
@@ -1008,7 +1008,7 @@ router.put("/upsert-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
   }
 });
 
-router.delete("/delete-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
+router.delete("/delete-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
 
   try {
@@ -1162,7 +1162,7 @@ router.delete("/delete-balance", auth(LEAVE_BAL.MNG), async (req, res) => {
 }
 );
 
-router.get("/emp-balances", auth(LEAVE_BAL.MNG), async (req, res) => {
+router.get("/emp-balances", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1240,7 +1240,7 @@ router.get("/emp-balances", auth(LEAVE_BAL.MNG), async (req, res) => {
   }
 });
 
-router.get("/employee/:employee_id/", auth(LEAVE_BAL.MNG), async (req, res) => {
+router.get("/employee/:employee_id/", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -1372,7 +1372,7 @@ router.get("/employee/:employee_id/", auth(LEAVE_BAL.MNG), async (req, res) => {
 
 // ================ leave Management Routes =================
 
-router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
+router.post("/management/create", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1538,7 +1538,7 @@ router.post("/management/create", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
+router.put("/management/approve-edit", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1688,7 +1688,7 @@ router.put("/management/approve-edit", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) => {
+router.put("/management/bulk-approve-reject", auth([PERMISSIONS.LEAVE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1884,7 +1884,7 @@ router.put("/management/bulk-approve-reject", auth(LEAVE.MNG), async (req, res) 
   }
 });
 
-router.get("/emp-leaves", auth(LEAVE.MNG), async (req, res) => {
+router.get("/emp-leaves", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1982,7 +1982,7 @@ router.get("/emp-leaves", auth(LEAVE.MNG), async (req, res) => {
   }
 });
 
-router.get("/emp-leaves/:employee_id", auth(LEAVE.MNG), async (req, res) => {
+router.get("/emp-leaves/:employee_id", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2120,7 +2120,7 @@ router.get("/emp-leaves/:employee_id", auth(LEAVE.MNG), async (req, res) => {
 
 // ================ Leave Management Routes(Endusers) ====================
 
-router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
+router.post("/apply", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2283,7 +2283,7 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
        INNER JOIN permission_packages pp ON pp.id = e.permission_package_id AND pp.company_id = e.company_id AND pp.is_active = 1 AND pp.is_deleted = 0
        INNER JOIN permission_package_items ppi ON ppi.package_id = pp.id AND ppi.is_active = 1 AND ppi.is_deleted = 0
        INNER JOIN permissions p ON p.id = ppi.permission_id
-       WHERE e.company_id = ? AND e.is_active = 1 AND e.is_deleted = 0 AND p.code = 'leave_management' AND u.email IS NOT NULL AND u.id != ?`,
+       WHERE e.company_id = ? AND e.is_active = 1 AND e.is_deleted = 0 AND p.code IN ('leave', 'leave_management') AND u.email IS NOT NULL AND u.id != ?`,
       [company_id, user_id]
     );
     const [[companyOwner]] = await conn.query(
@@ -2336,7 +2336,7 @@ router.post("/apply", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-router.put("/cancel", auth(LEAVE.EMP), async (req, res) => {
+router.put("/cancel", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2377,7 +2377,7 @@ router.put("/cancel", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
+router.put("/application-update", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2568,7 +2568,7 @@ router.put("/application-update", auth(LEAVE.EMP), async (req, res) => {
   }
 });
 
-router.get("/my-applications", auth(LEAVE.EMP), async (req, res) => {
+router.get("/my-applications", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

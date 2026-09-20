@@ -7,15 +7,11 @@ import { checkCompanyPermissions } from "../utils/checkPermissions.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { getEnumObject } from "../utils/constantsValidator.js";
 import { DESIGNATIONS, EMPLOYMENT_TYPES } from "../constants/constants_values.js";
-import { CMP_BANK, EMP_BANK } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { formatUTCToIST } from "../utils/time.js";
 import { sendSuccess, sendError, buildMeta, safeNumber, sanitizeText } from "../utils/sendResponse.js";
 
 const router = express.Router();
-
-const BANK = {
-  ALL: [...EMP_BANK.MNG, ...CMP_BANK.MNG],
-};
 
 const BANK_ACCOUNT_BASE_FIELDS = `
   ba.id,
@@ -318,7 +314,7 @@ router.get("/ifsc/:ifsc_code", auth(), async (req, res) => {
   }
 });
 
-router.post("/create", auth(BANK.ALL), async (req, res) => {
+router.post("/create", auth(), async (req, res) => {
   let conn;
   let transactionStarted = false;
   let responseSent = false;
@@ -389,13 +385,11 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
       return sendError(res, companyCheck.error.status, companyCheck.error.message);
     }
 
-    const permissionResult = await checkCompanyPermissions({
-      conn,
-      user_id,
-      company_id,
-      permissions: ["emp_bnk_create"],
-    });
-    const isOwner = permissionResult.role === "owner";
+    const [[companyRow]] = await conn.query(
+      `SELECT owner_user_id FROM companies WHERE id = ? LIMIT 1`,
+      [company_id]
+    );
+    const isOwner = Number(companyRow?.owner_user_id) === user_id;
 
     if (bank_owner_type === "employee") {
       if (!employee_id) {
@@ -413,6 +407,22 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
         await conn.rollback();
         responseSent = true;
         return sendError(res, employeeCheck.error.status, employeeCheck.error.message);
+      }
+
+      if (!isOwner) {
+        const [[currentEmployee]] = await conn.query(
+          `SELECT id FROM employees WHERE user_id = ? AND company_id = ? AND is_active = 1 AND is_deleted = 0 LIMIT 1`,
+          [user_id, company_id]
+        );
+        const isSelfAccount = currentEmployee && currentEmployee.id === employee_id;
+        if (!isSelfAccount) {
+          await checkCompanyPermissions({
+            conn,
+            user_id,
+            company_id,
+            permissions: [PERMISSIONS.FINANCIAL],
+          });
+        }
       }
     } else {
       if (!isOwner) {
@@ -531,7 +541,7 @@ router.post("/create", auth(BANK.ALL), async (req, res) => {
   }
 });
 
-router.put("/update", auth(BANK.ALL), async (req, res) => {
+router.put("/update", auth(), async (req, res) => {
   let conn;
   let transactionStarted = false;
   let responseSent = false;
@@ -580,14 +590,11 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
       return sendError(res, 404, "Bank account not found");
     }
 
-    const permissionResult = await checkCompanyPermissions({
-      conn,
-      user_id,
-      company_id,
-      permissions: ["emp_bnk_update"],
-    });
-    const isOwner = permissionResult.role === "owner";
-    const userPermissions = permissionResult.permissions || [];
+    const [[companyRow]] = await conn.query(
+      `SELECT owner_user_id FROM companies WHERE id = ? LIMIT 1`,
+      [company_id]
+    );
+    const isOwner = Number(companyRow?.owner_user_id) === user_id;
 
     const bank_owner_type = existingAccount.employee_id ? "employee" : "company";
 
@@ -624,11 +631,13 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
         }
 
         const isSelfAccount = currentEmployee.id === targetEmployee.id;
-        const canManageOthers = userPermissions.includes("emp_bnk_manage_others");
-        if (!isSelfAccount && !canManageOthers) {
-          await conn.rollback();
-          responseSent = true;
-          return sendError(res, 403, "You do not have permission to update other employee bank accounts");
+        if (!isSelfAccount) {
+          await checkCompanyPermissions({
+            conn,
+            user_id,
+            company_id,
+            permissions: [PERMISSIONS.FINANCIAL],
+          });
         }
       }
     } else {
@@ -805,7 +814,7 @@ router.put("/update", auth(BANK.ALL), async (req, res) => {
   }
 });
 
-router.delete("/delete", auth(BANK.ALL), async (req, res) => {
+router.delete("/delete", auth(), async (req, res) => {
   let conn;
   let transactionStarted = false;
   let responseSent = false;
@@ -1012,26 +1021,17 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
       );
     }
     if (!isOwner) {
-      const unauthorizedIds = existingAccounts
-        .filter(
-          (account) =>
-            Number(account.employee_id) !== employeeId
-        )
-        .map((account) => account.id);
+      const unauthorizedAccounts = existingAccounts.filter(
+        (account) => Number(account.employee_id) !== employeeId
+      );
 
-      if (unauthorizedIds.length > 0) {
-        await conn.rollback();
-        transactionStarted = false;
-
-        responseSent = true;
-
-        return sendError(
-          res,
-          403,
-          `Cannot delete others' accounts: ${unauthorizedIds.join(
-            ", "
-          )}`
-        );
+      if (unauthorizedAccounts.length > 0) {
+        await checkCompanyPermissions({
+          conn,
+          user_id: userId,
+          company_id: companyId,
+          permissions: [PERMISSIONS.FINANCIAL],
+        });
       }
     }
     const companyAccountIdsToDelete = existingAccounts
@@ -1203,7 +1203,7 @@ router.delete("/delete", auth(BANK.ALL), async (req, res) => {
   }
 });
 
-router.get("/my", auth(BANK.ALL), async (req, res) => {
+router.get("/my", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1295,7 +1295,7 @@ router.get("/my", auth(BANK.ALL), async (req, res) => {
   }
 });
 
-router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
+router.get("/management/employee", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1389,7 +1389,7 @@ router.get("/management/employee", auth(CMP_BANK.MNG), async (req, res) => {
   }
 });
 
-router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
+router.get("/management/company", auth([], { owner_only: true }), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -1401,8 +1401,6 @@ router.get("/management/company", auth(CMP_BANK.MNG), async (req, res) => {
     if (userCheck.error) return sendError(res, userCheck.error.status, userCheck.error.message);
     const companyCheck = await validateCompanyActive(conn, company_id);
     if (companyCheck.error) return sendError(res, companyCheck.error.status, companyCheck.error.message);
-
-    await checkCompanyPermissions({ conn, user_id, company_id, permissions: ["emp_bnk_view"] });
 
     const parsed = parseListQuery(req.query, {
       allowedSortBy: ALLOWED_SORT_BY,

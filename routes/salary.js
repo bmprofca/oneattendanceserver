@@ -4,7 +4,7 @@ import auth from "../middleware/authMiddleware.js";
 import { validateFields, salaryValidation, currencyTypeValidation } from "../utils/constantsValidator.js";
 import { SALARY_TYPES, CURRENCY_TYPES } from "../constants/constants_values.js";
 import { buildFileUrl } from "../utils/fileService.js";
-import { SAL, SAL_COMP, SAL_PKG } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import {
   getCurrentDate,
   parseDate,
@@ -225,7 +225,7 @@ async function getPackageItems(conn, package_id) {
 // --------------- Salary Component Routes ---------------
 
 // 1. Create salary component
-router.post("/components/create", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.post("/components/create", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   let { code, name, type, calc_type, calc_value, is_taxable, is_statutory } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
@@ -269,7 +269,7 @@ router.post("/components/create", auth(SAL_COMP.MNG), withTransaction(async (con
 }));
 
 // 2. List salary components
-router.get("/components/list", auth(SAL_COMP.MNG), withConnection(async (conn, req, res) => {
+router.get("/components/list", auth(), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   if (!company_id) throw { status: 400, message: "Company context missing" };
 
@@ -316,7 +316,7 @@ router.get("/components/list", auth(SAL_COMP.MNG), withConnection(async (conn, r
 }));
 
 // 3. Update salary component
-router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.put("/components/update", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   let { id, code, name, type, calc_type, calc_value, is_taxable, is_statutory, is_active } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
@@ -394,7 +394,7 @@ router.put("/components/update", auth(SAL_COMP.MNG), withTransaction(async (conn
 }));
 
 // 4. Delete salary component
-router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (conn, req, res) => {
+router.delete("/components/delete", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
 
@@ -548,7 +548,7 @@ router.delete("/components/delete", auth(SAL_COMP.MNG), withTransaction(async (c
 
 
 // 5. Create salary package
-router.post("/components/create-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
+router.post("/components/create-package", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   let { name, code, description, components } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
@@ -589,7 +589,7 @@ router.post("/components/create-package", auth(SAL_PKG.MNG), withTransaction(asy
 }));
 
 // 6. List salary packages
-router.get("/components/packages", auth(SAL_PKG.MNG), withConnection(async (conn, req, res) => {
+router.get("/components/packages", auth(), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   if (!company_id) throw { status: 400, message: "Company not found" };
 
@@ -649,7 +649,7 @@ router.get("/components/packages", auth(SAL_PKG.MNG), withConnection(async (conn
 }));
 
 // 7. Update salary package
-router.put("/components/update-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
+router.put("/components/update-package", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   let { package_id, name, code, description, components } = req.body;
@@ -712,7 +712,7 @@ router.put("/components/update-package", auth(SAL_PKG.MNG), withTransaction(asyn
 }));
 
 // 8. Delete salary package (single or bulk)
-router.delete("/components/delete-package", auth(SAL_PKG.MNG), withTransaction(async (conn, req, res) => {
+router.delete("/components/delete-package", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   let { id, ids } = req.body;
@@ -825,7 +825,7 @@ router.delete("/components/delete-package", auth(SAL_PKG.MNG), withTransaction(a
 
 
 // 9. Assign salary to employee
-router.post("/assign-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+router.post("/assign-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   let { employee_id, base_amount, effective_from, effective_to, components = [] } = req.body;
   const company_id = req.company?.id;
   const user_id = req.user?.id;
@@ -874,7 +874,7 @@ router.post("/assign-salary", auth(SAL.MNG), withTransaction(async (conn, req, r
 }));
 
 // 10. Update salary
-router.put("/update-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+router.put("/update-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   const { salary_id, base_amount, effective_from, effective_to = null, components = [] } = req.body;
@@ -923,7 +923,7 @@ router.put("/update-salary", auth(SAL.MNG), withTransaction(async (conn, req, re
 }));
 
 // 11. Revise salary
-router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+router.post("/revise-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   let { employee_id, base_amount, components = [], effective_from } = req.body;
@@ -989,7 +989,7 @@ router.post("/revise-salary", auth(SAL.MNG), withTransaction(async (conn, req, r
 }));
 
 // 12. Delete salary
-router.delete("/delete-salary", auth(SAL.MNG), withTransaction(async (conn, req, res) => {
+router.delete("/delete-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
   const { salary_id } = req.body;
@@ -1030,7 +1030,7 @@ router.delete("/delete-salary", auth(SAL.MNG), withTransaction(async (conn, req,
 }));
 
 // 13. List all employees salaries
-router.get("/employees-salaries", auth(SAL.MNG), withConnection(async (conn, req, res) => {
+router.get("/employees-salaries", auth(), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   if (!company_id) throw { status: 400, message: "Invalid company" };
 
@@ -1133,7 +1133,7 @@ router.get("/employees-salaries", auth(SAL.MNG), withConnection(async (conn, req
 }));
 
 // 14. Employee salary history (all salaries for a specific employee, with status)
-router.get("/employee-salaries/:employeeId", auth(SAL.MNG), withConnection(async (conn, req, res) => {
+router.get("/employee-salaries/:employeeId", auth(), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   const employee_id = Number(req.params.employeeId);
 
@@ -1237,7 +1237,7 @@ router.get("/employee-salaries/:employeeId", auth(SAL.MNG), withConnection(async
 }));
 
 // 15. My salary (employee view)
-router.get("/my-salary", auth(SAL.EMP), withConnection(async (conn, req, res) => {
+router.get("/my-salary", auth(), withConnection(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
 

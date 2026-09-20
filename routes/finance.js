@@ -8,6 +8,16 @@ const router = express.Router();
 router.get("/employee-ledger-report", auth(), async (req, res) => {
     try {
         const { user_id, from_date, to_date } = req.query;
+        const currentUserId = Number(req.user?.id);
+        const isOwner = req.role === "owner" || req.user?.is_company_owner;
+        const isSelf = Number(user_id) === currentUserId;
+
+        if (!isOwner && !isSelf) {
+            return res.status(403).json({
+                success: false,
+                message: "Only company owner can access financial reports of other employees"
+            });
+        }
 
         const opening_balance = await OpeningBalance({ party_id: user_id, party_type: 'employee', date: from_date });
 

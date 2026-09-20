@@ -2,7 +2,7 @@ import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import { buildFileUrl } from "../utils/fileService.js";
-import { PERM_PKG } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { NODE_ENV } from "../config/config.js";
 import {
     sendSuccess, sendError, safeNumber, buildMeta,
@@ -13,7 +13,7 @@ import { generateRandomToken } from "../utils/auth.js";
 const formatPermission = (row) => ({
     id: row.id,
     code: row.code,
-    name: row.name,
+    description: row.description || "",
     action: row.action,
     category: row.category,
 });
@@ -36,7 +36,7 @@ const formatPackage = (pkg, permissions = [], usedBy = []) => ({
 
 export const PERMISSION_QUERIES = {
     LIST_ALL: `
-    SELECT id, code, name, action, category
+    SELECT id, code, description, action, category
     FROM permissions
     ORDER BY id ASC
   `,
@@ -102,7 +102,7 @@ export const PERMISSION_QUERIES = {
     SELECT 
       ppi.package_id,
       p.id   AS permission_id,
-      p.name AS permission_name,
+      p.description AS permission_description,
       p.code AS permission_code,
       p.action AS permission_action,
       p.category AS permission_category
@@ -157,7 +157,7 @@ export const PERMISSION_QUERIES = {
     SELECT 
       ppi.id AS mapping_id,
       p.id AS permission_id,
-      p.name AS permission_name,
+      p.description AS permission_description,
       p.code AS permission_code,
       p.action AS permission_action
     FROM permission_package_items ppi
@@ -272,7 +272,7 @@ router.get("/list", auth(), async (req, res) => {
     }
 });
 
-router.post("/create-package", auth(PERM_PKG.MNG), async (req, res) => {
+router.post("/create-package", auth([PERMISSIONS.PERMISSIONS]), async (req, res) => {
     let conn;
     try {
         conn = await db.getConnection();
@@ -351,7 +351,7 @@ router.post("/create-package", auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
-router.get("/permission-packages", auth(PERM_PKG.MNG), async (req, res) => {
+router.get("/permission-packages", auth(), async (req, res) => {
     let conn;
     try {
         conn = await db.getConnection();
@@ -429,7 +429,7 @@ router.get("/permission-packages", auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
-router.put("/update-package", auth(PERM_PKG.MNG), async (req, res) => {
+router.put("/update-package", auth([PERMISSIONS.PERMISSIONS]), async (req, res) => {
     let conn;
     try {
         conn = await db.getConnection();
@@ -512,7 +512,7 @@ router.put("/update-package", auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
-router.delete('/delete-package', auth(PERM_PKG.MNG), async (req, res) => {
+router.delete('/delete-package', auth([PERMISSIONS.PERMISSIONS]), async (req, res) => {
     let conn;
     try {
         const { packageId } = req.body;
@@ -552,7 +552,7 @@ router.delete('/delete-package', auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
-router.put("/transfer-packages", auth(PERM_PKG.MNG), async (req, res) => {
+router.put("/transfer-packages", auth([PERMISSIONS.PERMISSIONS]), async (req, res) => {
     let conn;
     try {
         const assignments = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
@@ -675,7 +675,7 @@ router.put("/transfer-packages", auth(PERM_PKG.MNG), async (req, res) => {
     }
 });
 
-router.get("/employee-package/:employeeId", auth(PERM_PKG.MNG), async (req, res) => {
+router.get("/employee-package/:employeeId", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -718,7 +718,7 @@ router.get("/employee-package/:employeeId", auth(PERM_PKG.MNG), async (req, res)
     const pkg = pkgRows[0];
 
     const [permissionRows] = await conn.query(
-      `SELECT p.id, p.code, p.name, p.action, p.category
+      `SELECT p.id, p.code, p.description, p.action, p.category
        FROM permission_package_items ppi
        JOIN permissions p ON p.id = ppi.permission_id
        WHERE ppi.package_id = ? AND ppi.is_deleted = 0 AND ppi.is_active = 1

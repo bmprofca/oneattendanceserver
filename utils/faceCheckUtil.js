@@ -1,7 +1,7 @@
 import { buildFileUrl } from "./fileService.js";
 import { safeNumber } from "./sendResponse.js";
 import {
-  cosineSimilarity,
+  cosineSimilarityNormalized,
   FACE_MATCH_THRESHOLD,
   parseFaceEmbedding,
 } from "./faceEmbedding.js";
@@ -65,7 +65,8 @@ export async function runFaceCheck(conn, { companyId, embedding, employeeId = 0 
   );
   let best = null;
   for (const row of rows) {
-    const similarity = cosineSimilarity(candidate, row.face_data);
+    const enrolledEmbedding = parseFaceEmbedding(row.face_data);
+    const similarity = cosineSimilarityNormalized(candidate, enrolledEmbedding);
     if (similarity !== null && (!best || similarity > best.similarity)) best = { row, similarity };
   }
   if (!best || best.similarity < FACE_MATCH_THRESHOLD) {

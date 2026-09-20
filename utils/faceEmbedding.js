@@ -32,10 +32,15 @@ export function parseFaceEmbedding(value) {
 export function cosineSimilarity(left, right) {
   const a = parseFaceEmbedding(left);
   const b = parseFaceEmbedding(right);
-  if (!a || !b || a.length !== b.length) {
+  return cosineSimilarityNormalized(a, b);
+}
+
+/** Compares vectors that have already been validated and normalized. */
+export function cosineSimilarityNormalized(left, right) {
+  if (!left || !right || left.length !== right.length) {
     return null;
   }
-  return a.reduce((sum, item, index) => sum + item * b[index], 0);
+  return left.reduce((sum, item, index) => sum + item * right[index], 0);
 }
 
 export function faceEmployeeId(row) {

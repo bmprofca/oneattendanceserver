@@ -1,8 +1,5 @@
 import { EMPLOYMENT_TYPES, SALARY_TYPES, LEAVE_TYPES, DESIGNATIONS, ATTENDANCE_METHODS } from "../constants/constants_values.js";
-import {
-    PROFILE, AT, LEAVE as LEAVE_PERM, LEAVE_CFG, LEAVE_BAL, EMP as EMP_PERM, INV, INV_PKG, SHIFT, SAL,
-    SAL_COMP, SAL_PKG, PAY, PAY_ADJ, CMP_BANK, EMP_BANK, HOLIDAY, CMP, PERM_PKG, TXN
-} from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 
 export async function createDefaultPackages(conn, companyId, userId) {
     const EMPLOYMENT = EMPLOYMENT_TYPES;
@@ -131,88 +128,46 @@ export async function createDefaultPackages(conn, companyId, userId) {
             name: "Super Admin",
             groupCode: "SUPER_ADMIN",
             description: "Complete unrestricted access to all company modules and operations.",
-            permissions: [...permissionMap.keys()]
+            permissions: [
+                PERMISSIONS.EMPLOYEES,
+                PERMISSIONS.ATTENDANCE,
+                PERMISSIONS.LEAVE,
+                PERMISSIONS.FINANCIAL,
+                PERMISSIONS.PERMISSIONS
+            ]
         },
         {
             name: "HR Admin",
             groupCode: "HR_ADMIN",
             description: "Manages employees, leaves, attendance, invites, shifts, holidays and company HR settings.",
             permissions: [
-                ...PROFILE.EMP,
-                ...PROFILE.MNG,
-                ...AT.EMP,
-                ...AT.MNG,
-                ...LEAVE_PERM.EMP,
-                ...LEAVE_PERM.MNG,
-                ...LEAVE_CFG.MNG,
-                ...LEAVE_BAL.EMP,
-                ...LEAVE_BAL.MNG,
-                ...EMP_PERM.MNG,
-                ...INV.MNG,
-                ...INV_PKG.MNG,
-                ...SHIFT.EMP,
-                ...SHIFT.MNG,
-                ...HOLIDAY.MNG,
-                CMP.MNG.find(p => p === "company_view"),
-                PERM_PKG.MNG.find(p => p === "permission_package_view")
-            ].filter(Boolean)
+                PERMISSIONS.EMPLOYEES,
+                PERMISSIONS.ATTENDANCE,
+                PERMISSIONS.LEAVE
+            ]
         },
         {
             name: "Payroll Admin",
             groupCode: "PAYROLL_ADMIN",
             description: "Handles salary structures, payroll processing, adjustments, and financial operations.",
             permissions: [
-                ...PROFILE.EMP,
-                ...SAL.EMP,
-                ...SAL.MNG,
-                ...SAL_COMP.MNG,
-                ...SAL_PKG.MNG,
-                ...PAY.EMP,
-                ...PAY.MNG,
-                ...PAY_ADJ.MNG,
-                ...CMP_BANK.MNG,
-                ...EMP_BANK.MNG,
-                ...TXN.MNG,
-                CMP.MNG.find(p => p === "company_view")
-            ].filter(Boolean)
+                PERMISSIONS.FINANCIAL
+            ]
         },
         {
             name: "Manager",
             groupCode: "MANAGER",
             description: "Handles team attendance, leave approvals, and supervisor tasks.",
             permissions: [
-                ...PROFILE.EMP,
-                ...AT.EMP,
-                ...LEAVE_PERM.EMP,
-                ...LEAVE_BAL.EMP,
-                ...SHIFT.EMP,
-                ...SAL.EMP,
-                ...PAY.EMP,
-                ...PROFILE.MNG,
-                ...AT.MNG,
-                ...LEAVE_PERM.MNG,
-                LEAVE_BAL.MNG.find(p => p === "leave_balance_view_all"),
-                EMP_PERM.MNG.find(p => p === "employee_view"),
-                EMP_PERM.MNG.find(p => p === "employee_view_all"),
-                SHIFT.MNG.find(p => p === "shift_view_all"),
-                HOLIDAY.MNG.find(p => p === "holiday_view"),
-                CMP.MNG.find(p => p === "company_view")
-            ].filter(Boolean)
+                PERMISSIONS.ATTENDANCE,
+                PERMISSIONS.LEAVE
+            ]
         },
         {
             name: "Employee",
             groupCode: "EMPLOYEE",
             description: "Standard self-service employee portal access.",
-            permissions: [
-                ...PROFILE.EMP,
-                ...AT.EMP,
-                ...LEAVE_PERM.EMP,
-                ...LEAVE_BAL.EMP,
-                ...SHIFT.EMP,
-                ...SAL.EMP,
-                ...PAY.EMP,
-                HOLIDAY.MNG.find(p => p === "holiday_view")
-            ].filter(Boolean)
+            permissions: []
         }
     ];
 

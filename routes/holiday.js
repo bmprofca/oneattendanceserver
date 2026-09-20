@@ -2,7 +2,7 @@ import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
 import getIndianHolidays from "../utils/getIndianHolidays.js";
-import { HOLIDAY } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { sendSuccess, sendError, buildMeta, safeNumber, sanitizeText, } from "../utils/sendResponse.js";
 import { formatUTCToIST } from "../utils/time.js";
 
@@ -95,7 +95,7 @@ router.get("/master-holidays", async (req, res) => {
   }
 });
 
-router.post("/create", auth(HOLIDAY.MNG), async (req, res) => {
+router.post("/create", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   const conn = await db.getConnection();
   try {
     const { name, date, is_optional } = req.body;
@@ -159,7 +159,7 @@ router.post("/create", auth(HOLIDAY.MNG), async (req, res) => {
   }
 });
 
-router.get("/company/list", auth(HOLIDAY.MNG), async (req, res) => {
+router.get("/company/list", auth(), async (req, res) => {
   try {
     const company_id = req.company?.id;
     if (!company_id) return sendError(res, 400, "Company context missing");
@@ -232,7 +232,7 @@ router.get("/company/list", auth(HOLIDAY.MNG), async (req, res) => {
   }
 });
 
-router.put("/update", auth(HOLIDAY.MNG), async (req, res) => {
+router.put("/update", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   const conn = await db.getConnection();
   try {
     const { id, name, date, is_optional } = req.body;
@@ -314,7 +314,7 @@ router.put("/update", auth(HOLIDAY.MNG), async (req, res) => {
   }
 });
 
-router.delete("/delete", auth(HOLIDAY.MNG), async (req, res) => {
+router.delete("/delete", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   const conn = await db.getConnection();
   try {
     const { id } = req.body;

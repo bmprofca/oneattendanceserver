@@ -808,7 +808,8 @@ router.get("/profile-role", auth(), async (req, res) => {
         id,
         action,
         code,
-        name
+        category,
+        description
       FROM permissions
       `
     );

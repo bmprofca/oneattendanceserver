@@ -16,7 +16,7 @@ import {
   DESIGNATIONS,
 } from "../constants/constants_values.js";
 import { buildFileUrl } from "../utils/fileService.js";
-import { PAY, PAY_ADJ } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import {
   payrollExists,
   upsertPayroll,
@@ -219,7 +219,7 @@ const withTransaction = (handler) => async (req, res) => {
 // --------------- ROUTES ---------------
 
 // 1. Generate Payroll
-router.post("/generate-payroll", auth(PAY.MNG), async (req, res) => {
+router.post("/generate-payroll", auth([PERMISSIONS.FINANCIAL]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -319,7 +319,7 @@ router.post("/generate-payroll", auth(PAY.MNG), async (req, res) => {
 });
 
 // 2. Payroll List (generated + preview)
-router.get("/list", auth(PAY.MNG), async (req, res) => {
+router.get("/list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -454,7 +454,7 @@ router.get("/list", auth(PAY.MNG), async (req, res) => {
 });
 
 // 2b. Single Employee Payroll History (all generated + current preview)
-router.get("/:employeeId([0-9]+)", auth(PAY.MNG), async (req, res) => {
+router.get("/:employeeId([0-9]+)", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -695,7 +695,7 @@ router.get("/:employeeId([0-9]+)", auth(PAY.MNG), async (req, res) => {
 });
 
 // 3. My Payroll
-router.get("/my", auth(PAY.EMP), async (req, res) => {
+router.get("/my", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -799,7 +799,7 @@ router.get("/my", auth(PAY.EMP), async (req, res) => {
 });
 
 // 4. Create Adjustment
-router.post("/adjustments", auth(PAY_ADJ.MNG), async (req, res) => {
+router.post("/adjustments", auth([PERMISSIONS.FINANCIAL]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -862,7 +862,7 @@ router.post("/adjustments", auth(PAY_ADJ.MNG), async (req, res) => {
 });
 
 // 5. List Adjustments
-router.get("/adjustments/list", auth(PAY_ADJ.MNG), async (req, res) => {
+router.get("/adjustments/list", auth(), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -913,7 +913,7 @@ router.get("/adjustments/list", auth(PAY_ADJ.MNG), async (req, res) => {
 });
 
 // 6. Update Adjustment
-router.put("/adjustments/update", auth(PAY_ADJ.MNG), async (req, res) => {
+router.put("/adjustments/update", auth([PERMISSIONS.FINANCIAL]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -968,7 +968,7 @@ router.put("/adjustments/update", auth(PAY_ADJ.MNG), async (req, res) => {
 });
 
 // 7. Delete Adjustments (bulk)
-router.delete("/adjustments/delete", auth(PAY_ADJ.MNG), withTransaction(async (conn, req, res) => {
+router.delete("/adjustments/delete", auth([PERMISSIONS.FINANCIAL]), withTransaction(async (conn, req, res) => {
   const company_id = req.company?.id;
   const user_id = req.user?.id;
 
@@ -1148,7 +1148,7 @@ router.delete("/adjustments/delete", auth(PAY_ADJ.MNG), withTransaction(async (c
 
 
 // 8. Send Payroll Email
-router.post("/send-email", auth(PAY.MNG), async (req, res) => {
+router.post("/send-email", auth([PERMISSIONS.FINANCIAL]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

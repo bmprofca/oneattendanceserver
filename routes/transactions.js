@@ -87,7 +87,7 @@ const mapLedgerActor = (userId, name, email, phone, roleMap) => {
   };
 };
 
-router.post("/add", auth(), async (req, res) => {
+router.post("/add", auth([], { owner_only: true }), async (req, res) => {
   let conn;
   try {
     const companyId = safeNumber(req.company?.id);
@@ -389,7 +389,7 @@ router.post("/add", auth(), async (req, res) => {
   }
 });
 
-router.put("/update", auth(), async (req, res) => {
+router.put("/update", auth([], { owner_only: true }), async (req, res) => {
   let conn;
   try {
     const companyId = safeNumber(req.company?.id);
@@ -781,7 +781,7 @@ const buildCompanyLedgerListItemDesc = (txn, runningBalanceRef, roleMap) => {
   };
 };
 
-router.get("/company-ledger", auth(), async (req, res) => {
+router.get("/company-ledger", auth([], { owner_only: true }), async (req, res) => {
   let conn;
 
   try {
@@ -1159,7 +1159,7 @@ const buildEmployeeLedgerListItemDesc = (txn, runningBalanceRef, roleMap) => {
   };
 };
 
-router.get("/my-ledger", auth([], { employee_only: true }), async (req, res) => {
+router.get("/my-ledger", auth([]), async (req, res) => {
   let conn;
 
   try {
@@ -1497,7 +1497,7 @@ router.get("/my-ledger", auth([], { employee_only: true }), async (req, res) => 
 }
 );
 
-router.delete("/delete", auth(), async (req, res) => {
+router.delete("/delete", auth([], { owner_only: true }), async (req, res) => {
   let conn;
   try {
     const companyId = safeNumber(req.company?.id);

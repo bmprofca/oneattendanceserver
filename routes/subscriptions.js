@@ -210,7 +210,7 @@ async function createCompanySubscription(
     );
 }
 
-router.get("/packages", auth(), async (req, res) => {
+router.get("/packages", auth([], { owner_only: true }), async (req, res) => {
     let conn;
 
     try {
@@ -299,7 +299,7 @@ router.get("/packages", auth(), async (req, res) => {
     }
 });
 
-router.post("/purchase-subscription", auth(), async (req, res) => {
+router.post("/purchase-subscription", auth([], { owner_only: true }), async (req, res) => {
     let conn;
 
     try {
@@ -495,7 +495,7 @@ router.post("/purchase-subscription", auth(), async (req, res) => {
     }
 });
 
-router.get("/details", auth(), async (req, res) => {
+router.get("/details", auth([], { owner_only: true }), async (req, res) => {
     let conn;
 
     try {

@@ -13,7 +13,7 @@ import { adjustEmployeeLeaveBalance } from "../utils/leaveBalanceUtils.js";
 import { sendSuccess, sendError, safeNumber, buildMeta } from "../utils/sendResponse.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import { createAttendanceLog } from "../utils/attendanceLogsUtil.js";
-import { AT } from "../constants/permissions.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 import { payrollExists, upsertPayroll } from "../utils/payrollUtils.js";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
 import { parseFaceEmbedding } from "../utils/faceEmbedding.js";
@@ -2007,7 +2007,7 @@ async function executeBreakOut(conn, {
 // =============================================================================
 
 // Route 1: POST /punch-in
-router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+router.post("/punch-in", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {
@@ -2084,7 +2084,7 @@ router.post("/punch-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 });
 
 // Route 2: POST /punch-out
-router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+router.post("/punch-out", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {
@@ -2153,7 +2153,7 @@ router.post("/punch-out", auth(AT.EMP, { employee_only: true }), async (req, res
 });
 
 // Route 3: POST /break-in
-router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+router.post("/break-in", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {
@@ -2219,7 +2219,7 @@ router.post("/break-in", auth(AT.EMP, { employee_only: true }), async (req, res)
 });
 
 // Route 4: POST /break-out
-router.post("/break-out", auth(AT.EMP, { employee_only: true }), async (req, res) => {
+router.post("/break-out", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {
@@ -2528,7 +2528,7 @@ router.post("/face-attendance", auth(), async (req, res) => {
 });
 
 // Route 7: PUT /approve
-router.put("/approve", auth(AT.MNG), async (req, res) => {
+router.put("/approve", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
 
   try {
@@ -2794,7 +2794,7 @@ router.put("/approve", auth(AT.MNG), async (req, res) => {
 });
 
 // Route 8: POST /mark
-router.post("/mark", auth(AT.MNG), async (req, res) => {
+router.post("/mark", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
   let transactionActive = false;
 
@@ -3124,7 +3124,7 @@ router.post("/mark", auth(AT.MNG), async (req, res) => {
 });
 
 // Route 9: GET /my/past-punches
-router.get("/my/past-punches", auth(AT.MNG), async (req, res) => {
+router.get("/my/past-punches", auth(), async (req, res) => {
   let conn;
 
   try {
@@ -3969,7 +3969,7 @@ router.get("/logs", auth(), async (req, res) => {
 });
 
 // Route 12: GET /list
-router.get("/list", auth(AT.MNG), async (req, res) => {
+router.get("/list", auth(), async (req, res) => {
   let conn;
 
   const allowedTypes = ["attendance", "break"];
