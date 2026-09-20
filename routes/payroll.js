@@ -695,7 +695,7 @@ router.get("/:employeeId([0-9]+)", auth(), async (req, res) => {
 });
 
 // 3. My Payroll
-router.get("/my", auth(), async (req, res) => {
+router.get("/my", auth([], { employee_only: true }), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();

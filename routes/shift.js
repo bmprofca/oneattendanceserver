@@ -43,7 +43,7 @@ const isWeekendDate = ({ date, weekends = [] }) => {
   return weekendInfo(date, weekends).is_weekend;
 };
 
-router.get("/my-calendar", auth(), async (req, res) => {
+router.get("/my-calendar", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {

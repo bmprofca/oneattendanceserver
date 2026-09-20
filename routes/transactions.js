@@ -1159,7 +1159,7 @@ const buildEmployeeLedgerListItemDesc = (txn, runningBalanceRef, roleMap) => {
   };
 };
 
-router.get("/my-ledger", auth([]), async (req, res) => {
+router.get("/my-ledger", auth([], { employee_only: true }), async (req, res) => {
   let conn;
 
   try {

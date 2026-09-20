@@ -759,7 +759,7 @@ router.delete("/delete", auth([PERMISSIONS.LEAVE]), async (req, res) => {
 
 //============= Leave Balance Mangement Routes ===============
 
-router.get("/my-balance", auth(), async (req, res) => {
+router.get("/my-balance", auth([], { employee_only: true }), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
@@ -2568,7 +2568,7 @@ router.put("/application-update", auth(), async (req, res) => {
   }
 });
 
-router.get("/my-applications", auth(), async (req, res) => {
+router.get("/my-applications", auth([], { employee_only: true }), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
