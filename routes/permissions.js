@@ -117,6 +117,7 @@ export const PERMISSION_QUERIES = {
     SELECT
       e.permission_package_id AS package_id,
       e.id                    AS employee_id,
+      e.user_id               AS user_id,
       u.name                  AS employee_name,
       u.email                 AS employee_email,
       u.profile_picture       AS employee_profile_picture,
@@ -126,6 +127,7 @@ export const PERMISSION_QUERIES = {
     JOIN users u ON u.id = e.user_id
     WHERE e.permission_package_id IN (${packageIds.map(() => '?').join(',')})
       AND e.company_id  = ?
+      AND e.user_id <> ?
       AND e.is_deleted  = 0
       AND e.is_active   = 1
       AND u.is_deleted  = 0
@@ -210,7 +212,7 @@ export const PERMISSION_QUERIES = {
   `,
 
     SELECT_EMPLOYEES_FOR_UPDATE: employeeIds => `
-    SELECT id, permission_package_id
+    SELECT id, user_id, permission_package_id
     FROM employees
     WHERE company_id = ?
       AND is_deleted = 0
@@ -357,6 +359,7 @@ router.get("/permission-packages", auth(), async (req, res) => {
         conn = await db.getConnection();
         let { search = "", page = 1, limit = 10 } = req.query;
         const companyId = req.company?.id;
+        const currentUserId = safeNumber(req.user?.id, 0);
         if (!companyId) return sendError(res, 400, "Company ID is missing in request");
 
         page = Number(page); limit = Number(limit);
@@ -384,7 +387,7 @@ router.get("/permission-packages", auth(), async (req, res) => {
         const [permissionRows] = await conn.query(
             PERMISSION_QUERIES.SELECT_PERMISSION_ITEMS_BY_PACKAGE_IDS(packageIds), packageIds);
         const [employeeRows] = await conn.query(
-            PERMISSION_QUERIES.SELECT_EMPLOYEES_BY_PACKAGE_IDS(packageIds), [...packageIds, companyId]);
+          PERMISSION_QUERIES.SELECT_EMPLOYEES_BY_PACKAGE_IDS(packageIds), [...packageIds, companyId, currentUserId]);
 
         const permissionsMap = permissionRows.reduce((acc, item) => {
             if (!acc[item.package_id]) acc[item.package_id] = [];
@@ -606,6 +609,11 @@ router.put("/transfer-packages", auth([PERMISSIONS.PERMISSIONS]), async (req, re
             return sendError(res, 400, "Some employees are invalid, inactive, or deleted", null,
                 { invalid_employee_ids: invalidEmployeeIds });
         }
+
+          if (employeeRows.some(employee => Number(employee.user_id) === user_id)) {
+            await conn.rollback();
+            return sendError(res, 403, "You cannot change your own permission package");
+          }
 
         const [packageRows] = await conn.query(
             PERMISSION_QUERIES.VALIDATE_PACKAGES(packageIds), [company_id, ...packageIds]);
