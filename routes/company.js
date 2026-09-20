@@ -11,6 +11,7 @@ import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 import { formatPhoneByCountry } from "../utils/getClientCountry.js";
 import { lookup } from "useragent";
 import { normalizeIndianMobile } from "../utils/mobile.js";
+import { PERMISSIONS } from "../constants/permissions.js";
 
 const router = express.Router();
 
@@ -762,7 +763,7 @@ router.delete("/delete", auth([], { owner_only: true }), async (req, res) => {
   }
 });
 
-router.get("/users/available", auth([], { owner_only: true }), async (req, res) => {
+router.get("/users/available",  auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
   let conn;
 
   try {
