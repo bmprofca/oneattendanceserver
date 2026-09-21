@@ -132,6 +132,7 @@ function formatLeaveApplication(row) {
     leave_code: row.leave_type_code || row.leave_code,
     employee_name: row.employee_name,
     employee_code: row.employee_code,
+    employee_user_id: row.employee_user_id,
     employee_email: row.employee_email,
     is_paid: row.is_paid == 1,
     attachments: row.attachments || [],
@@ -821,7 +822,7 @@ router.put("/upsert-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => {
     await conn.beginTransaction();
 
     const company_id = req.company?.id;
-    const user_id = req.user?.id;
+    const user_id = Number(req.user?.id);
     const { employee_id, leaves } = req.body;
     const year = new Date().getFullYear();
 
@@ -851,7 +852,7 @@ router.put("/upsert-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => {
     }
 
     const [employee] = await conn.query(
-      `SELECT id
+      `SELECT id, user_id
        FROM employees
        WHERE id = ?
          AND company_id = ?
@@ -862,6 +863,10 @@ router.put("/upsert-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => {
 
     if (employee.length === 0) {
       return sendError(res, 404, "Employee not found");
+    }
+
+    if (Number(employee[0].user_id) === user_id) {
+      return sendError(res, 403, "You cannot update your own leave configuration");
     }
 
     const leaveIds = leaves.map((x) => x.leave_config_id);
@@ -1016,7 +1021,7 @@ router.delete("/delete-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => 
     await conn.beginTransaction();
 
     const company_id = req.company?.id;
-    const user_id = req.user?.id;
+    const user_id = Number(req.user?.id);
     const employee_id = Number(req.body.employee_id);
     const year = getISTNow().year();
 
@@ -1052,7 +1057,7 @@ router.delete("/delete-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => 
 
     const [[employee]] = await conn.query(
       `
-        SELECT id
+        SELECT id, user_id
         FROM employees
         WHERE id = ?
           AND company_id = ?
@@ -1064,6 +1069,10 @@ router.delete("/delete-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => 
 
     if (!employee) {
       return sendError(res, 404, "Employee not found.");
+    }
+
+    if (Number(employee.user_id) === user_id) {
+      return sendError(res, 403, "You cannot delete your own leave configuration");
     }
 
     const placeholders = leave_config_ids.map(() => "?").join(",");
@@ -1159,8 +1168,7 @@ router.delete("/delete-balance", auth([PERMISSIONS.LEAVE]), async (req, res) => 
       conn.release();
     }
   }
-}
-);
+});
 
 router.get("/emp-balances", auth(), async (req, res) => {
   let conn;
@@ -1176,7 +1184,7 @@ router.get("/emp-balances", auth(), async (req, res) => {
     const search = req.query.search?.trim();
 
     let query = `
-      SELECT e.id AS employee_id, u.name AS employee_name, u.email, u.phone AS mobile, u.profile_picture, e.employee_code,
+      SELECT e.id AS employee_id, e.user_id AS employee_user_id, u.name AS employee_name, u.email, u.phone AS mobile, u.profile_picture, e.employee_code,
              elb.leave_config_id, elb.total_allocated,
              lc.code, lc.name AS leave_name, lc.is_paid, lc.allow_half_day, lc.max_balance, lc.carry_forward_limit, lc.exclude_weekends,
              COALESCE(SUM(CASE WHEN el.status = 'approved' THEN el.total_days ELSE 0 END), 0) AS used
@@ -1215,6 +1223,7 @@ router.get("/emp-balances", auth(), async (req, res) => {
       if (!groupedMap[empId]) {
         groupedMap[empId] = {
           employee_id: empId,
+          user_id: row.employee_user_id ?? null,
           employee_name: row.employee_name,
           email: row.email,
           mobile: row.mobile || null,
@@ -1414,6 +1423,10 @@ router.post("/management/create", auth([PERMISSIONS.LEAVE]), async (req, res) =>
       [employee_id, company_id]
     );
     if (!employee) return sendError(res, 404, "Employee not found");
+    if (Number(employee.user_id) === admin_user_id) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot create leave for yourself");
+    }
     if (employee.is_active !== 1 || employee.status !== "active") return sendError(res, 400, "Employee is not active");
     if (isBeforeJoining(start_date, employee.joining_date)) return sendError(res, 400, "Leave cannot be applied before joining date");
 
@@ -1565,6 +1578,10 @@ router.put("/management/approve-edit", auth([PERMISSIONS.LEAVE]), async (req, re
       [id, company_id]
     );
     if (!leave) return sendError(res, 404, "Leave not found");
+    if (Number(leave.employee_user_id) === approver_id) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot approve or edit your own leave");
+    }
 
     const leaveStatus = String(leave.status).trim().toLowerCase();
     if (leaveStatus !== "pending") return sendError(res, 400, leaveStatus === "approved" ? "Approved leave cannot be edited" : `Cannot approve leave in ${leaveStatus} state`);
@@ -1755,6 +1772,11 @@ router.put("/management/bulk-approve-reject", auth([PERMISSIONS.LEAVE]), async (
       return sendError(res, 404, `Leaves not found: ${ids.filter(id => !found.has(id)).join(", ")}`);
     }
 
+    if (leaves.some((leave) => Number(leave.user_id) === approver_id)) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot approve or reject your own leave");
+    }
+
     let holidaySet = new Set();
     if (action === "approve") {
       let minDate = null, maxDate = null;
@@ -1913,7 +1935,7 @@ router.get("/emp-leaves", auth(), async (req, res) => {
     if (end_date && isNaN(new Date(end_date))) return sendError(res, 400, "Invalid end_date");
 
     let query = `
-      SELECT ${LEAVE_APPLICATION_FIELDS}, e.employee_code, e.designation,
+      SELECT ${LEAVE_APPLICATION_FIELDS}, e.user_id AS employee_user_id, e.employee_code, e.designation,
              u.name AS employee_name, u.email, u.profile_picture,
              lc.code AS leave_code, lc.name AS leave_name, lc.is_paid,
              au.name AS approved_by_name
@@ -2018,7 +2040,7 @@ router.get("/emp-leaves/:employee_id", auth(), async (req, res) => {
 
     // Main query with forced employee_id
     let query = `
-      SELECT ${LEAVE_APPLICATION_FIELDS}, e.employee_code, e.designation,
+      SELECT ${LEAVE_APPLICATION_FIELDS}, e.user_id AS employee_user_id, e.employee_code, e.designation,
              u.name AS employee_name, u.email, u.profile_picture,
              lc.code AS leave_code, lc.name AS leave_name, lc.is_paid,
              au.name AS approved_by_name

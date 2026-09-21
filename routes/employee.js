@@ -701,13 +701,12 @@ router.get("/list", auth(), async (req, res) => {
     const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const offset = (pageNum - 1) * limitNum;
     const companyId = req.company?.id;
-    const currentUserId = safeNumber(req.user?.id, 0);
     if (!companyId) {
       return sendError(res, 400, "Invalid company context");
     }
 
-    let where = "WHERE e.company_id = ? AND e.user_id <> ?";
-    const params = [companyId, currentUserId];
+    let where = "WHERE e.company_id = ?";
+    const params = [companyId];
 
     if (search.length >= 3) {
       where += ` AND (e.employee_code LIKE ? OR e.designation LIKE ? OR u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)`;
@@ -725,8 +724,8 @@ router.get("/list", auth(), async (req, res) => {
       `SELECT
          COUNT(CASE WHEN e.is_active = 1 THEN 1 END) AS active,
          COUNT(CASE WHEN e.is_active = 0 THEN 1 END) AS inactive
-       FROM employees e WHERE e.company_id = ? AND e.user_id <> ?`,
-      [companyId, currentUserId]
+      FROM employees e WHERE e.company_id = ?`,
+          [companyId]
     );
     const activeCount = stats[0]?.active || 0;
     const inactiveCount = stats[0]?.inactive || 0;
@@ -887,12 +886,17 @@ router.put("/update", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
     await conn.beginTransaction();
 
     const [empRows] = await conn.query(
-      `SELECT id, company_id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1`,
+      `SELECT id, company_id, user_id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1 LIMIT 1`,
       [employee_id, companyId]
     );
     if (!empRows.length) {
       await conn.rollback();
       return sendError(res, 404, "Employee not found");
+    }
+
+    if (Number(empRows[0].user_id) === updatedBy) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot update your own employee configuration");
     }
 
     if (permission_package_id !== undefined && permission_package_id !== null) {
@@ -969,7 +973,7 @@ router.delete("/delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
     await conn.beginTransaction();
 
     const [rows] = await conn.query(
-      `SELECT id, company_id, is_deleted FROM employees WHERE id = ? AND company_id = ? LIMIT 1 FOR UPDATE`,
+      `SELECT id, company_id, user_id, is_deleted FROM employees WHERE id = ? AND company_id = ? LIMIT 1 FOR UPDATE`,
       [id, companyId]
     );
     if (!rows.length) {
@@ -977,6 +981,10 @@ router.delete("/delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
       return sendError(res, 404, "Employee not found");
     }
     const employee = rows[0];
+    if (Number(employee.user_id) === Number(deletedBy)) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot delete yourself as an employee");
+    }
     if (employee.is_deleted) {
       await conn.rollback();
       return sendSuccess(res, 200, "Employee already deleted");
