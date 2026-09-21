@@ -142,7 +142,7 @@ const ATTENDANCE_QUERY = {
   `,
 
   GET_EMPLOYEE_MARK: `
-    SELECT id, company_id, shift_start, shift_end, expected_work_minutes, break_minutes, grace_minutes, weekends
+    SELECT id, user_id, company_id, shift_start, shift_end, expected_work_minutes, break_minutes, grace_minutes, weekends
     FROM employees
     WHERE id = ? AND company_id = ? AND is_deleted = 0 AND is_active = 1
     LIMIT 1 FOR UPDATE
@@ -2585,7 +2585,7 @@ router.put("/approve", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
 
     let employeeQuery = `
       SELECT
-        e.id, e.company_id, e.shift_start, e.shift_end,
+        e.id, e.user_id, e.company_id, e.shift_start, e.shift_end,
         e.break_minutes, e.expected_work_minutes, e.weekends, e.status
       FROM employees e
       WHERE e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
@@ -2605,6 +2605,12 @@ router.put("/approve", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
     if (employee_ids.length > 0 && employees.length !== employee_ids.length) {
       await conn.rollback();
       return sendError(res, 400, "Some employee_ids are invalid");
+    }
+
+    const ownEmployee = employees.find((employee) => Number(employee.user_id) === Number(user_id));
+    if (ownEmployee) {
+      await conn.rollback();
+      return sendError(res, 403, "You cannot approve or change your own attendance record", { employee_id: ownEmployee.id });
     }
 
     const employeeIdList = employees.map((emp) => emp.id);
@@ -2876,6 +2882,7 @@ router.post("/mark", auth([PERMISSIONS.ATTENDANCE]), async (req, res) => {
     // Fetch employee (with lock)
     const [[employee]] = await conn.query(ATTENDANCE_QUERY.GET_EMPLOYEE_MARK, [employee_id, company_id]);
     if (!employee) return fail(404, "Employee not found");
+    if (Number(employee.user_id) === Number(user_id)) return fail(403, "You cannot change your own attendance record");
 
     // Build DB columns based on type/status
     let db_day_status = "present";
@@ -4064,7 +4071,7 @@ router.get("/list", auth(), async (req, res) => {
 
     const [employees] = await conn.query(
       `SELECT
-         e.id, e.employee_code, e.designation, e.salary_type,
+        e.id, e.user_id, e.employee_code, e.designation, e.salary_type,
          e.employment_type, e.status, e.joining_date,
          e.shift_start, e.shift_end,
          e.expected_work_minutes, e.break_minutes, e.grace_minutes,
@@ -4205,6 +4212,7 @@ router.get("/list", auth(), async (req, res) => {
     for (const employee of employees) {
       employeeAttendanceMap.set(employee.id, {
         employee_id: employee.id,
+        user_id: employee.user_id,
         employee_code: employee.employee_code,
         designation: getEnumObject(DESIGNATIONS, employee.designation),
         employment_type: getEnumObject(EMPLOYMENT_TYPES, employee.employment_type),
@@ -4444,6 +4452,7 @@ router.get("/list", auth(), async (req, res) => {
             type: "break",
             attendance_date: br.attendance_date,
             day_status: br.day_status,
+            user_id: employeeData.user_id,
             is_verified: br.is_verified,
             remark: br.remark,
             break_start: br.break_start,
