@@ -209,6 +209,16 @@ async function checkSalaryOverlap(conn, employeeId, companyId, effectiveFrom, ef
   if (overlap.length) throw { status: 400, message: "Salary period overlaps with an existing salary structure" };
 }
 
+async function rejectSelfSalaryMutation(conn, employeeId, companyId, userId) {
+  const [[employee]] = await conn.query(
+    `SELECT user_id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
+    [employeeId, companyId]
+  );
+  if (employee?.user_id != null && userId != null && Number(employee.user_id) === Number(userId)) {
+    throw { status: 403, message: "You cannot change your own salary record" };
+  }
+}
+
 // Helper to fetch package items for a single package (used in create & update)
 async function getPackageItems(conn, package_id) {
   const [items] = await conn.query(
@@ -844,6 +854,7 @@ router.post("/assign-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(asy
     [employee_id, company_id]
   );
   if (!employee) throw { status: 404, message: "Employee not found" };
+  await rejectSelfSalaryMutation(conn, employee_id, company_id, user_id);
 
   await checkSalaryOverlap(conn, employee_id, company_id, effective_from, effective_to);
 
@@ -893,6 +904,7 @@ router.put("/update-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(asyn
   const employee_id = salary.employee_id;
   const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
   if (!employee) throw { status: 404, message: "Employee not found" };
+  await rejectSelfSalaryMutation(conn, employee_id, company_id, user_id);
 
   const amount = Number(base_amount);
   if (!Number.isFinite(amount) || amount <= 0) throw { status: 400, message: "Invalid base_amount" };
@@ -942,6 +954,7 @@ router.post("/revise-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(asy
 
   const [[employee]] = await conn.query(CHECK_EMPLOYEE_EXISTS, [employee_id, company_id]);
   if (!employee) throw { status: 404, message: "Employee not found" };
+  await rejectSelfSalaryMutation(conn, employee_id, company_id, user_id);
 
   // Find the current salary that is effective today (based on dates, not is_active)
   const [[currentSalary]] = await conn.query(
@@ -999,6 +1012,8 @@ router.delete("/delete-salary", auth([PERMISSIONS.FINANCIAL]), withTransaction(a
 
   const [[salary]] = await conn.query(`SELECT * FROM salary_structures WHERE id = ? AND company_id = ? AND is_deleted = 0 FOR UPDATE`, [salary_id, company_id]);
   if (!salary) throw { status: 404, message: "Salary record not found" };
+
+  await rejectSelfSalaryMutation(conn, salary.employee_id, company_id, user_id);
 
   const [[payrollUsed]] = await conn.query(CHECK_PAYROLL_USED, [salary_id]);
   if (payrollUsed) throw { status: 400, message: "Salary already used in payroll. Cannot delete." };
@@ -1067,7 +1082,7 @@ router.get("/employees-salaries", auth(), withConnection(async (conn, req, res) 
   const countQuery = `SELECT COUNT(*) AS total ${fromJoins}`;
   const [[{ total }]] = await conn.query(countQuery, baseParams);
 
-  const dataQuery = `SELECT e.id AS employee_id, e.employee_code, u.name, u.email, u.profile_picture, ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, CASE WHEN pe_used.salary_id IS NOT NULL THEN TRUE ELSE FALSE END AS payroll_used ${fromJoins} ORDER BY u.name ASC LIMIT ? OFFSET ?`;
+  const dataQuery = `SELECT e.id AS employee_id, e.user_id, e.employee_code, u.name, u.email, u.profile_picture, ss.id AS salary_id, ss.base_amount, ss.effective_from, ss.effective_to, CASE WHEN pe_used.salary_id IS NOT NULL THEN TRUE ELSE FALSE END AS payroll_used ${fromJoins} ORDER BY u.name ASC LIMIT ? OFFSET ?`;
   const [rows] = await conn.query(dataQuery, [...baseParams, limit, offset]);
 
   if (!rows.length) {
@@ -1112,6 +1127,7 @@ router.get("/employees-salaries", auth(), withConnection(async (conn, req, res) 
       payroll_used: Boolean(row.payroll_used),
       employee: {
         id: row.employee_id,
+        user_id: row.user_id,
         employee_code: row.employee_code,
         name: row.name,
         email: row.email,
@@ -1141,7 +1157,7 @@ router.get("/employee-salaries/:employeeId", auth(), withConnection(async (conn,
 
   // 1. Fetch employee details
   const [[employee]] = await conn.query(
-    `SELECT e.id AS employee_id, e.employee_code, u.name, u.email, u.profile_picture
+    `SELECT e.id AS employee_id, e.user_id, e.employee_code, u.name, u.email, u.profile_picture
      FROM employees e
      JOIN users u ON u.id = e.user_id
      WHERE e.id = ? AND e.company_id = ? AND e.is_deleted = 0 AND e.is_active = 1
@@ -1215,6 +1231,7 @@ router.get("/employee-salaries/:employeeId", auth(), withConnection(async (conn,
       payroll_used: Boolean(row.payroll_used),
       employee: {
         id: employee.employee_id,
+        user_id: employee.user_id,
         employee_code: employee.employee_code,
         name: employee.name,
         email: employee.email,
