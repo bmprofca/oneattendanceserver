@@ -94,6 +94,7 @@ function formatAdjustment(row) {
   return {
     id: row.id,
     employee_id: row.employee_id,
+    employee_user_id: row.employee_user_id,
     adjustment_type: row.adjustment_type,
     name: row.name,
     remark: row.remark,
@@ -117,6 +118,14 @@ async function checkEmployeeExists(conn, companyId, employeeId) {
   const [employees] = await conn.query(
     `SELECT id FROM employees WHERE id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1`,
     [employeeId, companyId]
+  );
+  return employees.length > 0;
+}
+
+async function isEmployeeOwnedByUser(conn, companyId, employeeId, userId) {
+  const [employees] = await conn.query(
+    `SELECT id FROM employees WHERE id = ? AND company_id = ? AND user_id = ? AND is_deleted = 0 LIMIT 1`,
+    [employeeId, companyId, userId]
   );
   return employees.length > 0;
 }
@@ -257,6 +266,10 @@ router.post("/generate-payroll", auth([PERMISSIONS.FINANCIAL]), async (req, res)
         [companyId, employeeIds]
       );
       if (employees.length !== employeeIds.length) return sendError(res, 400, "Some employee IDs are invalid");
+    }
+
+    if (req.role === "employee" && employeeIds.includes(Number(req.employee?.id))) {
+      return sendError(res, 403, "You cannot generate your own payroll");
     }
 
     const payrolls = [];
@@ -822,6 +835,9 @@ router.post("/adjustments", auth([PERMISSIONS.FINANCIAL]), async (req, res) => {
 
     const employeeExists = await checkEmployeeExists(conn, company_id, employee_id);
     if (!employeeExists) return sendError(res, 404, "Employee not found");
+    if (await isEmployeeOwnedByUser(conn, company_id, employee_id, user_id)) {
+      return sendError(res, 403, "You cannot create an adjustment for your own record");
+    }
 
     if (usage_type === "payroll") {
       const transaction_id = `TXN-${Date.now()}`;
@@ -896,7 +912,7 @@ router.get("/adjustments/list", auth(), async (req, res) => {
     summaryRows.forEach(r => { if (r.adjustment_type === "bonus") summary.bonus = r.total_amount; if (r.adjustment_type === "fine") summary.fine = r.total_amount; });
 
     const [rows] = await conn.query(
-      `SELECT ${ADJUSTMENT_FIELDS}, e.employee_code, u.name as employee_name, u.profile_picture as employee_profile_picture
+      `SELECT ${ADJUSTMENT_FIELDS}, e.user_id as employee_user_id, e.employee_code, u.name as employee_name, u.profile_picture as employee_profile_picture
        FROM payroll_adjustments pa JOIN employees e ON e.id = pa.employee_id JOIN users u ON u.id = e.user_id
        ${whereClause} ORDER BY pa.adjustment_period DESC, pa.id DESC LIMIT ? OFFSET ?`,
       [...values, limit, offset]
@@ -932,6 +948,9 @@ router.put("/adjustments/update", auth([PERMISSIONS.FINANCIAL]), async (req, res
     if (employee_id) {
       const employeeExists = await checkEmployeeExists(conn, company_id, employee_id);
       if (!employeeExists) return sendError(res, 404, "Employee not found");
+      if (await isEmployeeOwnedByUser(conn, company_id, employee_id, user_id)) {
+        return sendError(res, 403, "You cannot update an adjustment for your own record");
+      }
     }
 
     let updates = [], values = [];
@@ -1104,6 +1123,15 @@ router.delete("/adjustments/delete", auth([PERMISSIONS.FINANCIAL]), withTransact
         )
     ),
   ];
+
+  for (const employeeId of employeeIds) {
+    if (await isEmployeeOwnedByUser(conn, company_id, employeeId, user_id)) {
+      throw {
+        status: 403,
+        message: "You cannot delete an adjustment for your own record",
+      };
+    }
+  }
 
   const [result] = await conn.query(
     `

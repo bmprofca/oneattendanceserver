@@ -1022,7 +1022,7 @@ router.get("/all-list", auth(), async (req, res) => {
     }
 
     const [rows] = await db.query(
-      `SELECT e.id, e.employee_code, e.designation, e.status, e.salary_type, e.joining_date, e.employment_type,
+      `SELECT e.id, e.user_id, e.employee_code, e.designation, e.status, e.salary_type, e.joining_date, e.employment_type,
               u.name, u.email, u.phone, u.profile_picture
        FROM employees e
        LEFT JOIN users u ON u.id = e.user_id AND u.is_deleted = 0
