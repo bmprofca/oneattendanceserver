@@ -457,7 +457,7 @@ CREATE TABLE `permissions` (
   `action` varchar(50) NOT NULL,
   `code` varchar(150) DEFAULT NULL,
   `category` varchar(50) DEFAULT NULL,
-  `description` varchar(255) DEFAULT NULL
+  `description` varchar(150) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `permission_packages` (

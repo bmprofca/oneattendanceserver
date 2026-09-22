@@ -105,13 +105,14 @@ async function createZwitchPaymentToken({
         }
     });
 
-    console.log(data);
-
     if (data?.status !== "created" || !data?.id) {
         throw new Error(data?.message || "Failed to create payment token.");
     }
 
-    return data.id;
+    return {
+        payment_token: data.id,
+        order_id
+    };
 }
 
 async function createCompanySubscription(
@@ -123,7 +124,9 @@ async function createCompanySubscription(
         package_period,
         amount_paid,
         payment_reference = null,
-        package_type = "normal"
+        package_type = "normal",
+        payment_status = "1",
+        payment_order_id = null
     }
 ) {
     const now = getISTNow();
@@ -136,6 +139,7 @@ async function createCompanySubscription(
         WHERE company_id = ?
             AND is_active = 1
             AND is_deleted = 0
+            AND payment_status = '1'
         ORDER BY expires_at DESC
         LIMIT 1
         `,
@@ -185,13 +189,15 @@ async function createCompanySubscription(
             starts_at,
             expires_at,
             payment_reference,
+            payment_status,
+            payment_order_id,
             is_active,
             created_by,
             updated_by
         )
         VALUES
         (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?
         )
         `,
         [
@@ -204,6 +210,8 @@ async function createCompanySubscription(
             toISTString(startsAt),
             toISTString(expiresAt),
             payment_reference,
+            payment_status,
+            payment_order_id,
             user_id,
             user_id
         ]
@@ -408,16 +416,6 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
                 [user_id]
             );
 
-            console.log(conn.format(
-                `
-                SELECT name, phone, email
-                FROM users
-                WHERE id = ?
-                LIMIT 1
-                `,
-                [user_id]
-            ));
-
             const profileError = validateOwnerProfile(ownerRows[0]);
 
             if (profileError) {
@@ -426,7 +424,7 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
 
             const { name, phone, email } = ownerRows[0];
 
-            const payment_token = await createZwitchPaymentToken({
+            const payment = await createZwitchPaymentToken({
                 amount_paid,
                 name: name.trim(),
                 mobile: phone.trim(),
@@ -435,11 +433,29 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
                 subscriptionPackage
             });
 
+            await conn.beginTransaction();
+
+            await createCompanySubscription(conn, {
+                company_id,
+                user_id,
+                subscriptionPackage,
+                package_period,
+                amount_paid,
+                payment_reference: payment.payment_token,
+                payment_status: "0",
+                payment_order_id: payment.order_id
+            });
+
+            await conn.commit();
+
             return sendSuccess(
                 res,
                 200,
                 "Payment token generated successfully",
-                { payment_token }
+                {
+                    payment_token: payment.payment_token,
+                    order_id: payment.order_id
+                }
             );
         }
 
@@ -451,7 +467,8 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
             subscriptionPackage,
             package_period,
             amount_paid,
-            payment_reference: null
+            payment_reference: null,
+            payment_status: "1"
         });
 
         await conn.commit();
@@ -582,13 +599,23 @@ router.get("/details", auth([], { owner_only: true }), async (req, res) => {
                 cs.starts_at,
                 cs.expires_at,
                 cs.payment_reference,
-                sp.name AS package_name
+                cs.payment_status,
+                cs.payment_order_id,
+                cs.payment_vpa,
+                cs.payment_utr,
+                COALESCE(sp.name, csp.name) AS package_name
             FROM company_subscriptions cs
-            INNER JOIN subscription_packages sp
-                ON sp.id = cs.package_id
+            LEFT JOIN subscription_packages sp
+                ON cs.package_type = 'normal'
+               AND sp.id = cs.package_id
                AND sp.is_deleted = 0
+            LEFT JOIN custom_subscription_packages csp
+                ON cs.package_type = 'custom'
+               AND csp.id = cs.package_id
+               AND csp.is_deleted = 0
             WHERE cs.company_id = ?
               AND cs.is_deleted = 0
+              AND cs.payment_status = '1'
             ORDER BY cs.starts_at ASC
             `,
             [company_id]
