@@ -15,11 +15,10 @@ export const schemas = {
   },
   PurchaseSubscriptionPayload: {
     type: 'object',
-    required: ['package_id', 'package_period', 'amount_paid'],
+    required: ['package_id', 'package_period'],
     properties: {
       package_id: { type: 'integer', example: 1 },
       package_period: { type: 'string', enum: ['monthly', 'quarterly', 'half_yearly', 'yearly'], example: 'monthly' },
-      amount_paid: { type: 'number', example: 499 },
     },
   },
 };
@@ -64,21 +63,21 @@ export const paths = {
           'application/json': {
             schema: { $ref: '#/components/schemas/PurchaseSubscriptionPayload' },
             examples: {
-              purchase: { summary: 'Purchase package', value: { package_id: 1, package_period: 'monthly', amount_paid: 499 } },
+              purchase: { summary: 'Purchase package', value: { package_id: 1, package_period: 'monthly' } },
             },
           },
         },
       },
       responses: {
         200: {
-          description: 'Payment token generated successfully',
+          description: 'Razorpay order created or free subscription activated',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/SuccessResponse' },
               example: {
                 success: true,
-                message: 'Payment token generated successfully',
-                data: { payment_token: 'tok_1234567890', order_id: 'ord_1234567890' },
+                message: 'Payment order created successfully',
+                data: { key_id: 'rzp_test_example', order_id: 'order_example', amount: 49900, currency: 'INR' },
               },
             },
           },
@@ -88,6 +87,25 @@ export const paths = {
         403: { description: 'Forbidden / Owner only', content: { 'application/json': { schema: { $ref: '#/components/schemas/ForbiddenResponse' } } } },
         404: { description: 'Package not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/NotFoundResponse' } } } },
         500: { description: 'Internal server error / Gateway config error', content: { 'application/json': { schema: { $ref: '#/components/schemas/InternalServerErrorResponse' } } } },
+      },
+    },
+  },
+
+  '/subscriptions/payment-status/{orderId}': {
+    get: {
+      tags: ['Subscriptions'],
+      summary: 'Get the server-confirmed status of a Razorpay order',
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { name: 'company', in: 'header', required: true, schema: { type: 'integer' } },
+        { name: 'orderId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        200: {
+          description: 'Payment status fetched',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/SuccessResponse' } } },
+        },
+        404: { description: 'Payment order not found' },
       },
     },
   },

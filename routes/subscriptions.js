@@ -14,7 +14,7 @@ import {
 } from "../utils/time.js";
 import { buildFileUrl } from "../utils/fileService.js";
 import axios from "axios";
-import { ZWITCH_PAYMENT_TOKEN_URL, ZWITCH_API_KEY, ZWITCH_API_SECRET } from "../config/config.js";
+import { RAZORPAY_API_KEY, RAZORPAY_KEY_SECRET } from "../config/config.js";
 
 const router = express.Router();
 
@@ -63,7 +63,7 @@ function validateOwnerProfile(owner) {
     return null;
 }
 
-async function createZwitchPaymentToken({
+async function createRazorpayOrder({
     amount_paid,
     name,
     mobile,
@@ -71,48 +71,67 @@ async function createZwitchPaymentToken({
     package_id,
     subscriptionPackage
 }) {
-    const apiUrl = ZWITCH_PAYMENT_TOKEN_URL;
-    const accessKey = ZWITCH_API_KEY;
-    const apiSecret = ZWITCH_API_SECRET;
+    const apiUrl = "https://api.razorpay.com/v1/orders";
 
-    if (!apiUrl || !accessKey || !apiSecret) {
+    if (!RAZORPAY_API_KEY || !RAZORPAY_KEY_SECRET) {
         throw new Error("Payment gateway is not configured.");
     }
 
-    const order_id = crypto.randomBytes(16).toString("hex");
-    const authToken = `${accessKey}:${apiSecret}`;
-
     const payload = {
-        amount: amount_paid,
-        contact_number: mobile,
-        email_id: email,
+        amount: Math.round(Number(amount_paid) * 100),
+        receipt: `sub_${crypto.randomBytes(12).toString("hex")}`,
         currency: "INR",
-        mtx: order_id,
-        udf: {
-            key_1: name,
-            key_2: String(subscriptionPackage.min_employee_count ?? 0),
-            key_3: String(subscriptionPackage.max_employee_count ?? 0),
-            key_4: String(package_id)
+        notes: {
+            customer_name: name,
+            email,
+            package_id: String(package_id),
+            min_employee_count: String(subscriptionPackage.min_employee_count ?? 0),
+            max_employee_count: String(subscriptionPackage.max_employee_count ?? 0)
         }
     };
 
-    const { data } = await axios.post(apiUrl, payload, {
-        headers: {
-            "Access-Key": accessKey,
-            Authorization: `Bearer ${authToken}`,
-            Accept: "application/json",
-            "Content-Type": "application/json"
-        }
-    });
+    let data;
 
-    if (data?.status !== "created" || !data?.id) {
-        throw new Error(data?.message || "Failed to create payment token.");
+    try {
+        ({ data } = await axios.post(apiUrl, payload, {
+            auth: { username: RAZORPAY_API_KEY, password: RAZORPAY_KEY_SECRET },
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            timeout: 15000
+        }));
+    } catch (error) {
+        const gatewayError = error.response?.data?.error;
+        const message = gatewayError?.description || gatewayError?.reason || gatewayError?.code;
+        const normalizedError = new Error(message || "Failed to create payment order.");
+        normalizedError.status = error.response?.status || 502;
+        throw normalizedError;
+    }
+
+    if (!data?.id || data.status !== "created") {
+        throw new Error("Failed to create payment order.");
     }
 
     return {
-        payment_token: data.id,
-        order_id
+        order_id: data.id,
+        amount: data.amount,
+        currency: data.currency
     };
+}
+
+async function getRazorpayPayment(paymentId) {
+    try {
+        const { data } = await axios.get(
+            `https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`,
+            {
+                auth: { username: RAZORPAY_API_KEY, password: RAZORPAY_KEY_SECRET },
+                headers: { Accept: "application/json" },
+                timeout: 15000
+            }
+        );
+        return data;
+    } catch (error) {
+        console.error("[RAZORPAY_PAYMENT_DETAILS_ERROR]", error.response?.data || error.message);
+        return null;
+    }
 }
 
 async function createCompanySubscription(
@@ -424,7 +443,7 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
 
             const { name, phone, email } = ownerRows[0];
 
-            const payment = await createZwitchPaymentToken({
+            const payment = await createRazorpayOrder({
                 amount_paid,
                 name: name.trim(),
                 mobile: phone.trim(),
@@ -441,7 +460,7 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
                 subscriptionPackage,
                 package_period,
                 amount_paid,
-                payment_reference: payment.payment_token,
+                payment_reference: null,
                 payment_status: "0",
                 payment_order_id: payment.order_id
             });
@@ -453,8 +472,10 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
                 200,
                 "Payment token generated successfully",
                 {
-                    payment_token: payment.payment_token,
-                    order_id: payment.order_id
+                    key_id: RAZORPAY_API_KEY,
+                    order_id: payment.order_id,
+                    amount: payment.amount,
+                    currency: payment.currency
                 }
             );
         }
@@ -494,7 +515,7 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
         }
 
         const statusCode =
-            err.response?.status >= 400 && err.response?.status < 500
+            err.status >= 400 && err.status < 500
                 ? 400
                 : 500;
 
@@ -509,6 +530,153 @@ router.post("/purchase-subscription", auth([], { owner_only: true }), async (req
         if (conn) {
             conn.release();
         }
+    }
+});
+
+router.get("/payment-status/:orderId", auth([], { owner_only: true }), async (req, res) => {
+    let conn;
+
+    try {
+        const company_id = req.company?.id;
+        const user_id = req.user?.id;
+        const { orderId } = req.params;
+
+        if (!company_id || !orderId || orderId.length > 100) {
+            return sendError(res, 400, "Invalid payment order.");
+        }
+
+        conn = await db.getConnection();
+        const [rows] = await conn.query(
+            `
+            SELECT cs.payment_status, cs.payment_reference
+            FROM company_subscriptions cs
+            INNER JOIN companies c ON c.id = cs.company_id
+            WHERE cs.company_id = ?
+              AND c.owner_user_id = ?
+              AND cs.payment_order_id = ?
+              AND cs.is_deleted = 0
+            ORDER BY cs.id DESC
+            LIMIT 1
+            `,
+            [company_id, user_id, orderId]
+        );
+
+        if (!rows.length) return sendError(res, 404, "Payment order not found.");
+
+        const statusMap = { "0": "pending", "1": "success", "2": "failed", "3": "cancelled" };
+        return sendSuccess(res, 200, "Payment status fetched successfully.", {
+            order_id: orderId,
+            status: statusMap[rows[0].payment_status] || "pending",
+            payment_id: rows[0].payment_reference || null
+        });
+    } catch (err) {
+        console.error("[GET_PAYMENT_STATUS_ERROR]", err);
+        return sendError(res, 500, "Failed to fetch payment status.");
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+router.post("/verify-payment", auth([], { owner_only: true }), async (req, res) => {
+    let conn;
+
+    try {
+        const company_id = req.company?.id;
+        const user_id = req.user?.id;
+        const {
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature
+        } = req.body || {};
+
+        if (!company_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return sendError(res, 400, "Incomplete payment verification data.");
+        }
+
+        const expectedSignature = crypto
+            .createHmac("sha256", RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest("hex");
+
+        const receivedBuffer = Buffer.from(String(razorpay_signature), "utf8");
+        const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+
+        if (
+            receivedBuffer.length !== expectedBuffer.length ||
+            !crypto.timingSafeEqual(receivedBuffer, expectedBuffer)
+        ) {
+            return sendError(res, 400, "Invalid payment signature.");
+        }
+
+        conn = await db.getConnection();
+        await conn.beginTransaction();
+
+        const [rows] = await conn.query(
+            `
+            SELECT cs.id, cs.payment_status
+            FROM company_subscriptions cs
+            INNER JOIN companies c ON c.id = cs.company_id
+            WHERE cs.company_id = ?
+              AND c.owner_user_id = ?
+              AND cs.payment_order_id = ?
+              AND cs.is_deleted = 0
+            LIMIT 1
+            FOR UPDATE
+            `,
+            [company_id, user_id, razorpay_order_id]
+        );
+
+        if (!rows.length) {
+            await conn.rollback();
+            return sendError(res, 404, "Payment order not found.");
+        }
+
+        const payment = await getRazorpayPayment(razorpay_payment_id);
+        const paymentVpa = payment?.vpa || payment?.upi?.vpa || null;
+        const paymentUtr = payment?.acquirer_data?.rrn ||
+            payment?.acquirer_data?.bank_transaction_id ||
+            payment?.upi?.vpa_transaction_id ||
+            null;
+
+        if (String(rows[0].payment_status) === "0") {
+            await conn.query(
+                `
+                UPDATE company_subscriptions
+                SET payment_status = '1',
+                    payment_reference = ?,
+                    payment_vpa = COALESCE(?, payment_vpa),
+                    payment_utr = COALESCE(?, payment_utr),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND payment_status = '0'
+                `,
+                [razorpay_payment_id, paymentVpa, paymentUtr, rows[0].id]
+            );
+        } else if (paymentVpa || paymentUtr) {
+            await conn.query(
+                `
+                UPDATE company_subscriptions
+                SET payment_vpa = COALESCE(?, payment_vpa),
+                    payment_utr = COALESCE(?, payment_utr),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                `,
+                [paymentVpa, paymentUtr, rows[0].id]
+            );
+        }
+
+        await conn.commit();
+        return sendSuccess(res, 200, "Payment verified successfully.", {
+            order_id: razorpay_order_id,
+            payment_id: razorpay_payment_id,
+            status: "success"
+        });
+    } catch (error) {
+        if (conn) await conn.rollback();
+        console.error("[VERIFY_PAYMENT_ERROR]", error);
+        return sendError(res, 500, "Payment verification failed.");
+    } finally {
+        if (conn) conn.release();
     }
 });
 
@@ -667,6 +835,8 @@ router.get("/details", auth([], { owner_only: true }), async (req, res) => {
                     starts_at: sub.starts_at,
                     expires_at: sub.expires_at,
                     payment_reference: sub.payment_reference,
+                    payment_vpa: sub.payment_vpa,
+                    payment_utr: sub.payment_utr,
                     status
                 };
             }
@@ -694,6 +864,8 @@ router.get("/details", auth([], { owner_only: true }), async (req, res) => {
                     starts_at: sub.starts_at,
                     expires_at: sub.expires_at,
                     payment_reference: sub.payment_reference,
+                    payment_vpa: sub.payment_vpa,
+                    payment_utr: sub.payment_utr,
                     type,
 
                     ...(type === "current" && {

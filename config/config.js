@@ -48,11 +48,6 @@ const config = {
   // Face Recognition 
   FACE_MATCH_THRESHOLD: 0.8,
 
-  // Zwitch (Open Money)
-  ZWITCH_PAYMENT_TOKEN_URL: 'https://api.zwitch.io/v1/pg/payment_token',
-  ZWITCH_API_KEY: 'ebab5ff3-8ff5-423c-b1bf-4f5a0f99fec0',
-  ZWITCH_API_SECRET: '1bc5b906b1d6c9d7dca6cfdbdf2494c8815ffd921da93cde0b9dfeaece8fe8a3',
-
   // OneChatting WhatsApp Integration
   ONECHATTING_TEMPLATE_TOKEN: '4u4jeam9d32kgkvzp27m8zqhumwfy7bd16l1bpwmb015nh54zmmd7t2infrm1x5',
   ONECHATTING_SEND_TOKEN: 'ekl28if8u7xy772wo22u2f1chnbk47blb8hhq658fx19tqeht05s6v5kj519h6z',
@@ -72,6 +67,11 @@ const config = {
   B2_ACCESS_KEY: '81a52e31f317',
   B2_SECRET_KEY: '00343a3d46573b761adda6b5b1500ae0470471e90e',
   B2_DOWNLOAD_AUTH_TTL_SECONDS: 86400,
+
+  // ===== Razorpay Integration =====
+  RAZORPAY_API_KEY: 'rzp_test_TezGhuQZg4ozoB',
+  RAZORPAY_KEY_SECRET: 'xfQFN1Oz1pJex3UsyibjnBRY',
+  RAZORPAY_WEBHOOK_SECRET: 'onedevelopers'
 
 };
 
@@ -102,9 +102,9 @@ export const {
   FACEBOOK_APP_SECRET,
   NODE_ENV,
   FACE_MATCH_THRESHOLD,
-  ZWITCH_PAYMENT_TOKEN_URL,
-  ZWITCH_API_KEY,
-  ZWITCH_API_SECRET,
+  RAZORPAY_API_KEY,
+  RAZORPAY_KEY_SECRET,
+  RAZORPAY_WEBHOOK_SECRET,
   ONECHATTING_TEMPLATE_TOKEN,
   ONECHATTING_SEND_TOKEN,
   ONECHATTING_SEND_URL,
