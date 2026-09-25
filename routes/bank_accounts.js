@@ -1,7 +1,6 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import checkPermission from "../middleware/permissionValidationMiddleware.js";
 import axios from "axios";
 import { checkCompanyPermissions } from "../utils/checkPermissions.js";
 import { buildFileUrl } from "../utils/fileService.js";

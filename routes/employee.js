@@ -1153,7 +1153,7 @@ const handleFaceEnrollCheck = async (req, res) => {
   }
 };
 
-router.post("/face-enroll/set", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
+router.post("/face-enroll/set", auth([PERMISSIONS.EMPLOYEES, PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
   try {
     const companyId = safeNumber(req.company?.id, 0);
@@ -1191,7 +1191,7 @@ router.post("/face-enroll/set", auth([PERMISSIONS.EMPLOYEES]), async (req, res) 
 router.get("/face-enroll/check", auth(), handleFaceEnrollCheck);
 router.post("/face-enroll/check", auth(), handleFaceEnrollCheck);
 
-router.put("/face-enroll/delete", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
+router.put("/face-enroll/delete", auth([PERMISSIONS.EMPLOYEES, PERMISSIONS.ATTENDANCE]), async (req, res) => {
   let conn;
   try {
     conn = await db.getConnection();
