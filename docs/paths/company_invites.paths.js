@@ -461,6 +461,36 @@ export const paths = {
     },
   },
 
+  '/company/invites/my/pending-count': {
+    get: {
+      tags: ['Company Invites'],
+      summary: 'Get pending invitation count for current user',
+      security: [{ bearerAuth: [] }],
+      responses: {
+        200: {
+          description: 'Pending invitation count',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SuccessResponse' },
+              example: {
+                success: true,
+                data: { count: 3 },
+              },
+            },
+          },
+        },
+        401: {
+          description: 'Unauthorized',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/UnauthorizedResponse' } } },
+        },
+        500: {
+          description: 'Internal server error',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/InternalServerErrorResponse' } } },
+        },
+      },
+    },
+  },
+
   '/company/invites/my': {
     get: {
       tags: ['Company Invites'],

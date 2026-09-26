@@ -1664,6 +1664,38 @@ router.get("/list", auth(), async (req, res) => {
   }
 });
 
+router.get("/my/pending-count", auth(), async (req, res) => {
+  let conn;
+  try {
+    conn = await db.getConnection();
+    const userId = Number(req.user?.id);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return sendError(res, 401, "Invalid user ID");
+    }
+
+    const [[countRow]] = await conn.query(
+      `SELECT COUNT(*) AS count
+       FROM company_invites ci
+       INNER JOIN companies c ON c.id = ci.company_id
+       WHERE ci.user_id = ?
+         AND ci.is_deleted = 0
+         AND c.is_deleted = 0
+         AND LOWER(ci.status) = 'pending'
+         AND (ci.expires_at IS NULL OR ci.expires_at >= NOW())`,
+      [userId]
+    );
+
+    return sendSuccess(res, 200, "Pending invite count fetched successfully", {
+      count: Number(countRow?.count || 0),
+    });
+  } catch (error) {
+    console.error("Error fetching pending invite count:", error);
+    return sendError(res, 500, "Failed to fetch pending invite count");
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 router.get("/my", auth(), async (req, res) => {
   let conn;
   try {
