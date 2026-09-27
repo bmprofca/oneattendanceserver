@@ -759,7 +759,13 @@ const LIST_INVITES_DATA = `
     ci.id, ci.invite_token, ci.company_id, ci.user_id, ci.invited_by,
     ci.permission_package_id, ci.employment_type, ci.designation, ci.salary_type,
     ci.shift_start, ci.shift_end, ci.break_minutes, ci.grace_minutes,
-    ci.weekends, ci.status, ci.is_active, ci.is_deleted,
+    ci.weekends,
+    CASE
+      WHEN LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW()
+        THEN 'expired'
+      ELSE ci.status
+    END AS status,
+    ci.is_active, ci.is_deleted,
     ci.deleted_at, ci.deleted_by, ci.expires_at, ci.created_at,
     ci.attendance_methods, ci.auto_approve, ci.enable_overtime, ci.enable_deduction,
     ci.joining_date, ci.base_amount, ci.effective_from, ci.effective_to,
@@ -1551,7 +1557,6 @@ router.get("/list", auth(), async (req, res) => {
     let whereClause = `WHERE ci.company_id = ? AND ci.is_deleted = 0`;
     const params = [companyId];
 
-    let explicitExpired = false;
     if (status && String(status).trim().toLowerCase() !== "all") {
       const allowedStatuses = ["pending", "accepted", "rejected", "cancelled", "expired"];
       const normalizedStatus = String(status).trim().toLowerCase();
@@ -1564,15 +1569,13 @@ router.get("/list", auth(), async (req, res) => {
           LOWER(ci.status) = 'expired' 
           OR (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())
         )`;
-        explicitExpired = true;
+      } else if (normalizedStatus === "pending") {
+        whereClause += ` AND LOWER(ci.status) = 'pending'
+          AND NOT (ci.expires_at IS NOT NULL AND ci.expires_at < NOW())`;
       } else {
         whereClause += ` AND LOWER(ci.status) = ?`;
         params.push(normalizedStatus);
       }
-    }
-
-    if (!explicitExpired) {
-      whereClause += ` AND NOT (LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW())`;
     }
 
     search = String(search || "").trim();
