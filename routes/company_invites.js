@@ -544,7 +544,13 @@ router.get("/package-list", auth(), async (req, res) => {
       const [permRows] = await conn.query(SELECT_PERMISSIONS_FOR_PACKAGES, [permissionPackageIds]);
       for (const row of permRows) {
         if (!permissionsMap.has(row.package_id)) permissionsMap.set(row.package_id, []);
-        permissionsMap.get(row.package_id).push({ id: row.id, action: row.action, code: row.code, name: row.name });
+        permissionsMap.get(row.package_id).push({
+          id: row.permission_id,
+          code: row.permission_code,
+          action: row.permission_action,
+          category: row.permission_category,
+          description: row.permission_description,
+        });
       }
     }
 
@@ -772,12 +778,13 @@ const LIST_INVITES_DATA = `
     u.name AS user_name, u.email AS user_email, u.profile_picture,
     ib.name AS inviter_name, ib.email as inviter_email, ib.profile_picture AS inviter_profile_picture,
     pp.package_name,
-    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code
+    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code,
+    p.category AS permission_category, p.action AS permission_action
   FROM company_invites ci
   LEFT JOIN users u ON u.id = ci.user_id AND u.is_deleted = 0
   LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
   LEFT JOIN permission_packages pp ON pp.id = ci.permission_package_id
-    AND pp.company_id = ci.company_id AND pp.is_active = 1 AND pp.is_deleted = 0
+    AND pp.company_id = ci.company_id
   LEFT JOIN permission_package_items ppi ON ppi.package_id = pp.id
     AND ppi.is_active = 1 AND ppi.is_deleted = 0
   LEFT JOIN permissions p ON p.id = ppi.permission_id
@@ -810,7 +817,13 @@ const MY_INVITES_DATA = `
     ci.id, ci.invite_token, ci.company_id, ci.permission_package_id,
     ci.employment_type, ci.designation, ci.salary_type,
     ci.shift_start, ci.shift_end, ci.break_minutes, ci.grace_minutes,
-    ci.weekends, ci.status, ci.is_active, ci.is_deleted,
+    ci.weekends,
+    CASE
+      WHEN LOWER(ci.status) = 'pending' AND ci.expires_at IS NOT NULL AND ci.expires_at < NOW()
+        THEN 'expired'
+      ELSE ci.status
+    END AS status,
+    ci.is_active, ci.is_deleted,
     ci.deleted_at, ci.deleted_by, ci.expires_at, ci.created_at,
     ci.attendance_methods, ci.auto_approve, ci.enable_overtime, ci.enable_deduction,
     ci.joining_date, ci.base_amount, ci.effective_from, ci.effective_to,
@@ -819,12 +832,13 @@ const MY_INVITES_DATA = `
     ib.id AS invited_by_id, ib.name AS invited_by_name,
     ib.email AS invited_by_email, ib.profile_picture AS invited_by_profile_picture,
     pp.id AS package_id, pp.package_name,
-    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code
+    p.id AS permission_id, p.description AS permission_description, p.code AS permission_code, 
+    p.category AS permission_category, p.action AS permission_action
   FROM company_invites ci
   INNER JOIN companies c ON c.id = ci.company_id
   LEFT JOIN users ib ON ib.id = ci.invited_by AND ib.is_deleted = 0
   LEFT JOIN permission_packages pp ON pp.id = ci.permission_package_id
-    AND pp.company_id = ci.company_id AND pp.is_deleted = 0 AND pp.is_active = 1
+    AND pp.company_id = ci.company_id
   LEFT JOIN permission_package_items ppi ON ppi.package_id = pp.id
     AND ppi.is_deleted = 0 AND ppi.is_active = 1
   LEFT JOIN permissions p ON p.id = ppi.permission_id
@@ -1649,7 +1663,13 @@ router.get("/list", auth(), async (req, res) => {
       if (row.permission_id) {
         const inv = inviteMap.get(row.id);
         if (!inv.permissions.some(p => p.id === row.permission_id)) {
-          inv.permissions.push({ id: row.permission_id, name: row.permission_name, code: row.permission_code });
+          inv.permissions.push({
+            id: row.permission_id,
+            code: row.permission_code,
+            action: row.permission_action,
+            category: row.permission_category,
+            description: row.permission_description,
+          });
         }
       }
     }
@@ -1809,7 +1829,13 @@ router.get("/my", auth(), async (req, res) => {
       if (row.permission_id) {
         const inv = inviteMap.get(row.id);
         if (!inv.permissions.some(p => p.id === row.permission_id)) {
-          inv.permissions.push({ id: row.permission_id, name: row.permission_name, code: row.permission_code });
+          inv.permissions.push({
+            id: row.permission_id,
+            code: row.permission_code,
+            action: row.permission_action,
+            category: row.permission_category,
+            description: row.permission_description,
+          });
         }
       }
     }
