@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import dns from 'dns/promises';
+import net from 'net';
 import axios from 'axios';
 import sharp from 'sharp';
 import generateString from './generateString.js';
@@ -10,11 +12,12 @@ import {
 import { buildProxyUrl } from './media.js';
 import { SERVER_BASE_URL, NODE_ENV, productionBaseDomain } from '../config/config.js';
 
-const BASE_URL =
+const resolveBaseUrl = () => (
   productionBaseDomain ||
   (NODE_ENV === 'production'
-    ? SERVER_BASE_URL || 'https://oneattendanceserver.onesaas.in'
-    : 'http://localhost:7736');
+    ? SERVER_BASE_URL || 'https://server.oneattendance.in'
+    : 'http://localhost:7736')
+);
 
 const MAX_SIZE_MB = 25;
 
@@ -98,6 +101,66 @@ function validateFileSignature(buffer, mime) {
   return true;
 }
 
+const isBlockedAddress = (address) => {
+  if (net.isIP(address) === 4) {
+    const [a, b] = address.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (net.isIP(address) === 6) {
+    const lower = address.toLowerCase();
+    return lower === '::1' || lower === '::' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80');
+  }
+  return true;
+};
+
+const assertFetchableUrl = async (raw) => {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('Invalid file URL');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Unsupported file URL');
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error('Unsupported file URL');
+  }
+  if (net.isIP(host)) {
+    if (isBlockedAddress(host)) throw new Error('Unsupported file URL');
+    return parsed;
+  }
+  const records = await dns.lookup(host, { all: true });
+  if (!records.length || records.some((record) => isBlockedAddress(record.address))) {
+    throw new Error('Unsupported file URL');
+  }
+  return parsed;
+};
+
+const fetchPublicFile = async (startUrl) => {
+  let current = startUrl;
+  for (let hop = 0; hop < 4; hop += 1) {
+    await assertFetchableUrl(current);
+    const response = await axios.get(current, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxRedirects: 0,
+      validateStatus: (status) => status === 200 || (status >= 300 && status < 400),
+    });
+    if (response.status === 200) return response;
+    const location = response.headers.location;
+    if (!location) throw new Error('Unable to access file');
+    current = new URL(location, current).toString();
+  }
+  throw new Error('Unable to access file');
+};
+
 const parseDataUrl = (dataUrl) => {
   const match = String(dataUrl ?? '').match(/^data:([^;]+);base64,(.+)$/);
   if (!match) {
@@ -132,23 +195,8 @@ export const saveMediaFromUrl = async ({
       buffer = parsedDataUrl.buffer;
       mimeType = parsedDataUrl.mimeType;
     } else {
-      let headResponse;
-      try {
-        headResponse = await axios.head(trimmed, {
-          timeout: 5000,
-          maxRedirects: 5,
-        });
-      } catch {
-        headResponse = await axios.get(trimmed, {
-          timeout: 5000,
-        });
-      }
-
-      if (headResponse.status !== 200) {
-        throw new Error('Unable to access file');
-      }
-
-      mimeType = headResponse.headers['content-type']?.split(';')[0]?.toLowerCase();
+      const fileResponse = await fetchPublicFile(trimmed);
+      mimeType = fileResponse.headers['content-type']?.split(';')[0]?.toLowerCase();
 
       if (!mimeType) {
         throw new Error('Unknown file type');
@@ -157,12 +205,6 @@ export const saveMediaFromUrl = async ({
       if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
         throw new Error(`Unsupported file type: ${mimeType}`);
       }
-
-      const fileResponse = await axios.get(trimmed, {
-        responseType: 'arraybuffer',
-        timeout: 20000,
-        maxRedirects: 5,
-      });
 
       buffer = Buffer.from(fileResponse.data);
     }
@@ -259,7 +301,7 @@ export function buildFileUrl(storedValue, req = null) {
 
   const base = req
     ? `${req.protocol}://${req.get('host')}`
-    : BASE_URL;
+    : resolveBaseUrl();
 
   // Preserve legacy local file uploads
   if (raw.startsWith('/uploads/')) {

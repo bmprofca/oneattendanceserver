@@ -21,6 +21,8 @@ import subscriptionRoutes from "./subscriptions.js";
 import webhookRoutes from "./webhook.js";
 import ipRoutes from "./iproute.js";
 import mediaRoutes from "./media.js";
+import dataDeletionRoutes from "./dataDeletion.js";
+import websiteRoutes from "./website.js";
 
 
 const router = express.Router();
@@ -48,6 +50,8 @@ router.use('/subscriptions', subscriptionRoutes);
 router.use('/webhook', webhookRoutes);
 router.use('/ip', ipRoutes);
 router.use('/media', mediaRoutes);
+router.use('/data-deletion', dataDeletionRoutes);
+router.use('/website', websiteRoutes);
 
 
 

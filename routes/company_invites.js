@@ -1335,7 +1335,7 @@ router.post("/send", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
 
     const APP_URL =
       NODE_ENV === "production"
-        ? (FRONTEND_URL || "https://oneattendanceclient.vercel.app")
+        ? (FRONTEND_URL || "https://app.oneattendance.in")
         : "http://localhost:3000";
     try {
       const appUrl = APP_URL;
@@ -1439,7 +1439,7 @@ router.post("/resend", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
 
     const APP_URL =
       NODE_ENV === "production"
-        ? (FRONTEND_URL || "https://oneattendanceclient.vercel.app")
+        ? (FRONTEND_URL || "https://app.oneattendance.in")
         : "http://localhost:3000";
     try {
       const appUrl = APP_URL;

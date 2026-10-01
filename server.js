@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { apiReference } from '@scalar/express-api-reference';
@@ -16,11 +17,25 @@ import { adminScalarApiReferenceConfig } from './admin_docs/scalar.js';
 import fetchAndSaveTemplates from './whatsappTemplates/getTemplates.js';
 import mediaRoutes from './routes/media.js';
 import { initB2Storage } from './utils/b2Storage.js';
+import { ensureSettingsLoaded } from './config/settingsStore.js';
 
 const app = express();
 
+const allowedOrigins = new Set([
+  "https://oneattendance.in",
+  "https://www.oneattendance.in",
+  "https://app.oneattendance.in",
+  "https://admin.oneattendance.in",
+  "http://localhost:3000",
+  "http://localhost:3002",
+  "http://localhost:3003",
+]);
+
 app.use(cors({
-  origin: true,
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(null, false);
+  },
   credentials: true
 }));
 
@@ -82,6 +97,13 @@ app.use((err, req, res, next) => {
 });
 
 const startServer = async () => {
+  try {
+    await ensureSettingsLoaded();
+    console.log('✅ Settings loaded');
+  } catch (error) {
+    console.error('⚠️ Settings load failed, using environment values:', error.message);
+  }
+
   try {
     const context = await generateDatabaseContext();
 

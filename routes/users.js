@@ -1,7 +1,7 @@
 import express from "express";
 import db from "../config/db.js";
 import auth from "../middleware/authMiddleware.js";
-import { hashPassword, comparePassword, generateOTP, verifyOtpHash, } from "../utils/auth.js";
+import { hashPassword, comparePassword, generateOTP, assessOtp, } from "../utils/auth.js";
 import { queuePhoneUpdateOTPEmail, queueDeleteAccountOTPEmail, sendDeleteAccountOTPEmail } from "../email/services/email.processor.js";
 import { sendEmailUpdateOTP, sendOtpSms } from "../utils/sendSMS.js";
 import { sendOtpWhatsApp } from "../utils/whatsapp.js";
@@ -524,7 +524,6 @@ router.post("/delete/request-otp", auth(), async (req, res) => {
     const otp = generateOTP();
     const otpHash = await hashPassword(otp);
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
-    console.log(otp);
 
     await conn.query(
       `INSERT INTO otps 
@@ -629,11 +628,11 @@ router.delete("/delete/confirm", auth(), async (req, res) => {
       return res.status(400).json({ success: false, message: "OTP expired" });
     }
 
-    const isValid = await comparePassword(otp, otpData.otp_hash);
+    const otpError = await assessOtp(otpData.id, otp, otpData.otp_hash);
 
-    if (!isValid) {
+    if (otpError) {
       await conn.rollback();
-      return res.status(400).json({ success: false, message: "Invalid OTP" });
+      return res.status(400).json({ success: false, message: otpError });
     }
 
     await conn.query(
@@ -1148,11 +1147,6 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
     const clientMeta = getClientMeta(req);
     const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || req.ip || "0.0.0.0";
 
-    const isStaticAdmin = Boolean(user?.is_system_admin || user?.admin) && (
-      String(user?.phone || "").endsWith("9999999999") ||
-      String(normalizedPhone || "").endsWith("9999999999")
-    );
-
     const [[recentOtp]] = await conn.query(
       `
       SELECT COUNT(*) AS count
@@ -1165,11 +1159,11 @@ router.post("/request-update-phone-otp", auth(), async (req, res) => {
       [userEmail, normalizedPhone]
     );
 
-    if (!isStaticAdmin && recentOtp.count > 0) {
+    if (recentOtp.count > 0) {
       return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
     }
 
-    const otp = isStaticAdmin ? "123456" : String(generateOTP());
+    const otp = String(generateOTP());
 
     const otpHash = await hashPassword(otp);
     const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
@@ -1333,12 +1327,12 @@ router.put("/verify-update-phone-otp", auth(), async (req, res) => {
       return sendError(res, 400, "OTP expired");
     }
 
-    const isOtpValid = await verifyOtpHash(otp.trim(), record.otp_hash);
+    const otpError = await assessOtp(record.id, otp.trim(), record.otp_hash);
 
-    if (!isOtpValid) {
+    if (otpError) {
       await rollbackTransaction(conn, transactionStarted);
       transactionStarted = false;
-      return sendError(res, 400, "Invalid OTP");
+      return sendError(res, 400, otpError);
     }
 
     const [duplicateRows] = await conn.query(
@@ -1467,11 +1461,6 @@ router.post("/request-update-email-otp", auth(), async (req, res) => {
     const clientMeta = getClientMeta(req);
     const ip = clientMeta?.ip_v4 || clientMeta?.ip_v6 || req.ip || "0.0.0.0";
 
-    const isStaticAdmin = Boolean(user?.is_system_admin || user?.admin) && (
-      String(user?.phone || "").endsWith("9999999999") ||
-      String(userPhone || "").endsWith("9999999999")
-    );
-
     const [[recentOtp]] = await conn.query(
       `
       SELECT COUNT(*) AS count
@@ -1484,11 +1473,11 @@ router.post("/request-update-email-otp", auth(), async (req, res) => {
       [normalizedEmail, userPhone]
     );
 
-    if (!isStaticAdmin && recentOtp.count > 0) {
+    if (recentOtp.count > 0) {
       return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
     }
 
-    const otp = isStaticAdmin ? "123456" : String(generateOTP());
+    const otp = String(generateOTP());
 
     const otpHash = await hashPassword(otp);
     const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
@@ -1635,12 +1624,12 @@ router.put("/verify-update-email-otp", auth(), async (req, res) => {
       return sendError(res, 400, "OTP expired");
     }
 
-    const isOtpValid = await verifyOtpHash(otp.trim(), record.otp_hash);
+    const otpError = await assessOtp(record.id, otp.trim(), record.otp_hash);
 
-    if (!isOtpValid) {
+    if (otpError) {
       await rollbackTransaction(conn, transactionStarted);
       transactionStarted = false;
-      return sendError(res, 400, "Invalid OTP");
+      return sendError(res, 400, otpError);
     }
 
     const [duplicateRows] = await conn.query(

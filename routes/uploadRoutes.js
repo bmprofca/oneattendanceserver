@@ -1,9 +1,10 @@
 import express from "express";
 import { saveMediaFromUrl } from "../utils/fileService.js";
+import auth from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-router.post("/upload-from-url", async (req, res) => {
+router.post("/upload-from-url", auth(), async (req, res) => {
   try {
     const { picture } = req.body;
     if (!picture) {

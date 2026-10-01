@@ -237,67 +237,86 @@ async function createCompanySubscription(
     );
 }
 
+async function listActiveSubscriptionPackages(conn) {
+    const [rows] = await conn.query(
+        `
+        SELECT
+            sp.id,
+            sp.name,
+            sp.min_employee_count,
+            sp.max_employee_count,
+            sp.monthly_price,
+            sp.quarterly_price,
+            sp.half_yearly_price,
+            sp.yearly_price,
+            sp.accept_periods
+        FROM subscription_packages sp
+        WHERE sp.is_active = 1
+          AND sp.is_deleted = 0
+        ORDER BY sp.min_employee_count ASC
+        `
+    );
+
+    return rows.map((pkg) => {
+        let acceptedPeriods = [];
+
+        try {
+            acceptedPeriods = JSON.parse(pkg.accept_periods || "[]");
+        } catch {
+            acceptedPeriods = [];
+        }
+
+        const packageData = {
+            id: pkg.id,
+            name: pkg.name,
+            min_employee_count: pkg.min_employee_count,
+            max_employee_count: pkg.max_employee_count,
+        };
+
+        if (acceptedPeriods.includes("monthly")) {
+            packageData.monthly_price = Number(pkg.monthly_price || 0);
+        }
+
+        if (acceptedPeriods.includes("quarterly")) {
+            packageData.quarterly_price = Number(pkg.quarterly_price || 0);
+        }
+
+        if (acceptedPeriods.includes("half_yearly")) {
+            packageData.half_yearly_price = Number(pkg.half_yearly_price || 0);
+        }
+
+        if (acceptedPeriods.includes("yearly")) {
+            packageData.yearly_price = Number(pkg.yearly_price || 0);
+        }
+
+        return packageData;
+    });
+}
+
+router.get("/public-packages", async (req, res) => {
+    let conn;
+
+    try {
+        conn = await db.getConnection();
+        const packages = await listActiveSubscriptionPackages(conn);
+        return sendSuccess(res, 200, "Subscription packages fetched successfully", packages);
+    } catch (error) {
+        console.error("Error fetching public subscription packages:", {
+            message: error.message,
+            stack: error.stack,
+        });
+        return sendError(res, 500, "Failed to fetch subscription packages");
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
 router.get("/packages", auth([], { owner_only: true }), async (req, res) => {
     let conn;
 
     try {
         conn = await db.getConnection();
-
-        const [rows] = await conn.query(
-            `
-            SELECT
-                sp.id,
-                sp.name,
-                sp.min_employee_count,
-                sp.max_employee_count,
-                sp.monthly_price,
-                sp.quarterly_price,
-                sp.half_yearly_price,
-                sp.yearly_price,
-                sp.accept_periods
-            FROM subscription_packages sp
-            WHERE sp.is_active = 1
-              AND sp.is_deleted = 0
-            ORDER BY sp.min_employee_count ASC
-            `
-        );
-
-        const packages = rows.map((pkg) => {
-            let acceptedPeriods = [];
-
-            try {
-                acceptedPeriods = JSON.parse(
-                    pkg.accept_periods || "[]"
-                );
-            } catch {
-                acceptedPeriods = [];
-            }
-
-            const packageData = {
-                id: pkg.id,
-                name: pkg.name,
-                min_employee_count: pkg.min_employee_count,
-                max_employee_count: pkg.max_employee_count,
-            };
-
-            if (acceptedPeriods.includes("monthly")) {
-                packageData.monthly_price = Number(pkg.monthly_price || 0);
-            }
-
-            if (acceptedPeriods.includes("quarterly")) {
-                packageData.quarterly_price = Number(pkg.quarterly_price || 0);
-            }
-
-            if (acceptedPeriods.includes("half_yearly")) {
-                packageData.half_yearly_price = Number(pkg.half_yearly_price || 0);
-            }
-
-            if (acceptedPeriods.includes("yearly")) {
-                packageData.yearly_price = Number(pkg.yearly_price || 0);
-            }
-
-            return packageData;
-        });
+        const packages = await listActiveSubscriptionPackages(conn);
 
         return sendSuccess(
             res,

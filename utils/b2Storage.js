@@ -12,6 +12,11 @@ import {
 let authCache = null;
 let bucketIdCache = null;
 
+export function resetB2Cache() {
+  authCache = null;
+  bucketIdCache = null;
+}
+
 const DEFAULT_DOWNLOAD_AUTH_TTL_SECONDS = 86400;
 const MAX_DOWNLOAD_AUTH_TTL_SECONDS = 604800;
 
@@ -34,7 +39,7 @@ export function isB2Configured() {
 
 export function assertB2Configured() {
   if (!isB2Configured()) {
-    throw new Error('Backblaze B2 storage is not configured in config/config.js');
+    throw new Error('Backblaze B2 storage is not configured');
   }
 }
 

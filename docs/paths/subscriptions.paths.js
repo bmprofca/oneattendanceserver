@@ -24,6 +24,24 @@ export const schemas = {
 };
 
 export const paths = {
+  '/subscriptions/public-packages': {
+    get: {
+      tags: ['Subscriptions'],
+      summary: 'Get public subscription package prices',
+      responses: {
+        200: {
+          description: 'Public subscription packages list fetched',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SuccessResponse' },
+            },
+          },
+        },
+        500: { description: 'Internal server error', content: { 'application/json': { schema: { $ref: '#/components/schemas/InternalServerErrorResponse' } } } },
+      },
+    },
+  },
+
   '/subscriptions/packages': {
     get: {
       tags: ['Subscriptions'],

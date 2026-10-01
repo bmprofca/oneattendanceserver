@@ -13,7 +13,7 @@ import { buildFileUrl } from "../utils/fileService.js";
 import { PERMISSIONS } from "../constants/permissions.js";
 import getClientMeta from "../utils/ipHelper.js";
 import {
-  generateOTP, hashPassword, verifyOtpHash, generateSessionToken, generateRandomToken,
+  generateOTP, hashPassword, assessOtp, generateSessionToken, generateRandomToken,
 } from "../utils/auth.js";
 import { queueSignupOTPEmail, sendQueuedWelcomeEmail } from "../email/services/email.processor.js";
 import { runFaceCheck } from "../utils/faceCheckUtil.js";
@@ -456,11 +456,11 @@ router.post("/create", auth([PERMISSIONS.EMPLOYEES]), async (req, res) => {
       return sendError(res, 400, "OTP expired");
     }
 
-    const isOtpValid = await verifyOtpHash(otp, otpRecord.otp_hash);
-    if (!isOtpValid) {
+    const otpError = await assessOtp(otpRecord.id, otp, otpRecord.otp_hash);
+    if (otpError) {
       await conn.rollback();
       transactionStarted = false;
-      return sendError(res, 400, "Invalid OTP");
+      return sendError(res, 400, otpError);
     }
 
     const existingUserSql = signupType === "email" ? "email = ?" : "phone = ?";

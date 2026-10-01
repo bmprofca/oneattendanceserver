@@ -181,6 +181,30 @@ const auth = (permissions = [], { allow_owner = true, owner_only = false, employ
           id: company_id
         };
 
+        const [[membership]] = await conn.query(
+          `
+            SELECT c.id
+            FROM companies c
+            LEFT JOIN employees e
+              ON e.company_id = c.id
+             AND e.user_id = ?
+             AND e.is_active = 1
+             AND e.is_deleted = 0
+            WHERE c.id = ?
+              AND c.is_active = 1
+              AND c.is_deleted = 0
+              AND (c.owner_user_id = ? OR e.id IS NOT NULL)
+            LIMIT 1
+          `,
+          [sessionData.user_id, company_id, sessionData.user_id]
+        );
+
+        if (!membership) {
+          conn.release();
+          conn = null;
+          return sendError(res, 403, "You do not have access to this company");
+        }
+
       }
 
       const needsCompanyCheck =

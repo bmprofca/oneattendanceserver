@@ -1,6 +1,9 @@
 import bcrypt from "bcryptjs";
-import { v4 as uuidv4 } from "uuid";
 import crypto from "crypto";
+import db from "../config/db.js";
+
+const otpFailures = new Map();
+const MAX_OTP_ATTEMPTS = 5;
 
 export const hashPassword = async (password) => {
   return await bcrypt.hash(password, 10);
@@ -22,12 +25,30 @@ export const verifyOtpHash = async (otp, hash) => {
   return comparePassword(String(otp), hash);
 };
 
+export async function assessOtp(recordId, otp, hash) {
+  const valid = await verifyOtpHash(otp, hash);
+  if (valid) {
+    otpFailures.delete(recordId);
+    return null;
+  }
+
+  const count = (otpFailures.get(recordId) || 0) + 1;
+  if (count >= MAX_OTP_ATTEMPTS) {
+    otpFailures.delete(recordId);
+    await db.query("UPDATE otps SET used_at = NOW() WHERE id = ?", [recordId]);
+    return "Too many incorrect attempts. Request a new OTP";
+  }
+
+  otpFailures.set(recordId, count);
+  return "Invalid OTP";
+}
+
 export const generateSessionToken = () => {
-  return uuidv4();
+  return crypto.randomBytes(32).toString("hex");
 };
 
 export const generateOTP = () => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 };
 
 export function generateRandomToken({ size = 32, encoding = "hex", uppercase = false } = {}) {

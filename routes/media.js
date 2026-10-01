@@ -1,5 +1,6 @@
 import express from 'express';
 import { getSignedB2DownloadUrl, getContentTypeFromFileName, isB2Configured } from '../utils/b2Storage.js';
+import { hasValidMediaAccess } from '../utils/media.js';
 
 const router = express.Router();
 
@@ -17,8 +18,12 @@ router.get('/:key(*)', async (req, res) => {
     const rawKey = req.params.key || req.params[0] || '';
     const objectKey = decodeURIComponent(rawKey).replace(/^\/+/, '');
 
-    if (!objectKey || !isB2Configured()) {
+    if (!objectKey || objectKey.includes('..') || objectKey.includes('\\') || !isB2Configured()) {
       return res.status(404).json({ success: false, message: 'File not found' });
+    }
+
+    if (!hasValidMediaAccess(objectKey, req.query.exp, req.query.sig)) {
+      return res.status(403).json({ success: false, message: 'File link expired' });
     }
 
     const signedUrl = await getSignedB2DownloadUrl(objectKey);

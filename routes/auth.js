@@ -2,7 +2,7 @@ import express from "express";
 import axios from "axios";
 import db from "../config/db.js";
 import {
-  generateOTP, hashPassword, verifyOtpHash,
+  generateOTP, hashPassword, assessOtp,
   generateSessionToken
 } from "../utils/auth.js";
 import getClientMeta from "../utils/ipHelper.js";
@@ -128,8 +128,8 @@ const verifyAndMarkOTP = async (conn, identifierCol, identifierVal, purpose, sub
   const record = rows[0];
   if (record.is_verified) return { error: "OTP already used" };
   if (new Date() > new Date(record.otp_expiry)) return { error: "OTP expired" };
-  const isValid = await verifyOtpHash(submittedOtp, record.otp_hash);
-  if (!isValid) return { error: "Invalid OTP" };
+  const otpError = await assessOtp(record.id, submittedOtp, record.otp_hash);
+  if (otpError) return { error: otpError };
   return { record, error: null };
 };
 
@@ -250,7 +250,6 @@ const mapTruecallerProfile = (profile) => {
   };
 };
 
-if (!WEB_GOOGLE_CLIENT_ID) throw new Error("WEB_GOOGLE_CLIENT_ID missing");
 const googleClient = new OAuth2Client();
 const getGoogleAudiences = () => [WEB_GOOGLE_CLIENT_ID, APP_GOOGLE_CLIENT_ID].filter(Boolean);
 
@@ -270,23 +269,21 @@ router.post("/signup/request-otp", async (req, res) => {
     if (existingUser.length) return sendError(res, 409, signupType === "email" ? "Email already registered. Please login." : "Phone already registered. Please login.");
 
     const [[emailRecent]] = await conn.query(SQL.OTP_SIGNUP_RATE_LIMIT(rateLimitCol), [rateLimitVal]);
-    if (emailRecent.count > 50000) return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
+    if (emailRecent.count > 0) return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
     const [[ipRecent]] = await conn.query(SQL.OTP_IP_RATE_LIMIT("signup"), [ip]);
-    if (ipRecent.count > 50000) return sendError(res, 429, "Too many requests from this IP. Try again later.");
+    if (ipRecent.count > 5) return sendError(res, 429, "Too many requests from this IP. Try again later.");
     const [[comboRecent]] = await conn.query(SQL.OTP_COMBO_RATE_LIMIT(rateLimitCol), [rateLimitVal, ip]);
-    if (comboRecent.count > 50000) return sendError(res, 429, "Too many attempts. Please wait a minute.");
+    if (comboRecent.count > 3) return sendError(res, 429, "Too many attempts. Please wait a minute.");
     const [[dailyEmail]] = await conn.query(SQL.OTP_DAILY_LIMIT(rateLimitCol, "signup"), [rateLimitVal]);
-    if (dailyEmail.count >= 50000) return sendError(res, 429, "Daily OTP limit reached");
+    if (dailyEmail.total >= 10) return sendError(res, 429, "Daily OTP limit reached");
     const [[dailyIp]] = await conn.query(SQL.OTP_DAILY_IP_LIMIT("signup"), [ip]);
-    if (dailyIp.count >= 50000) return sendError(res, 429, "Too many OTP requests from this IP today");
+    if (dailyIp.total >= 30) return sendError(res, 429, "Too many OTP requests from this IP today");
 
     const otp = String(generateOTP());
     const otpHash = await hashPassword(otp);
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
     await conn.query(SQL.INVALIDATE_OTPS(rateLimitCol), [rateLimitVal]);
     await conn.query(SQL.INSERT_OTP, [otpEmail, normalizedPhone, "signup", otpHash, expiry, ip]);
-
-    console.log(`Sign Up OTP (${signupType}) for ${signupType === "email" ? normalizedEmail : normalizedPhone}:`, otp);
 
     if (signupType === "email" && normalizedEmail) {
       try {
@@ -419,19 +416,18 @@ router.post("/login/request-otp", async (req, res) => {
     const user = await getUserByLoginType(conn, loginType, identifier, true);
     if (!user) return sendError(res, 401, "Invalid credentials");
 
-    const isStaticAdmin = Boolean(user.is_system_admin || user.admin) && (
-      String(user.phone || "").endsWith("9999999999") ||
-      String(identifier || "").endsWith("9999999999")
+    const identifierColumn = loginType === "email" ? "email" : "phone";
+    const [[recentLogin]] = await conn.query(
+      `SELECT COUNT(*) AS count FROM otps WHERE ${identifierColumn} = ? AND otp_purpose = 'login' AND created_at > NOW() - INTERVAL 30 SECOND`,
+      [identifier]
     );
+    if (recentLogin.count > 0) return sendError(res, 429, "Please wait before requesting another OTP");
+    const [[ipRecent]] = await conn.query(SQL.OTP_IP_RATE_LIMIT("login"), [ip]);
+    if (ipRecent.count > 5) return sendError(res, 429, "Too many OTP requests from this IP");
+    const [[dailyLogin]] = await conn.query(SQL.OTP_DAILY_LIMIT(identifierColumn, "login"), [identifier]);
+    if (dailyLogin.total >= 10) return sendError(res, 429, "Daily OTP limit reached");
 
-    if (!isStaticAdmin) {
-      const [[emailRecent]] = await conn.query(SQL.OTP_SIGNUP_RATE_LIMIT("email"), [identifier]);
-      if (emailRecent.count > 5000) return sendError(res, 429, "Please wait before requesting another OTP");
-      const [[ipRecent]] = await conn.query(SQL.OTP_IP_RATE_LIMIT("login"), [ip]);
-      if (ipRecent.count > 5000) return sendError(res, 429, "Too many OTP requests from this IP");
-    }
-
-    const otp = isStaticAdmin ? "123456" : String(generateOTP());
+    const otp = String(generateOTP());
     const otpHash = await hashPassword(String(otp));
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
     await conn.query(`DELETE FROM otps WHERE email = ? AND otp_purpose = 'login' AND used_at IS NULL`, [identifier]);
@@ -458,7 +454,6 @@ router.post("/login/request-otp", async (req, res) => {
       try { await sendOtpWhatsApp(phoneTo, otp); } catch (waErr) { console.error("LOGIN OTP WHATSAPP ERROR:", waErr.message); }
     }
 
-    if (NODE_ENV !== "production") console.log(`🔐 LOGIN OTP for ${identifier}: ${otp}`);
     return sendSuccess(res, 200, loginType === "email" ? "OTP sent to email" : otpEmailTo ? "OTP sent to registered email" : "OTP sent successfully");
   } catch (err) {
     console.error("LOGIN OTP ERROR:", err);

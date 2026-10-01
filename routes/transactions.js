@@ -8,6 +8,7 @@ import {
   sanitizeText,
   buildMeta,
 } from "../utils/sendResponse.js";
+import { LEDGER_MAX_LIMIT } from "../config/config.js";
 import {
   getCurrentDate,
   isDateAfter,
@@ -25,7 +26,7 @@ const isValidDate = (value) => parseDate(value) !== null;
 const formatToDate = (value) => formatIST(value, "YYYY-MM-DD");
 const toISTString = (value) => formatIST(value); // default format "YYYY-MM-DD HH:mm:ss"
 
-const LEDGER_MAX_LIMIT = Math.max(1, 100);
+const ledgerMaxLimit = () => Math.max(1, Number(LEDGER_MAX_LIMIT) || 100);
 
 const hasQueryValue = (value) =>
   value !== undefined && value !== null && String(value).trim() !== "";
@@ -831,11 +832,11 @@ router.get("/company-ledger", auth([], { owner_only: true }), async (req, res) =
       return sendError(res, 400, "limit must be greater than 0");
     }
 
-    if (pageLimit > LEDGER_MAX_LIMIT) {
+    if (pageLimit > ledgerMaxLimit()) {
       return sendError(
         res,
         400,
-        `limit cannot exceed ${LEDGER_MAX_LIMIT}`
+        `limit cannot exceed ${ledgerMaxLimit()}`
       );
     }
 
@@ -1218,11 +1219,11 @@ router.get("/my-ledger", auth([], { employee_only: true }), async (req, res) => 
       return sendError(res, 400, "limit must be greater than 0");
     }
 
-    if (pageLimit > LEDGER_MAX_LIMIT) {
+    if (pageLimit > ledgerMaxLimit()) {
       return sendError(
         res,
         400,
-        `limit cannot exceed ${LEDGER_MAX_LIMIT}`
+        `limit cannot exceed ${ledgerMaxLimit()}`
       );
     }
 

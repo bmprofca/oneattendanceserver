@@ -1,5 +1,8 @@
+import crypto from 'crypto';
 import { getSignedB2DownloadUrl, getContentTypeFromFileName, isB2Configured } from './b2Storage.js';
-import { productionBaseDomain } from '../config/config.js';
+import { MEDIA_URL_SECRET, productionBaseDomain } from '../config/config.js';
+
+const MEDIA_URL_TTL_MS = 24 * 60 * 60 * 1000;
 
 const MEDIA_PREFIXES = {
   profilePicture: 'profile_picture',
@@ -38,6 +41,30 @@ const normalizeStoredKey = (value, prefix) => {
  * exposing a B2 signed URL to the browser. This avoids network
  * restrictions that block direct access to B2 hosts.
  */
+export function signMediaAccess(objectKey) {
+  const exp = Date.now() + MEDIA_URL_TTL_MS;
+  const sig = crypto.createHmac('sha256', String(MEDIA_URL_SECRET || '')).update(`${objectKey}.${exp}`).digest('hex');
+  return { exp, sig };
+}
+
+export function hasValidMediaAccess(objectKey, exp, sig) {
+  const secret = String(MEDIA_URL_SECRET || '');
+  const expires = Number(exp);
+  if (!secret || !objectKey || !sig || !Number.isFinite(expires) || expires < Date.now()) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${objectKey}.${expires}`).digest('hex');
+  const received = Buffer.from(String(sig));
+  const computed = Buffer.from(expected);
+  return received.length === computed.length && crypto.timingSafeEqual(received, computed);
+}
+
+const appendMediaAccess = (url, objectKey) => {
+  const { exp, sig } = signMediaAccess(objectKey);
+  const signed = new URL(url);
+  signed.searchParams.set('exp', String(exp));
+  signed.searchParams.set('sig', sig);
+  return signed.toString();
+};
+
 const buildProxyUrl = (storedValue, prefix = '', req = null) => {
   if (!storedValue) return null;
 
@@ -60,7 +87,7 @@ const buildProxyUrl = (storedValue, prefix = '', req = null) => {
   const objectKey = normalizeStoredKey(raw, prefix);
   if (!objectKey) return null;
 
-  return `${base}/api/media/${encodeURIComponent(objectKey)}`;
+  return appendMediaAccess(`${base}/api/media/${encodeURIComponent(objectKey)}`, objectKey);
 };
 
 export const resolveMediaDownloadUrl = async (storedValue, prefix) => {
@@ -117,7 +144,7 @@ export const resolveWhatsAppMediaUrl = async (storedValue, prefix = '') => {
   }
 
   if (productionBaseDomain) {
-    return `${productionBaseDomain}/api/media/${encodeURIComponent(objectKey)}`;
+    return appendMediaAccess(`${productionBaseDomain}/api/media/${encodeURIComponent(objectKey)}`, objectKey);
   }
 
   return null;

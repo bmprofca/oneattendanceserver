@@ -3,6 +3,10 @@ import { SMTP_HOST, SMTP_PORT, EMAIL_USER, EMAIL_PASS } from "./config.js";
 
 let transporterInstance = null;
 
+export const resetMailTransport = () => {
+  transporterInstance = null;
+};
+
 export const getTransporter = () => {
   if (transporterInstance) {
     return transporterInstance;

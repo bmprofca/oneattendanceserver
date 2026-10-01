@@ -5,7 +5,7 @@ import {
   hashPassword,
   generateSessionToken,
 } from "../utils/auth.js";
-import { verifyOtpHash } from "../utils/auth.js";
+import { assessOtp } from "../utils/auth.js";
 import getClientMeta from "../utils/ipHelper.js";
 import adminAuth from "../middleware/adminAuthMiddleware.js";
 import { sendSuccess, sendError } from "../utils/sendResponse.js";
@@ -104,32 +104,22 @@ router.post("/send-otp", async (req, res) => {
       return sendError(res, 403, "Admin access required");
     }
 
-    // Check if static admin with 9999999999
-    const isStaticAdmin = Boolean(user.is_system_admin || user.admin) && (
-      String(user.phone || "").endsWith("9999999999") ||
-      String(normalizedPhone || "").endsWith("9999999999")
-    );
-
-    // Rate limiting
-    if (!isStaticAdmin) {
-      const [[phoneRecent]] = await conn.query(SQL.OTP_RATE_LIMIT, [normalizedPhone]);
-      if (phoneRecent.count > 0) {
-        return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
-      }
-
-      const [[ipRecent]] = await conn.query(SQL.OTP_IP_RATE_LIMIT, [ip]);
-      if (ipRecent.count > 0) {
-        return sendError(res, 429, "Too many requests from this IP. Try again later.");
-      }
-
-      const [[dailyLimit]] = await conn.query(SQL.OTP_DAILY_LIMIT, [normalizedPhone]);
-      if (dailyLimit.total >= 10) {
-        return sendError(res, 429, "Daily OTP limit reached");
-      }
+    const [[phoneRecent]] = await conn.query(SQL.OTP_RATE_LIMIT, [normalizedPhone]);
+    if (phoneRecent.count > 0) {
+      return sendError(res, 429, "Wait 30 seconds before requesting another OTP");
     }
 
-    // Generate and store OTP
-    const otp = isStaticAdmin ? "123456" : String(generateOTP());
+    const [[ipRecent]] = await conn.query(SQL.OTP_IP_RATE_LIMIT, [ip]);
+    if (ipRecent.count > 0) {
+      return sendError(res, 429, "Too many requests from this IP. Try again later.");
+    }
+
+    const [[dailyLimit]] = await conn.query(SQL.OTP_DAILY_LIMIT, [normalizedPhone]);
+    if (dailyLimit.total >= 10) {
+      return sendError(res, 429, "Daily OTP limit reached");
+    }
+
+    const otp = String(generateOTP());
     const otpHash = await hashPassword(otp);
     const expiry = new Date(Date.now() + 5 * 60 * 1000);
 
@@ -237,11 +227,11 @@ router.post("/verify-otp", async (req, res) => {
       return sendError(res, 400, "OTP expired");
     }
 
-    const isValid = await verifyOtpHash(String(otp), otpRecord.otp_hash);
+    const otpError = await assessOtp(otpRecord.id, String(otp), otpRecord.otp_hash);
 
-    if (!isValid) {
+    if (otpError) {
       await conn.rollback();
-      return sendError(res, 400, "Invalid OTP");
+      return sendError(res, 400, otpError);
     }
 
     // Mark OTP as verified
