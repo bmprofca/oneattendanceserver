@@ -23,6 +23,7 @@ import ipRoutes from "./iproute.js";
 import mediaRoutes from "./media.js";
 import dataDeletionRoutes from "./dataDeletion.js";
 import websiteRoutes from "./website.js";
+import locationRoutes from "./location.js";
 
 
 const router = express.Router();
@@ -52,6 +53,7 @@ router.use('/ip', ipRoutes);
 router.use('/media', mediaRoutes);
 router.use('/data-deletion', dataDeletionRoutes);
 router.use('/website', websiteRoutes);
+router.use('/api/v1', locationRoutes);
 
 
 

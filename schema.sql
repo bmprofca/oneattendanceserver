@@ -70,6 +70,14 @@ CREATE TABLE `bank_accounts` (
   `deleted_by` bigint(20) UNSIGNED DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `captcha_challenges` (
+  `id` char(36) NOT NULL,
+  `answer_hash` char(64) NOT NULL,
+  `attempts` tinyint(3) UNSIGNED NOT NULL DEFAULT 0,
+  `expires_at` datetime NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `companies` (
   `id` bigint(20) UNSIGNED NOT NULL,
   `owner_user_id` bigint(20) UNSIGNED NOT NULL,
@@ -180,6 +188,15 @@ CREATE TABLE `custom_subscription_packages` (
   `deleted_by` bigint(20) UNSIGNED DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `data_deletion_requests` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `mobile` varchar(20) NOT NULL,
+  `email` varchar(255) DEFAULT NULL,
+  `remark` text DEFAULT NULL,
+  `ip_address` varchar(64) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `employees` (
   `id` bigint(20) UNSIGNED NOT NULL,
   `company_id` bigint(20) UNSIGNED NOT NULL,
@@ -274,6 +291,29 @@ CREATE TABLE `employee_leave_balances` (
   `is_deleted` tinyint(1) NOT NULL DEFAULT 0,
   `deleted_at` datetime DEFAULT NULL,
   `deleted_by` bigint(20) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `employee_location_points` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `session_id` bigint(20) UNSIGNED NOT NULL,
+  `employee_id` bigint(20) UNSIGNED NOT NULL,
+  `latitude` decimal(10,8) NOT NULL,
+  `longitude` decimal(11,8) NOT NULL,
+  `accuracy` float DEFAULT NULL,
+  `recorded_at` datetime NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `employee_location_sessions` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `employee_id` bigint(20) UNSIGNED NOT NULL,
+  `started_at` datetime NOT NULL,
+  `ended_at` datetime DEFAULT NULL,
+  `status` enum('active','inactive') NOT NULL DEFAULT 'active',
+  `last_latitude` decimal(10,8) DEFAULT NULL,
+  `last_longitude` decimal(11,8) DEFAULT NULL,
+  `last_accuracy` float DEFAULT NULL,
+  `last_updated_at` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `employee_salary_component` (
@@ -578,6 +618,18 @@ CREATE TABLE `sessions` (
   `created_by` bigint(20) UNSIGNED DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `settings` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text DEFAULT NULL,
+  `group_name` varchar(80) NOT NULL,
+  `label` varchar(150) NOT NULL,
+  `value_type` enum('string','number','secret') NOT NULL DEFAULT 'string',
+  `description` varchar(255) DEFAULT NULL,
+  `requires_restart` tinyint(1) NOT NULL DEFAULT 0,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `subscription_alert_config` (
   `id` int(10) UNSIGNED NOT NULL,
   `alert_days_before` tinyint(3) UNSIGNED NOT NULL DEFAULT 5,
@@ -666,6 +718,27 @@ CREATE TABLE `users` (
   `deleted_by` bigint(20) UNSIGNED DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `website_contact` (
+  `id` tinyint(3) UNSIGNED NOT NULL,
+  `company_name` varchar(200) NOT NULL,
+  `email` varchar(200) NOT NULL,
+  `phone` varchar(40) NOT NULL,
+  `sales_email` varchar(200) DEFAULT NULL,
+  `sales_phone` varchar(40) DEFAULT NULL,
+  `address` text NOT NULL,
+  `footer_text` text NOT NULL,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `website_pages` (
+  `slug` varchar(80) NOT NULL,
+  `title` varchar(200) NOT NULL,
+  `description` varchar(500) DEFAULT NULL,
+  `updated_label` varchar(40) DEFAULT NULL,
+  `sections_json` mediumtext NOT NULL,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 ALTER TABLE `attendance`
   ADD PRIMARY KEY (`id`),
@@ -681,6 +754,10 @@ ALTER TABLE `bank_accounts`
   ADD PRIMARY KEY (`id`),
   ADD KEY `idx_ba_company` (`company_id`),
   ADD KEY `fk_bank_accounts_emp` (`employee_id`);
+
+ALTER TABLE `captcha_challenges`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_captcha_expires` (`expires_at`);
 
 ALTER TABLE `companies`
   ADD PRIMARY KEY (`id`),
@@ -706,6 +783,11 @@ ALTER TABLE `custom_subscription_packages`
   ADD KEY `idx_client_id` (`client_id`),
   ADD KEY `idx_is_active` (`is_active`),
   ADD KEY `idx_is_deleted` (`is_deleted`);
+
+ALTER TABLE `data_deletion_requests`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_data_deletion_mobile` (`mobile`),
+  ADD KEY `idx_data_deletion_created` (`created_at`);
 
 ALTER TABLE `employees`
   ADD PRIMARY KEY (`id`),
@@ -733,6 +815,21 @@ ALTER TABLE `employee_leave_balances`
   ADD KEY `idx_employee_leave_balances_is_deleted` (`is_deleted`),
   ADD KEY `fk_elb_lc` (`leave_config_id`),
   ADD KEY `fk_elb_cmp` (`company_id`);
+
+ALTER TABLE `employee_location_points`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_session_id` (`session_id`),
+  ADD KEY `idx_employee_id` (`employee_id`),
+  ADD KEY `idx_recorded_at` (`recorded_at`),
+  ADD KEY `idx_employee_recorded_at` (`employee_id`,`recorded_at`,`id`);
+
+ALTER TABLE `employee_location_sessions`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_status` (`status`),
+  ADD KEY `idx_lat` (`last_latitude`),
+  ADD KEY `idx_lon` (`last_longitude`),
+  ADD KEY `idx_employee_status_id` (`employee_id`,`status`,`id`),
+  ADD KEY `idx_status_last_updated` (`status`,`last_updated_at`);
 
 ALTER TABLE `employee_salary_component`
   ADD PRIMARY KEY (`id`),
@@ -824,6 +921,10 @@ ALTER TABLE `sessions`
   ADD KEY `idx_sessions_active` (`user_id`,`is_active`,`forced_logged_out`),
   ADD KEY `idx_sessions_expiry` (`expires_at`);
 
+ALTER TABLE `settings`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uq_settings_key` (`setting_key`);
+
 ALTER TABLE `subscription_alert_config`
   ADD PRIMARY KEY (`id`);
 
@@ -841,6 +942,12 @@ ALTER TABLE `transactions`
 ALTER TABLE `users`
   ADD PRIMARY KEY (`id`),
   ADD KEY `idx_users_is_deleted` (`is_deleted`);
+
+ALTER TABLE `website_contact`
+  ADD PRIMARY KEY (`id`);
+
+ALTER TABLE `website_pages`
+  ADD PRIMARY KEY (`slug`);
 
 
 ALTER TABLE `attendance`
@@ -864,6 +971,9 @@ ALTER TABLE `company_subscriptions`
 ALTER TABLE `custom_subscription_packages`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
+ALTER TABLE `data_deletion_requests`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
 ALTER TABLE `employees`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
@@ -874,6 +984,12 @@ ALTER TABLE `employee_leave_attachments`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 ALTER TABLE `employee_leave_balances`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `employee_location_points`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `employee_location_sessions`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 ALTER TABLE `employee_salary_component`
@@ -925,6 +1041,9 @@ ALTER TABLE `salary_structures`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 ALTER TABLE `sessions`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `settings`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 ALTER TABLE `subscription_alert_config`
