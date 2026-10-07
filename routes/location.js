@@ -67,7 +67,7 @@ async function savePoint(conn, sessionId, employeeId, location) {
 	);
 }
 
-router.post("/employee/location/start", EMPLOYEE_AUTH, async (req, res) => {
+router.post("/employee/start", EMPLOYEE_AUTH, async (req, res) => {
 	const location = readLocation(req.body);
 	if (!location) return sendError(res, 400, "Valid latitude, longitude, and optional accuracy are required");
 
@@ -118,7 +118,7 @@ router.post("/employee/location/start", EMPLOYEE_AUTH, async (req, res) => {
 	}
 });
 
-router.post("/employee/location/update", EMPLOYEE_AUTH, async (req, res) => {
+router.post("/employee/update", EMPLOYEE_AUTH, async (req, res) => {
 	const location = readLocation(req.body);
 	if (!location) return sendError(res, 400, "Valid latitude, longitude, and optional accuracy are required");
 
@@ -154,7 +154,7 @@ router.post("/employee/location/update", EMPLOYEE_AUTH, async (req, res) => {
 	}
 });
 
-router.post("/employee/location/stop", EMPLOYEE_AUTH, async (req, res) => {
+router.post("/employee/stop", EMPLOYEE_AUTH, async (req, res) => {
 	const employeeId = req.employee?.id;
 	let conn;
 	try {
@@ -193,7 +193,7 @@ router.post("/employee/location/stop", EMPLOYEE_AUTH, async (req, res) => {
 	}
 });
 
-router.get("/employee/location/status", EMPLOYEE_AUTH, async (req, res) => {
+router.get("/employee/status", EMPLOYEE_AUTH, async (req, res) => {
 	try {
 		const [[session]] = await db.query(
 			`SELECT id, status, started_at, ended_at, last_latitude, last_longitude,
@@ -213,7 +213,7 @@ router.get("/employee/location/status", EMPLOYEE_AUTH, async (req, res) => {
 	}
 });
 
-router.get("/admin/locations/live", ADMIN_AUTH, async (req, res) => {
+router.get("/admin/live", ADMIN_AUTH, async (req, res) => {
 	const employeeId = req.query.employeeId == null ? null : Number(req.query.employeeId);
 	if (employeeId !== null && (!Number.isInteger(employeeId) || employeeId <= 0)) {
 		return sendError(res, 400, "Valid employeeId is required");
@@ -251,7 +251,7 @@ router.get("/admin/locations/live", ADMIN_AUTH, async (req, res) => {
 	}
 });
 
-router.get("/admin/locations/:employeeId/history", ADMIN_AUTH, async (req, res) => {
+router.get("/admin/:employeeId/history", ADMIN_AUTH, async (req, res) => {
 	const employeeId = Number(req.params.employeeId);
 	const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
 	const limit = Math.min(500, Math.max(1, Number.parseInt(req.query.limit, 10) || 100));

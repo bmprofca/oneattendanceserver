@@ -53,7 +53,7 @@ router.use('/ip', ipRoutes);
 router.use('/media', mediaRoutes);
 router.use('/data-deletion', dataDeletionRoutes);
 router.use('/website', websiteRoutes);
-router.use('/api/v1', locationRoutes);
+router.use('/location', locationRoutes);
 
 
 
