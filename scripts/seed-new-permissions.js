@@ -70,7 +70,12 @@ async function seedPermissions() {
       const pkgName = (pkg.package_name || "").toUpperCase();
       let permCodes = null;
 
-      if (groupCode === "SUPER_ADMIN" || pkgName.includes("SUPER ADMIN")) {
+      if (
+        groupCode === "SUPER_ADMIN" ||
+        groupCode === "ADMIN" ||
+        pkgName === "ADMIN" ||
+        pkgName.includes("SUPER ADMIN")
+      ) {
         permCodes = packagePermissionsMap.SUPER_ADMIN;
       } else if (groupCode === "HR_ADMIN" || pkgName.includes("HR ADMIN")) {
         permCodes = packagePermissionsMap.HR_ADMIN;

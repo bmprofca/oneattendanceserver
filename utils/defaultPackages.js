@@ -1,25 +1,130 @@
 import { EMPLOYMENT_TYPES, SALARY_TYPES, LEAVE_TYPES, DESIGNATIONS, ATTENDANCE_METHODS } from "../constants/constants_values.js";
 import { PERMISSIONS } from "../constants/permissions.js";
 
+export const DEFAULT_PERMISSION_PACKAGES = [
+    {
+        name: "Admin",
+        groupCode: "ADMIN",
+        description: "Full access to employees, attendance, leave, payroll, and permissions.",
+        permissions: [
+            PERMISSIONS.EMPLOYEES,
+            PERMISSIONS.ATTENDANCE,
+            PERMISSIONS.LEAVE,
+            PERMISSIONS.FINANCIAL,
+            PERMISSIONS.PERMISSIONS
+        ]
+    },
+    {
+        name: "Manager",
+        groupCode: "MANAGER",
+        description: "Team attendance and leave approvals.",
+        permissions: [
+            PERMISSIONS.ATTENDANCE,
+            PERMISSIONS.LEAVE
+        ]
+    },
+    {
+        name: "Employee",
+        groupCode: "EMPLOYEE",
+        description: "Standard employee access used when onboarding staff.",
+        permissions: []
+    }
+];
+
+export async function ensureDefaultPermissionPackages(conn, companyId, userId) {
+    const [permissionRows] = await conn.query(`SELECT id, code FROM permissions`);
+    if (!permissionRows.length) {
+        throw new Error("Permissions table is empty. Run permission seeder first.");
+    }
+
+    const permissionMap = new Map(permissionRows.map(row => [row.code, row.id]));
+    const [existing] = await conn.query(
+        `SELECT id, package_name, group_code
+         FROM permission_packages
+         WHERE company_id = ? AND is_deleted = 0`,
+        [companyId]
+    );
+
+    const byCode = new Map();
+    const byName = new Map();
+    for (const row of existing) {
+        byCode.set(String(row.group_code || "").toUpperCase(), row);
+        byName.set(String(row.package_name || "").toLowerCase(), row);
+    }
+
+    const packageIds = {};
+    for (const pkg of DEFAULT_PERMISSION_PACKAGES) {
+        const found = byCode.get(pkg.groupCode) || byName.get(pkg.name.toLowerCase());
+        if (found) {
+            packageIds[pkg.name] = found.id;
+            continue;
+        }
+
+        const [result] = await conn.query(`
+            INSERT INTO permission_packages (
+                company_id,
+                package_name,
+                group_code,
+                description,
+                is_active,
+                created_by,
+                updated_by,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?, NOW(), NOW())
+        `, [
+            companyId,
+            pkg.name,
+            pkg.groupCode,
+            pkg.description,
+            userId,
+            userId
+        ]);
+
+        const packageId = result.insertId;
+        packageIds[pkg.name] = packageId;
+        byCode.set(pkg.groupCode, { id: packageId, package_name: pkg.name, group_code: pkg.groupCode });
+        byName.set(pkg.name.toLowerCase(), { id: packageId, package_name: pkg.name, group_code: pkg.groupCode });
+
+        const permissionValues = [];
+        for (const permissionCode of pkg.permissions) {
+            const permissionId = permissionMap.get(permissionCode);
+            if (!permissionId) {
+                console.warn(`Permission '${permissionCode}' not found in DB — skipping association.`);
+                continue;
+            }
+            permissionValues.push([packageId, permissionId, userId, userId]);
+        }
+
+        if (permissionValues.length) {
+            const placeholders = permissionValues
+                .map(() => "(?, ?, 1, NOW(), NOW(), ?, ?)")
+                .join(",");
+            await conn.query(`
+                INSERT INTO permission_package_items (
+                    package_id,
+                    permission_id,
+                    is_active,
+                    created_at,
+                    updated_at,
+                    created_by,
+                    updated_by
+                )
+                VALUES ${placeholders}
+            `, permissionValues.flat());
+        }
+    }
+
+    return packageIds;
+}
+
 export async function createDefaultPackages(conn, companyId, userId) {
     const EMPLOYMENT = EMPLOYMENT_TYPES;
     const SALARY = SALARY_TYPES;
     const DESIGNATION = DESIGNATIONS;
     const ATTENDANCE = ATTENDANCE_METHODS;
     const LEAVE = LEAVE_TYPES;
-
-    const [permissionRows] = await conn.query(`
-        SELECT id, code FROM permissions
-    `);
-
-    if (!permissionRows.length) {
-        throw new Error("Permissions table is empty. Run permission seeder first.");
-    }
-
-    const permissionMap = new Map();
-    for (const row of permissionRows) {
-        permissionMap.set(row.code, row.id);
-    }
 
     const salaryComponents = [
         {
@@ -123,54 +228,6 @@ export async function createDefaultPackages(conn, companyId, userId) {
         }
     ];
 
-    const permissionPackages = [
-        {
-            name: "Super Admin",
-            groupCode: "SUPER_ADMIN",
-            description: "Complete unrestricted access to all company modules and operations.",
-            permissions: [
-                PERMISSIONS.EMPLOYEES,
-                PERMISSIONS.ATTENDANCE,
-                PERMISSIONS.LEAVE,
-                PERMISSIONS.FINANCIAL,
-                PERMISSIONS.PERMISSIONS
-            ]
-        },
-        {
-            name: "HR Admin",
-            groupCode: "HR_ADMIN",
-            description: "Manages employees, leaves, attendance, invites, shifts, holidays and company HR settings.",
-            permissions: [
-                PERMISSIONS.EMPLOYEES,
-                PERMISSIONS.ATTENDANCE,
-                PERMISSIONS.LEAVE
-            ]
-        },
-        {
-            name: "Payroll Admin",
-            groupCode: "PAYROLL_ADMIN",
-            description: "Handles salary structures, payroll processing, adjustments, and financial operations.",
-            permissions: [
-                PERMISSIONS.FINANCIAL
-            ]
-        },
-        {
-            name: "Manager",
-            groupCode: "MANAGER",
-            description: "Handles team attendance, leave approvals, and supervisor tasks.",
-            permissions: [
-                PERMISSIONS.ATTENDANCE,
-                PERMISSIONS.LEAVE
-            ]
-        },
-        {
-            name: "Employee",
-            groupCode: "EMPLOYEE",
-            description: "Standard self-service employee portal access.",
-            permissions: []
-        }
-    ];
-
     const leaveConfigs = [
         {
             code: LEAVE.SICK.value,
@@ -265,7 +322,7 @@ export async function createDefaultPackages(conn, companyId, userId) {
             weekends: ["saturday", "sunday"],
             attendanceMethods: [ATTENDANCE.MANUAL.value],
             autoApprove: 1,
-            permissionPackage: "HR Admin",
+            permissionPackage: "Admin",
             componentPackage: "EXEC_CTC"
         },
         {
@@ -388,68 +445,11 @@ export async function createDefaultPackages(conn, companyId, userId) {
             }
         }
 
-        const permissionPackageMap = {};
-
-        for (const pkg of permissionPackages) {
-            const [result] = await conn.query(`
-                INSERT INTO permission_packages (
-                    company_id,
-                    package_name,
-                    group_code,
-                    description,
-                    is_active,
-                    created_by,
-                    updated_by,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, 1, ?, ?, NOW(), NOW())
-            `, [
-                companyId,
-                pkg.name,
-                pkg.groupCode,
-                pkg.description,
-                userId,
-                userId
-            ]);
-
-            const packageId = result.insertId;
-            permissionPackageMap[pkg.name] = packageId;
-
-            const permissionValues = [];
-            for (const permissionCode of pkg.permissions) {
-                const permissionId = permissionMap.get(permissionCode);
-                if (!permissionId) {
-                    console.warn(`Permission '${permissionCode}' not found in DB — skipping association.`);
-                    continue;
-                }
-                permissionValues.push([
-                    packageId,
-                    permissionId,
-                    userId,
-                    userId
-                ]);
-            }
-
-            if (permissionValues.length) {
-                const placeholders = permissionValues
-                    .map(() => "(?, ?, 1, NOW(), NOW(), ?, ?)")
-                    .join(",");
-
-                await conn.query(`
-                    INSERT INTO permission_package_items (
-                        package_id,
-                        permission_id,
-                        is_active,
-                        created_at,
-                        updated_at,
-                        created_by,
-                        updated_by
-                    )
-                    VALUES ${placeholders}
-                `, permissionValues.flat());
-            }
-        }
+        const permissionPackageMap = await ensureDefaultPermissionPackages(
+            conn,
+            companyId,
+            userId
+        );
 
         const invitePackageIds = [];
 

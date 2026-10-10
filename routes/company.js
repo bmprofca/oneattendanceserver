@@ -6,7 +6,7 @@ import { saveMediaFromUrl, buildFileUrl } from "../utils/fileService.js";
 import { validateFields, attendanceMethodValidation } from "../utils/constantsValidator.js";
 import { ATTENDANCE_METHODS, LEAVE_TYPES } from "../constants/constants_values.js";
 import { formatUTCToIST } from "../utils/time.js";
-import { createDefaultPackages } from "../utils/defaultPackages.js";
+import { createDefaultPackages, ensureDefaultPermissionPackages } from "../utils/defaultPackages.js";
 import { sendSuccess, sendError, buildMeta } from "../utils/sendResponse.js";
 import { formatPhoneByCountry } from "../utils/getClientCountry.js";
 import { lookup } from "useragent";
@@ -245,6 +245,8 @@ router.post("/create", auth(), async (req, res) => {
       ]
     );
     const companyId = companyResult.insertId;
+
+    await ensureDefaultPermissionPackages(conn, companyId, owner_user_id);
 
     const [[company]] = await conn.query(`SELECT * FROM companies WHERE id = ?`, [companyId]);
 

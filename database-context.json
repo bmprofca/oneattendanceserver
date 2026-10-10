@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-09-23T07:44:34.575Z",
+  "generated_at": "2026-10-01T15:56:01.997Z",
   "database": "u278432002_oneattendance",
-  "table_count": 33,
+  "table_count": 38,
   "tables": {
     "attendance": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 38,
+      "estimated_rows": 53,
       "comment": null,
       "columns": [
         {
@@ -267,7 +267,7 @@
     "attendance_logs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 161,
+      "estimated_rows": 176,
       "comment": null,
       "columns": [
         {
@@ -708,10 +708,93 @@
         }
       ]
     },
+    "captcha_challenges": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 11,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "char",
+          "column_type": "char(36)",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "answer_hash",
+          "position": 2,
+          "data_type": "char",
+          "column_type": "char(64)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "attempts",
+          "position": 3,
+          "data_type": "tinyint",
+          "column_type": "tinyint(3) unsigned",
+          "nullable": false,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "expires_at",
+          "position": 4,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": null,
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "position": 5,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": null,
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_captcha_expires",
+          "unique": false,
+          "columns": [
+            "expires_at"
+          ]
+        },
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
     "companies": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 6,
+      "estimated_rows": 8,
       "comment": null,
       "columns": [
         {
@@ -1032,7 +1115,7 @@
     "company_invites": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 5,
+      "estimated_rows": 7,
       "comment": null,
       "columns": [
         {
@@ -1447,7 +1530,7 @@
     "company_subscriptions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 1,
+      "estimated_rows": 5,
       "comment": null,
       "columns": [
         {
@@ -1979,10 +2062,111 @@
         }
       ]
     },
+    "data_deletion_requests": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 0,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": "auto_increment",
+          "comment": null
+        },
+        {
+          "name": "mobile",
+          "position": 2,
+          "data_type": "varchar",
+          "column_type": "varchar(20)",
+          "nullable": false,
+          "default": null,
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "email",
+          "position": 3,
+          "data_type": "varchar",
+          "column_type": "varchar(255)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "remark",
+          "position": 4,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "ip_address",
+          "position": 5,
+          "data_type": "varchar",
+          "column_type": "varchar(64)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "created_at",
+          "position": 6,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": "MUL",
+          "extra": null,
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_data_deletion_created",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        },
+        {
+          "name": "idx_data_deletion_mobile",
+          "unique": false,
+          "columns": [
+            "mobile"
+          ]
+        },
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
     "employees": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 8,
+      "estimated_rows": 11,
       "comment": null,
       "columns": [
         {
@@ -2694,7 +2878,7 @@
     "employee_leave_attachments": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 6,
       "comment": null,
       "columns": [
         {
@@ -3099,7 +3283,7 @@
     "employee_salary_component": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 86,
+      "estimated_rows": 101,
       "comment": null,
       "columns": [
         {
@@ -3327,7 +3511,7 @@
     "holidays": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 2,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -3514,7 +3698,7 @@
     "invite_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 26,
+      "estimated_rows": 34,
       "comment": null,
       "columns": [
         {
@@ -3840,7 +4024,7 @@
     "invite_salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 32,
+      "estimated_rows": 40,
       "comment": null,
       "columns": [
         {
@@ -3991,7 +4175,7 @@
     "leave_configs": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 32,
+      "estimated_rows": 42,
       "comment": null,
       "columns": [
         {
@@ -4222,7 +4406,7 @@
     "otps": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 0,
+      "estimated_rows": 3,
       "comment": null,
       "columns": [
         {
@@ -5191,7 +5375,7 @@
     "permission_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 12,
+      "estimated_rows": 22,
       "comment": null,
       "columns": [
         {
@@ -5369,7 +5553,7 @@
     "permission_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 20,
+      "estimated_rows": 42,
       "comment": null,
       "columns": [
         {
@@ -5533,7 +5717,7 @@
     "salary_components": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 51,
+      "estimated_rows": 67,
       "comment": null,
       "columns": [
         {
@@ -5750,7 +5934,7 @@
     "salary_component_packages": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 27,
+      "estimated_rows": 35,
       "comment": null,
       "columns": [
         {
@@ -5922,7 +6106,7 @@
     "salary_component_package_items": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 81,
+      "estimated_rows": 105,
       "comment": null,
       "columns": [
         {
@@ -6078,7 +6262,7 @@
     "salary_structures": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 14,
+      "estimated_rows": 17,
       "comment": null,
       "columns": [
         {
@@ -6274,7 +6458,7 @@
     "sessions": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 34,
+      "estimated_rows": 43,
       "comment": null,
       "columns": [
         {
@@ -6516,6 +6700,133 @@
           "unique": true,
           "columns": [
             "session_token"
+          ]
+        }
+      ]
+    },
+    "settings": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 27,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "bigint",
+          "column_type": "bigint(20) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": "auto_increment",
+          "comment": null
+        },
+        {
+          "name": "setting_key",
+          "position": 2,
+          "data_type": "varchar",
+          "column_type": "varchar(100)",
+          "nullable": false,
+          "default": null,
+          "key": "UNI",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "setting_value",
+          "position": 3,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "group_name",
+          "position": 4,
+          "data_type": "varchar",
+          "column_type": "varchar(80)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "label",
+          "position": 5,
+          "data_type": "varchar",
+          "column_type": "varchar(150)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "value_type",
+          "position": 6,
+          "data_type": "enum",
+          "column_type": "enum('string','number','secret')",
+          "nullable": false,
+          "default": "'string'",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "description",
+          "position": 7,
+          "data_type": "varchar",
+          "column_type": "varchar(255)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "requires_restart",
+          "position": 8,
+          "data_type": "tinyint",
+          "column_type": "tinyint(1)",
+          "nullable": false,
+          "default": "0",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "position": 9,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": "on update current_timestamp()",
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        },
+        {
+          "name": "uq_settings_key",
+          "unique": true,
+          "columns": [
+            "setting_key"
           ]
         }
       ]
@@ -7240,7 +7551,7 @@
     "users": {
       "type": "BASE TABLE",
       "engine": "InnoDB",
-      "estimated_rows": 15,
+      "estimated_rows": 16,
       "comment": null,
       "columns": [
         {
@@ -7448,6 +7759,213 @@
           "unique": true,
           "columns": [
             "id"
+          ]
+        }
+      ]
+    },
+    "website_contact": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 1,
+      "comment": null,
+      "columns": [
+        {
+          "name": "id",
+          "position": 1,
+          "data_type": "tinyint",
+          "column_type": "tinyint(3) unsigned",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "company_name",
+          "position": 2,
+          "data_type": "varchar",
+          "column_type": "varchar(200)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "email",
+          "position": 3,
+          "data_type": "varchar",
+          "column_type": "varchar(200)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "phone",
+          "position": 4,
+          "data_type": "varchar",
+          "column_type": "varchar(40)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "sales_email",
+          "position": 5,
+          "data_type": "varchar",
+          "column_type": "varchar(200)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "sales_phone",
+          "position": 6,
+          "data_type": "varchar",
+          "column_type": "varchar(40)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "address",
+          "position": 7,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "footer_text",
+          "position": 8,
+          "data_type": "text",
+          "column_type": "text",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "position": 9,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": "on update current_timestamp()",
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ]
+    },
+    "website_pages": {
+      "type": "BASE TABLE",
+      "engine": "InnoDB",
+      "estimated_rows": 9,
+      "comment": null,
+      "columns": [
+        {
+          "name": "slug",
+          "position": 1,
+          "data_type": "varchar",
+          "column_type": "varchar(80)",
+          "nullable": false,
+          "default": null,
+          "key": "PRI",
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "title",
+          "position": 2,
+          "data_type": "varchar",
+          "column_type": "varchar(200)",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "description",
+          "position": 3,
+          "data_type": "varchar",
+          "column_type": "varchar(500)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_label",
+          "position": 4,
+          "data_type": "varchar",
+          "column_type": "varchar(40)",
+          "nullable": true,
+          "default": "NULL",
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "sections_json",
+          "position": 5,
+          "data_type": "mediumtext",
+          "column_type": "mediumtext",
+          "nullable": false,
+          "default": null,
+          "key": null,
+          "extra": null,
+          "comment": null
+        },
+        {
+          "name": "updated_at",
+          "position": 6,
+          "data_type": "datetime",
+          "column_type": "datetime",
+          "nullable": false,
+          "default": "current_timestamp()",
+          "key": null,
+          "extra": "on update current_timestamp()",
+          "comment": null
+        }
+      ],
+      "primary_key": [
+        "slug"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "PRIMARY",
+          "unique": true,
+          "columns": [
+            "slug"
           ]
         }
       ]
